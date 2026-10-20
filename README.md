@@ -16,15 +16,27 @@ holds the gates, the part of the harness that runs in code.
 
 - **Header**: the harness, the planner's model, the model building now
   (the last call's: opusplan's Sonnet), a legend of the colours.
-- **Planner** (Opus, the tall box on the left): the Opus helpers at their
-  moments: the architect before a plan, when the same error comes back,
-  before a big change is done, the reviewer before a push (its last
-  verdict). The moment a running Opus helper is at is lit. Their runs and
-  tokens today, the main session's context.
+- **Planner** (Opus, the tall box on the left): second opinions, eyes that
+  didn't write the change, at the family's four moments (CLAUDE.md,
+  "Helpers"). Each moment names who it calls (the architect before a plan,
+  when the same error comes back, before done; the reviewer before a
+  push), a bar of today's Opus calls by moment and their count (◆ once
+  called today, ◇ not yet), and its last word: the reviewer's newest
+  recorded verdict (its repository, how long ago), the architect's last
+  call, or "off in an opus session" (the architect is for a Sonnet
+  session: off while Opus builds, unless the settings' model is
+  `opusplan`). A running Opus helper lights its moment, its context and
+  calls live under it, the box's header saying who is at work. At its foot
+  their runs, tokens and time today. Narrower, one line a moment. The
+  calls by moment are counted as each starts (`bin/snapshot.ts`,
+  `momentOf` in `hooks/format.ts`: the reviewer's is the push, the
+  architect's read from its brief).
 - **Main session** (dashed): its model, context fill, effort, cost, and the
   helpers running. **Config & limits**: model and mode from the settings,
-  the context window, the plan's rate limits (percent used), the ask rules,
-  the subagent model (`CLAUDE_CODE_SUBAGENT_MODEL`, else per helper).
+  the context window, the plan's rate limits as meters (green, amber from
+  80%, red from 95%; past 80% the title's mark gives the fullest window
+  and when it resets), the ask rules, the subagent model
+  (`CLAUDE_CODE_SUBAGENT_MODEL`, else per helper).
 - **Gates**: checks fresh (HEAD stamped), reviews current, cards waiting.
 - **Helpers**, fanned out from the hand-off: running ones first, then the
   family's (`.claude/agents/*.md`) and today's, the busiest first (by runs,
@@ -206,7 +218,8 @@ can't be captured from a session):
   desktop surface (this machine's last snapshot, mid-turn, a helper
   running), turns the trees into HTML by the desktop renderer's own rules
   (`bin/desktop-paint.ts`) and screenshots 110, 80 and 48 columns with
-  headless Chrome into `.cache/paint/`. Its design tokens (padding, radius,
+  headless Chrome into `.cache/paint/` (`HARNESS_PAINT_IDLE=1` at rest,
+  `HARNESS_PAINT_AGENT=reviewer` with an Opus helper at work). Its design tokens (padding, radius,
   fonts) are guesses; the layout is the page's. Look at it after any change
   to the drawing: the desktop was broken where the terminal was fine.
 - Claude Code's own terminal renderer: from `~/code/wow-addons`, run

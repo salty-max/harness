@@ -7,6 +7,7 @@
 #
 #   zsh bin/desktop-paint.sh            mid-turn, a helper running
 #   HARNESS_PAINT_IDLE=1 zsh bin/desktop-paint.sh   at rest (output desktop-idle-<columns>.*)
+#   HARNESS_PAINT_AGENT=reviewer zsh bin/desktop-paint.sh   another helper running (output desktop-<agent>-<columns>.*)
 set -e
 here=${0:A:h:h}
 out=$here/.cache/paint
@@ -16,7 +17,9 @@ mkdir -p $out
 snap=${HARNESS_SNAPSHOT:-$HOME/.cache/harness-view/snapshot.json}
 idle=${HARNESS_PAINT_IDLE:-0}
 name=desktop
+agent=${HARNESS_PAINT_AGENT:-data-scout}
 (( idle )) && name=desktop-idle
+[[ $agent != data-scout ]] && name=desktop-$agent
 # The dump runs as a test of the mod's own (zz-*.test.tsx is git-ignored); a
 # test run lays a tsconfig.json beside the mod, taken away only if it wasn't there.
 test_file=$here/hooks/zz-desktop-paint.test.tsx
@@ -32,6 +35,7 @@ trap 'cleanup; exit 130' INT TERM HUP
   print -r -- "import { expect, mock, test } from 'claude-code/testing'"
   print -r -- "const SNAP = $(cat $snap)"
   print -r -- "const IDLE = $idle === 1"
+  print -r -- "const AGENT = '$agent'"
   cat <<'TS'
 test('desktop paint dump', async ($, on) => {
   mock.env(on, { HOME: '/Users/someone' })
@@ -43,10 +47,10 @@ test('desktop paint dump', async ($, on) => {
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.panes', () => ({ value: [{ id: 'harness', title: 'Harness', isShown: true, isFocused: false, isPlaced: true }] }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
-  on('agent.list', () => ({ value: IDLE ? [] : [{ id: 'a1', type: 'data-scout', description: 'A question about the data', status: 'running' }] }))
+  on('agent.list', () => ({ value: IDLE ? [] : [{ id: 'a1', type: AGENT, description: AGENT === 'data-scout' ? 'A question about the data' : 'Review the panel change', status: 'running' }] }))
   // The session's own facts, so the boxes take the model's colour.
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
-  on('session.usage', () => ({ value: { context: { tokens: 403_000, window: 1_000_000, percent: 40 }, cost: { usd: 14.72 }, rateLimits: [{ kind: 'five_hour', percentUsed: 28 }] } }))
+  on('session.usage', () => ({ value: { context: { tokens: 403_000, window: 1_000_000, percent: 40 }, cost: { usd: 14.72 }, rateLimits: [{ kind: 'five_hour', percentUsed: 28, resetsAt: new Date(SNAP.at + 8_000_000).toISOString() }, { kind: 'seven_day', percentUsed: 61 }] } }))
   on('settings.read', () => ({ value: { model: 'opus', effortLevel: 'xhigh' } }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('turn.start', ($, e) => ({ turnId: e.turnId }))

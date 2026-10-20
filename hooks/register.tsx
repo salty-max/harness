@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
 import type { AgentRow, AgentSteps, BoardCard, CheckStamp, HarnessEvent, ModelDay, RepoRow, SessionFacts, Snapshot } from '../types'
-import { ago, bar, FRESH_MS, tokens } from './format'
+import { ago, bar, FRESH_MS, type Moment, momentOf, tokens } from './format'
 import type { MotionProps } from './motion'
 import { BAR_PX, barSvg, EDGE_PX, edgeSvg, LINE_PX, lineSvg, SIDE_PX } from './vector'
 
@@ -258,6 +258,14 @@ export function pulsePath(text: string, from: number, how: 'down' | 'out' | 'in'
   return how === 'out' ? out : out.reverse()
 }
 
+/** The moments the family calls an Opus helper at, in the order they come (CLAUDE.md, "Helpers"). */
+const MOMENTS: { key: Moment; title: string; who: string }[] = [
+  { key: 'plan', title: 'before a plan', who: 'architect' },
+  { key: 'error', title: 'same error twice', who: 'architect' },
+  { key: 'push', title: 'before a push', who: 'reviewer' },
+  { key: 'done', title: 'before done', who: 'architect' },
+]
+
 const WAITING = (c: BoardCard) => c.status.startsWith('waiting') || c.status === 'ready-to-push'
 
 /** The one status line: what claude-hud does not already say. */
@@ -435,7 +443,10 @@ async function refreshSession($: EngineInterface, lastModel?: string, lastEffort
     window: usage.context.window,
     percent: usage.context.percent ?? null,
     costUsd: usage.cost?.usd ?? null,
-    rateLimits: (usage.rateLimits ?? []).map(l => ({ kind: l.kind, percentUsed: l.percentUsed })),
+    rateLimits: (usage.rateLimits ?? []).map(l => {
+      const resetsAt = l.resetsAt ? Date.parse(l.resetsAt) : Number.NaN
+      return { kind: l.kind, percentUsed: l.percentUsed, resetsAt: Number.isNaN(resetsAt) ? null : resetsAt }
+    }),
     settings: {
       model: text(s.model),
       mode: text(s.permissions?.defaultMode),
@@ -773,6 +784,13 @@ export const register: Register = on => {
         {child}
       </Box>
     )
+    // A row's last figure against the box's right edge, as a pair's value sits: a fixed cell
+    // falls short of it on the desktop, whose font is proportional.
+    const flush = (w: number, child: RenderChildren) => (
+      <Box minWidth={w} flexGrow={1} flexShrink={0} justifyContent="flex-end">
+        {child}
+      </Box>
+    )
     // A label, its value right-aligned in its colour: the mock-up's `calls  2 / 3`; a value may be a rolling figure.
     const pair = (key: string, label: string, value: RenderChildren, color: string) => (
       <Box key={key} justifyContent="space-between">
@@ -817,20 +835,11 @@ export const register: Register = on => {
     const waiting = board.filter(WAITING).length
     const dayTotal = models.reduce((sum, d) => sum + total(d), 0)
     const cacheRead = models.reduce((sum, d) => sum + d.cacheRead, 0)
-    const lastReview = events.find(ev => ev.source === 'review')
     const lastHandback = events.find(ev => ev.source === 'helper' && ev.tokens !== undefined)
 
     // The moment a running Opus helper is at: the reviewer before a push, the architect by its brief.
     const runningOpus = running.find(a => opusDefs.some(d => d.name === a.type))
-    const moment = !runningOpus
-      ? null
-      : runningOpus.type === 'reviewer'
-        ? 'push'
-        : /error|fail|again|twice|deadlock/i.test(runningOpus.description)
-          ? 'error'
-          : /done|finish|sign/i.test(runningOpus.description)
-            ? 'done'
-            : 'plan'
+    const moment = runningOpus ? momentOf(runningOpus.type, runningOpus.description) : null
 
     // --- header --------------------------------------------------------------
     const legend: [string, string][] = [
@@ -860,47 +869,108 @@ export const register: Register = on => {
       </Box>
     )
 
-    // --- the planner: Opus at its moments ------------------------------------
+    // --- the planner: the Opus helpers, a second opinion at four moments ------
+    // The box says what it is for (a second opinion, from eyes that didn't
+    // write the change), then each moment: who is called, how often today (a
+    // bar of the day's calls, by moment), and its last word: the reviewer's
+    // newest verdict, the architect's last call, or why it stays off (it is
+    // for a Sonnet session only). A running helper lights its moment, its
+    // calls and context live under it.
     const isTall = tier === 'wide'
+    const opusMs = opusDefs.reduce((n, d) => n + (day[d.name]?.ms ?? 0), 0)
     const planner = (w: number) => {
       const inner = w - 4
-      const section = (key: string, title: string, lines: string[], isActive: boolean) => (
-        <Box key={key} flexDirection="column" marginTop={isTall ? 1 : 0}>
-          {line(`◇ ${title}`, { bold: true, inverse: isActive, color: isActive ? PALETTE.opus : undefined })}
-          {isTall
-            ? lines.map((text, i) => runs(`${key}-${i}`, [['│ ', { dim: true, fixed: true }], [text, {}]]))
-            : null}
-        </Box>
-      )
-      const lastAt = (name: string) => (day[name]?.lastAt ? `last ${clockTime(day[name].lastAt).slice(0, 5)}` : 'not today')
+      const moments = snap?.moments ?? {}
+      const calls = MOMENTS.reduce((n, m) => n + (moments[m.key]?.runs ?? 0), 0)
+      // The architect is for a Sonnet session only: with Opus building (no opusplan), its moments stay off.
+      const isOpusBuilding = family(builder) === 'opus' && facts?.settings.model !== 'opusplan'
+      const verdicts = repos.filter(r => r.review?.verdict).sort((a, b) => (b.review?.at ?? 0) - (a.review?.at ?? 0))
+      const newest = verdicts[0]
+      const labelW = Math.min(19, inner - 8)
+      const whoW = !isTall && inner >= 44 ? 10 : 0
+      const countW = 4
+      const barW = Math.max(3, inner - (isTall ? 0 : labelW + whoW) - countW - 1)
+      const row = (m: (typeof MOMENTS)[number]) => {
+        const today = moments[m.key]
+        const n = today?.runs ?? 0
+        const isLit = moment === m.key
+        const color = n > 0 || isLit ? PALETTE.opus : 'inactive'
+        const title = `${n > 0 || isLit ? '◆' : '◇'} ${m.title}`
+        const label = line(title, { bold: true, inverse: isLit, color: isLit || n > 0 ? PALETTE.opus : undefined })
+        const meterOf = (
+          <Box key={`moment-${m.key}-meter`} flexGrow={1}>
+            {barOf(`moment-${m.key}-bar`, n, Math.max(calls, 1), barW, PALETTE.opus)}
+            {flush(countW + 1, motion(`moment-${m.key}-count`, { kind: 'count', value: n, unit: 'int', color, bold: n > 0 }))}
+          </Box>
+        )
+        if (!isTall) {
+          return (
+            <Box key={`moment-${m.key}`}>
+              {cell(labelW, label)}
+              {whoW > 0 ? cell(whoW, line(m.who, { dim: true })) : null}
+              {meterOf}
+            </Box>
+          )
+        }
+        // Its last word, or the live run under the lit moment.
+        const agent = isLit ? runningOpus : undefined
+        const word = agent
+          ? spinning(`moment-${m.key}-live`, agent.steps ? `ctx ${tokens(agent.steps.context)} · ${agent.steps.steps} calls [ ` : 'reading [ ', true, PALETTE.opus, { color: PALETTE.opus })
+          : m.key === 'push' && newest?.review
+            ? (
+                <Box key={`moment-${m.key}-word`} flexDirection="column">
+                  {line(`${newest.name} · ${ago(newest.review.at, now)} ago`, { dim: true })}
+                  {line(newest.review.verdict ?? '', { color: verdictColor(newest.review.verdict) })}
+                </Box>
+              )
+            : line(today ? `last ${clockTime(today.lastAt).slice(0, 5)}` : m.who === 'architect' && isOpusBuilding ? 'off in an opus session' : 'not today', { dim: true })
+        return (
+          <Box key={`moment-${m.key}`} flexDirection="column">
+            <Box justifyContent="space-between">
+              {label}
+              <Box flexShrink={0}>{line(` ${m.who}`, { dim: true })}</Box>
+            </Box>
+            {meterOf}
+            {word}
+          </Box>
+        )
+      }
       return frame(
         'planner',
         w,
         PALETTE.opus,
-        <>
-          <Box flexDirection="column" alignItems="center">
+        // A column, not a fragment: the engine makes a fragment a column of its own, which wouldn't fill the box.
+        <Box flexDirection="column" flexGrow={1}>
+          <Box flexDirection="column" alignItems="center" width="100%">
             {line(modelName(opusModel).toUpperCase(), { bold: true, color: PALETTE.opus })}
-            {spinning('planner-state', `planner · ${runningOpus ? 'working' : 'on call'} [ `, !!runningOpus, PALETTE.opus, { dim: !runningOpus })}
-            {line(`[ ${opusDefs.map(d => d.name).join(' · ') || 'no opus helper'} ]`, { inverse: true, color: PALETTE.opus })}
+            {line(inner >= 30 ? 'second opinions, at four moments' : 'second opinions', { dim: true })}
+            {runningOpus
+              ? spinning('planner-state', `${runningOpus.type} at work [ `, true, PALETTE.opus, { color: PALETTE.opus })
+              : spinning('planner-state', 'on call [ ', false, PALETTE.opus, { dim: true })}
           </Box>
-          <Box flexDirection="column">
-            {section('plan', 'before a plan', ['architect locks it', 'a second opinion first', lastAt('architect')], moment === 'plan')}
-            {section('error', 'same error twice', ['architect reads the failure', 'before a third try'], moment === 'error')}
-            {section(
-              'push',
-              'before a push',
-              ['reviewer reads the packet', 'the rules, the map', lastReview ? `last: ${lastReview.text.replace(/^\w+ /, '').slice(0, inner - 8)}` : lastAt('reviewer')],
-              moment === 'push',
-            )}
-            {section('done', 'before done', ['architect signs off', 'on the whole change'], moment === 'done')}
+          {/* Tall, the moments spread down the box, a line apart at least. */}
+          <Box flexDirection="column" marginTop={1} flexGrow={isTall ? 1 : 0} justifyContent={isTall ? 'space-between' : 'flex-start'} gap={isTall ? 1 : 0}>
+            {MOMENTS.map(row)}
           </Box>
-          <Box flexGrow={isTall ? 1 : 0} />
-          <Box flexDirection="column" marginTop={1}>
-            {pair('runs', 'runs today', motion('opus-runs', { kind: 'count', value: opusRuns, unit: 'int', color: PALETTE.opus }), PALETTE.opus)}
-            {pair('tok', 'opus tokens', motion('opus-tokens', { kind: 'count', value: opusTokens, color: PALETTE.opus }), PALETTE.opus)}
-            {pair('ctx', 'context', facts ? `${tokens(facts.contextTokens)} · ${Math.round(facts.percent ?? 0)}%` : '…', PALETTE.ok)}
-          </Box>
-        </>,
+          {isTall ? (
+            <Box flexDirection="column" marginTop={1}>
+              {pair('runs', 'runs today', motion('opus-runs', { kind: 'count', value: opusRuns, unit: 'int', color: PALETTE.opus }), PALETTE.opus)}
+              {pair('tok', 'opus tokens', motion('opus-tokens', { kind: 'count', value: opusTokens, color: PALETTE.opus }), PALETTE.opus)}
+              {pair('time', 'their time', opusMs > 0 ? duration(opusMs) : '0s', PALETTE.opus)}
+            </Box>
+          ) : (
+            <Box marginTop={1}>
+              {runs('planner-day', [
+                [`${opusRuns} runs`, { color: PALETTE.opus }],
+                [' · ', { dim: true }],
+                [`${tokens(opusTokens)} tok`, { color: PALETTE.opus }],
+                [' · ', { dim: true }],
+                [opusMs > 0 ? duration(opusMs) : '0s', { color: PALETTE.opus }],
+                [' today', { dim: true }],
+              ])}
+            </Box>
+          )}
+        </Box>,
         { running: runningOpus ? { lines: isTall ? 32 : 9 } : undefined },
       )
     }
@@ -943,26 +1013,43 @@ export const register: Register = on => {
       )
     }
 
+    // The plan's limits as meters, like the gates': amber from 80%, red from
+    // 95%. Past 80% the title's mark says the worst one and when it resets.
     const configBox = (w: number) => {
+      const inner = w - 4
       const limits = facts?.rateLimits ?? []
-      const worst = Math.max(0, ...limits.map(l => l.percentUsed))
-      const isOk = worst < 80
+      const worst = limits.reduce<(typeof limits)[number] | null>((a, l) => (!a || l.percentUsed > a.percentUsed ? l : a), null)
+      const isOk = !worst || worst.percentUsed < 80
       const settings = facts?.settings
+      const limitColor = (pct: number) => (pct >= 95 ? PALETTE.fail : pct >= 80 ? PALETTE.wait : PALETTE.ok)
+      const limitName = (kind: string) => ({ five_hour: 'five hour', seven_day: 'seven day', spend_limit: 'spend' })[kind] ?? kind.replace(/_/g, ' ')
+      const resets = worst?.resetsAt ? ` · ${duration(Math.max(0, worst.resetsAt - now)).replace(/ 0s$/, '')}` : ''
+      const labelW = 10
+      const figureW = 5
+      const barW = Math.max(3, inner - labelW - figureW)
+      const limitRow = (l: (typeof limits)[number]) => {
+        const color = limitColor(l.percentUsed)
+        return (
+          <Box key={`limit-${l.kind}`}>
+            {cell(labelW, line(limitName(l.kind), { dim: true }))}
+            {barOf(`limit-${l.kind}-bar`, l.percentUsed, 100, barW, color)}
+            {flush(figureW, line(`${Math.round(l.percentUsed)}%`, { color, bold: true }))}
+          </Box>
+        )
+      }
       return frame(
         'config',
         w,
         'inactive',
         <>
           <Box justifyContent="space-between">
-            {line(w - 4 >= 24 ? 'CONFIG & LIMITS' : 'CONFIG', { bold: true })}
-            {line(isOk ? '[ OK ✓ ]' : `[ ${Math.round(worst)}% ]`, { color: isOk ? PALETTE.ok : PALETTE.wait })}
+            {line(inner >= 24 ? 'CONFIG & LIMITS' : 'CONFIG', { bold: true })}
+            <Box flexShrink={0}>{line(isOk ? ' [ OK ✓ ]' : ` [ ${Math.round(worst.percentUsed)}%${resets} ]`, { color: isOk ? PALETTE.ok : limitColor(worst.percentUsed) })}</Box>
           </Box>
           {pair('model', 'model:', settings?.model ?? (facts ? family(facts.model) : '…'), PALETTE.sonnet)}
           {pair('mode', 'mode:', settings?.mode ?? 'default', PALETTE.plain)}
           {pair('context', 'context:', facts ? `${tokens(facts.window)} window` : '…', PALETTE.ok)}
-          <Box flexDirection="column">
-            {limits.map(l => pair(`limit-${l.kind}`, `${l.kind.replace(/_/g, ' ')}:`, `${Math.round(l.percentUsed)}% used`, l.percentUsed >= 80 ? PALETTE.wait : PALETTE.ok))}
-          </Box>
+          <Box flexDirection="column">{limits.length > 0 ? limits.map(limitRow) : pair('limits', 'limits:', facts ? 'none read yet' : '…', PALETTE.plain)}</Box>
           {pair('asks', 'asks:', `${settings?.asks ?? 0} rules`, PALETTE.plain)}
           {pair('subagents', 'subagents:', settings?.subagentModel ? `${settings.subagentModel} · env` : 'per helper', PALETTE.haiku)}
         </>,

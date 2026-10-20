@@ -206,7 +206,7 @@ describe('events in the transcripts', () => {
   const from = new Date(2026, 9, 20).getTime()
   const to = new Date(2026, 9, 21).getTime()
   const noon = new Date(2026, 9, 20, 12).toISOString()
-  const state = (): EventState => ({ root: '/f', models: { reviewer: 'opus' }, pending: {}, events: [], helpers: {}, known: new Set() })
+  const state = (): EventState => ({ root: '/f', models: { reviewer: 'opus' }, pending: {}, events: [], helpers: {}, moments: {}, known: new Set() })
   const call = (id: string, name: string, input: Record<string, unknown>, cwd = '/f/yonder') => ({
     type: 'assistant',
     timestamp: noon,
@@ -264,6 +264,19 @@ describe('events in the transcripts', () => {
       reviewer: { runs: 1, tokens: 106_689, ms: 503_770, lastAt: Date.parse(noon), model: 'claude-opus-5-5' },
       Explore: { runs: 1, tokens: 0, ms: 0, lastAt: Date.parse(noon), model: null },
     })
+  })
+
+  test("the Opus helpers' calls by moment: the reviewer's the push, the architect's by its brief, each once", () => {
+    const s = state()
+    eventRow(call('m1', 'Agent', { subagent_type: 'reviewer', description: 'Review the riddles' }), from, to, s)
+    eventRow(call('m2', 'Agent', { subagent_type: 'architect', description: 'The plan for the panel' }), from, to, s)
+    eventRow(call('m3', 'Agent', { subagent_type: 'architect', description: 'The same test failing again' }), from, to, s)
+    eventRow(call('m4', 'Agent', { subagent_type: 'architect', description: 'Sign off the whole change' }), from, to, s)
+    eventRow(call('m5', 'Agent', { subagent_type: 'Explore', description: 'Find the plan' }), from, to, s)
+    // A line read again counts nothing more.
+    eventRow(call('m1', 'Agent', { subagent_type: 'reviewer', description: 'Review the riddles' }), from, to, s)
+    const at = Date.parse(noon)
+    expect(s.moments).toEqual({ push: { runs: 1, lastAt: at }, plan: { runs: 1, lastAt: at }, error: { runs: 1, lastAt: at }, done: { runs: 1, lastAt: at } })
   })
 
   test('a push the user allowed or refused, never one a rule let through, nor another command', () => {

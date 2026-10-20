@@ -18,7 +18,8 @@ import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, 
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 
-import type { BoardCard, HarnessEvent, HelperDay, HelperDef, ModelDay, RepoRow, Snapshot } from '../types'
+import { momentOf } from '../hooks/format'
+import type { BoardCard, HarnessEvent, HelperDay, HelperDef, ModelDay, MomentDay, RepoRow, Snapshot } from '../types'
 
 const CHUNK = 16 * 1024 * 1024
 
@@ -259,8 +260,9 @@ export function readBoard(dir: string, today: string, kit?: CardKit): BoardCard[
 
 // (version 2 added the events, 3 left every Bash call out of the pending
 // ones but pushes and releases, 4 added each helper's day: an older day
-// cache is read again whole; 5 keeps every event id seen today)
-const CACHE_VERSION = 5
+// cache is read again whole; 5 keeps every event id seen today, 6 the
+// Opus helpers' calls by moment)
+const CACHE_VERSION = 6
 
 type UsageCache = {
   version: number
@@ -271,6 +273,7 @@ type UsageCache = {
   pending: Record<string, PendingCall>
   events: HarnessEvent[]
   helpers: Record<string, HelperDay>
+  moments: Record<string, MomentDay>
   known: string[]
 }
 
@@ -354,6 +357,8 @@ export type EventState = {
   pending: Record<string, PendingCall>
   events: HarnessEvent[]
   helpers: Record<string, HelperDay>
+  /** The Opus helpers' calls today by moment, counted as each starts. */
+  moments: Record<string, MomentDay>
   /** Every event id seen today: the events keep only the last 40, a reread line must not come back as new. */
   known: Set<string>
 }
@@ -402,8 +407,22 @@ export function eventRow(row: Row, from: number, to: number, state: EventState) 
       if (block.name === 'Agent' || block.name === 'Task') {
         const type = String(input.subagent_type ?? 'general-purpose')
         const model = typeof input.model === 'string' ? input.model : state.models[type]
-        const description = typeof input.description === 'string' ? `: ${input.description}` : ''
-        addEvent(state, { id: `${block.id}:start`, at, source: 'helper', tone: 'info', repo: repoOf(state.root, cwd), text: `${type} started${description}`, ...(model ? { model } : {}) })
+        const brief = typeof input.description === 'string' ? input.description : ''
+        const isNew = addEvent(state, {
+          id: `${block.id}:start`,
+          at,
+          source: 'helper',
+          tone: 'info',
+          repo: repoOf(state.root, cwd),
+          text: `${type} started${brief ? `: ${brief}` : ''}`,
+          ...(model ? { model } : {}),
+        })
+        const moment = momentOf(type, brief)
+        if (isNew && moment) {
+          const day = (state.moments[moment] ??= { runs: 0, lastAt: 0 })
+          day.runs += 1
+          day.lastAt = Math.max(day.lastAt, at)
+        }
       } else if (block.name === 'Bash' && typeof input.command === 'string' && ASKED.test(input.command)) {
         state.pending[block.id] = { at, repo: repoOf(state.root, cwd, input.command), command: askedPart(input.command) }
       }
@@ -544,17 +563,17 @@ export async function readTranscripts(
   day: string,
   root: string,
   helpers: Record<string, string> = {},
-): Promise<{ usage: Snapshot['usage']; events: HarnessEvent[]; helperDay: Record<string, HelperDay> }> {
+): Promise<{ usage: Snapshot['usage']; events: HarnessEvent[]; helperDay: Record<string, HelperDay>; moments: Record<string, MomentDay> }> {
   const [from, to] = dayBounds(day)
   const cachePath = join(cacheDir, `usage-${day}.json`)
-  let cache: UsageCache = { version: CACHE_VERSION, day, files: {}, seen: [], models: {}, pending: {}, events: [], helpers: {}, known: [] }
+  let cache: UsageCache = { version: CACHE_VERSION, day, files: {}, seen: [], models: {}, pending: {}, events: [], helpers: {}, moments: {}, known: [] }
   try {
     const saved = JSON.parse(readFileSync(cachePath, 'utf8')) as UsageCache
     if (saved.day === day && saved.version === CACHE_VERSION) cache = saved
   } catch {}
 
   const seen = new Set(cache.seen)
-  const state: EventState = { root, models: helpers, pending: cache.pending, events: cache.events, helpers: cache.helpers, known: new Set(cache.known) }
+  const state: EventState = { root, models: helpers, pending: cache.pending, events: cache.events, helpers: cache.helpers, moments: cache.moments, known: new Set(cache.known) }
   const files = listTranscripts(projects, from)
   for (const { path, size } of files) {
     const known = cache.files[path]?.offset ?? 0
@@ -581,7 +600,7 @@ export async function readTranscripts(
   const models = Object.values(cache.models).sort(
     (a, b) => b.input + b.cacheRead + b.cacheWrite + b.output - (a.input + a.cacheRead + a.cacheWrite + a.output),
   )
-  return { usage: { day, models, files: files.length }, events: cache.events, helperDay: cache.helpers }
+  return { usage: { day, models, files: files.length }, events: cache.events, helperDay: cache.helpers, moments: cache.moments }
 }
 
 // --- the command ----------------------------------------------------------
@@ -625,6 +644,7 @@ if (import.meta.main) {
       events: [...log, ...transcripts.events].sort((a, b) => b.at - a.at).slice(0, MAX_EVENTS),
       helpers,
       helperDay: transcripts.helperDay,
+      moments: transcripts.moments,
     }
     const text = JSON.stringify(snapshot)
     const tmp = `${shared}.${process.pid}`

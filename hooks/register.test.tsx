@@ -228,7 +228,8 @@ test('the pane draws the board, the checks and the day on every surface', async 
       await has('CONFIG & LIMITS')
       await has(/^GATES /)
       await has(/^back to /)
-      await has('[ reviewer · architect ]')
+      // The planner says what it is for, each moment who it calls.
+      await has('second opinions')
       await has('◇ before a push')
       // The helpers fanned out: the busiest today first, the planner's left to it.
       await has('Explore')
@@ -257,6 +258,62 @@ test('the pane draws the board, the checks and the day on every surface', async 
   expect(runs[0]?.[0]).toBe('bun')
   expect(runs[0]?.slice(2)).toEqual(['--root', '/Users/someone/code/wow-addons', '--fresh'])
   expect(statuses.at(-1)).toBe('harness · board 1 waiting · checks 1/2 · today opus 109M haiku 735k')
+})
+
+test("the plan's limits are meters, the planner's moments say who, how often and their last word", async ($, on) => {
+  mock.env(on, { HOME: '/Users/someone' })
+  const now = SNAPSHOT.at + 3000
+  const clock = mock.clock(on, { now })
+  const snap: Snapshot = { ...SNAPSHOT, moments: { push: { runs: 2, lastAt: SNAPSHOT.at - 60_000 } } }
+  on('session.root', () => ({ value: '/Users/someone/code/wow-addons' }))
+  on('session.surfaces', () => ({ value: ['desktop'] }))
+  on('process.run', () => ({ value: { exitCode: 0, stdout: JSON.stringify(snap), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.panes', () => ({ value: [{ id: 'harness', title: 'Harness', isShown: true, isFocused: false, isPlaced: true }] }))
+  on('command.register', ($, e) => ({ value: { command: e.name } }))
+  on('agent.list', () => ({ value: [] }))
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('session.usage', () => ({
+    value: {
+      context: { tokens: 403_000, window: 1_000_000, percent: 40 },
+      rateLimits: [
+        { kind: 'five_hour', percentUsed: 28 },
+        { kind: 'seven_day', percentUsed: 86, resetsAt: new Date(now + (2 * 60 + 10) * 60_000).toISOString() },
+      ],
+    },
+  }))
+  on('settings.read', () => ({ value: { model: 'opus' } }))
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/Users/someone/code/wow-addons', surface: 'desktop', isInteractive: true })
+  await clock.advance(1100)
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    for (const bodyColumns of [110, 80, 48]) {
+      const ui = await $.ui.mount({ plugin: 'harness-view', surface, ...PANE, props: { ...PANE.props, bodyColumns } })
+      await ui.press({ key: 'refresh' })
+      const at = `${surface} ${bodyColumns}`
+      const has = async (text: string | RegExp, isThere = true) => expect([at, text, (await ui.find({ text })) !== undefined]).toEqual([at, text, isThere])
+      // Each window a meter, its colour by how full; the worst past 80% in the title, with its reset.
+      await has('five hour')
+      await has('28%')
+      await has('seven day')
+      await has('86%')
+      await has(/^ \[ 86% · 2h (9|10)m \]$/)
+      await has(/% used$/, false)
+      // A moment called today is filled, the others hollow; the counts by moment.
+      await has('◆ before a push')
+      await has('◇ before a plan')
+      if (bodyColumns >= 96) {
+        // Who each moment calls, and its last word: the newest verdict, or why the architect stays off.
+        await has(' reviewer')
+        await has('no findings')
+        await has('off in an opus session')
+        await has('their time')
+      }
+      await ui.unmount()
+    }
+  }
 })
 
 test('a failing snapshot says why in the pane', async ($, on) => {

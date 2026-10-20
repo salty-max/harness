@@ -31,3 +31,19 @@ export function bar(value: number, max: number, width: number, rest = '░'): { 
   const full = Math.floor(eighths / 8)
   return { filled: '█'.repeat(full) + part, empty: rest.repeat(width - full - (part ? 1 : 0)) }
 }
+
+/** The four moments the family calls an Opus helper at (CLAUDE.md, "Helpers"). */
+export type Moment = 'plan' | 'error' | 'push' | 'done'
+
+/**
+ * The moment a helper's run is at, by its type and its brief: the reviewer's
+ * is the push, the architect's read from what it was asked; other helpers
+ * have none.
+ */
+export function momentOf(type: string, description: string): Moment | null {
+  if (type === 'reviewer') return 'push'
+  if (type !== 'architect') return null
+  if (/error|fail|again|twice|deadlock/i.test(description)) return 'error'
+  if (/done|finish|sign/i.test(description)) return 'done'
+  return 'plan'
+}

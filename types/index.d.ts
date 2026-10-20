@@ -67,6 +67,9 @@ export type HelperDef = { name: string; model: string | null; description: strin
 /** A helper's runs today, from the transcripts. */
 export type HelperDay = { runs: number; tokens: number; ms: number; lastAt: number; model: string | null }
 
+/** The Opus helpers' calls today at one moment (`plan`, `error`, `push`, `done`: hooks/format.ts's momentOf), counted as each starts. */
+export type MomentDay = { runs: number; lastAt: number }
+
 /** What `bin/snapshot.ts` prints: the numbers every session shares. */
 export type Snapshot = {
   at: number
@@ -78,6 +81,8 @@ export type Snapshot = {
   /** The family's helpers, and each helper's runs today by its type. */
   helpers: HelperDef[]
   helperDay: Record<string, HelperDay>
+  /** Today's calls by moment; absent in a snapshot of an older version. */
+  moments?: Record<string, MomentDay>
 }
 
 /** The session the panel is drawn in. */
@@ -89,7 +94,7 @@ export type SessionFacts = {
   percent: number | null
   costUsd: number | null
   /** The plan's limits as the engine reports them (`five_hour`, `seven_day`, ...). */
-  rateLimits: { kind: string; percentUsed: number }[]
+  rateLimits: { kind: string; percentUsed: number; resetsAt: number | null }[]
   /** The settings the panel's Config box shows. */
   settings: { model: string | null; mode: string | null; effort: string | null; asks: number; subagentModel: string | null }
 }
