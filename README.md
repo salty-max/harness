@@ -27,9 +27,10 @@ holds the gates, the part of the harness that runs in code.
   the subagent model (`CLAUDE_CODE_SUBAGENT_MODEL`, else per helper).
 - **Gates**: checks fresh (HEAD stamped), reviews current, cards waiting.
 - **Helpers**, fanned out from the hand-off: running ones first, then the
-  family's (`.claude/agents/*.md`) and today's, the busiest first, the
-  planner's left to it. Each with its model, status, its share of today's
-  helper tokens, runs and tokens (or its live context and calls).
+  family's (`.claude/agents/*.md`) and today's, the busiest first (by runs,
+  then the latest), the planner's left to it. Each with its model, status,
+  its share of today's helper tokens, runs and tokens (or its live context
+  and calls).
 - **Back to lead** (dashed): the last helper's handback, tokens and time.
 - **Today**, **Board**: tokens by model, the board's cards (below).
 - **Repositories**: each family repository's newest check stamp

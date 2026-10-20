@@ -226,22 +226,32 @@ export function marks(width: number, xs: number[], ch: string): string {
   return row.join('')
 }
 
+// A joint by the strokes it has: up, down, left, right.
+const JOINTS: Record<string, string> = {
+  lr: '─', ud: '│', u: '│', d: '│', '': ' ',
+  dr: '┌', dl: '┐', ur: '└', ul: '┘',
+  dlr: '┬', ulr: '┴', udr: '├', udl: '┤', udlr: '┼',
+  l: '─', r: '─',
+}
+
 /**
- * The fan-out from one line at `from` to boxes centred at `xs`, or the merge
- * back (`isMerge`): `┌──┴──┐` / `└──┬──┘`, a `┼` where the line meets a box's
- * centre.
+ * The fan-out from one line at `from` down to boxes centred at `xs`, or the
+ * merge back up from them (`isMerge`): `┌──┴──┐` / `└──┬──┘`, each joint
+ * drawn by the strokes it has, a box under the line's own end included.
  */
 export function branch(width: number, from: number, xs: number[], isMerge = false): string {
   const row = Array.from({ length: Math.max(0, width) }, () => ' ')
   if (xs.length === 0) return row.join('')
   const lo = Math.min(from, ...xs)
   const hi = Math.max(from, ...xs)
-  for (let x = lo; x <= hi && x < row.length; x++) row[x] = '─'
-  for (const x of xs) if (x < row.length) row[x] = isMerge ? '┴' : '┬'
-  if (from < row.length) row[from] = xs.includes(from) ? '┼' : isMerge ? '┬' : '┴'
-  if (lo < row.length) row[lo] = lo === from ? (isMerge ? '└' : '┌') : isMerge ? '└' : '┌'
-  if (hi < row.length) row[hi] = isMerge ? '┘' : '┐'
-  if (lo === hi && lo < row.length) row[lo] = '│'
+  for (let x = lo; x <= hi && x < row.length; x++) {
+    const isBox = xs.includes(x)
+    const isStem = x === from
+    const up = isMerge ? isBox : isStem
+    const down = isMerge ? isStem : isBox
+    const key = `${up ? 'u' : ''}${down ? 'd' : ''}${x > lo ? 'l' : ''}${x < hi ? 'r' : ''}`
+    row[x] = JOINTS[key] ?? '─'
+  }
   return row.join('')
 }
 
@@ -349,13 +359,12 @@ async function refreshSnapshot($: EngineInterface, isFresh = false) {
   }
 }
 
-async function refreshSession($: EngineInterface, lastModel?: string) {
-  const [model, usage, previous, settings, effort, subagentModel] = await Promise.all([
+async function refreshSession($: EngineInterface, lastModel?: string, lastEffort?: string) {
+  const [model, usage, previous, settings, subagentModel] = await Promise.all([
     $.session.model(),
     $.session.usage(),
     read($, session),
     $.settings.read().catch(() => ({}) as Record<string, unknown>),
-    $.env.get('CLAUDE_EFFORT'),
     $.env.get('CLAUDE_CODE_SUBAGENT_MODEL'),
   ])
   const s = settings as { model?: unknown; effortLevel?: unknown; permissions?: { defaultMode?: unknown; ask?: unknown } }
@@ -371,7 +380,8 @@ async function refreshSession($: EngineInterface, lastModel?: string) {
     settings: {
       model: text(s.model),
       mode: text(s.permissions?.defaultMode),
-      effort: text(effort) ?? text(s.effortLevel),
+      // The last main-loop call's effort, else the settings' (none: the model's default).
+      effort: lastEffort ?? previous?.settings?.effort ?? text(s.effortLevel),
       asks: Array.isArray(s.permissions?.ask) ? s.permissions.ask.length : 0,
       subagentModel: text(subagentModel),
     },
@@ -459,7 +469,8 @@ export const register: Register = on => {
     try {
       const usage = result?.usage
       if (e.agentId === undefined) {
-        void refreshSession($, usage?.model ?? e.model).catch(() => {})
+        const effort = typeof e.effort === 'string' ? e.effort : undefined
+        void refreshSession($, usage?.model ?? e.model, effort).catch(() => {})
       } else if (usage) {
         const id = e.agentId
         const context = usage.input_tokens + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0)
@@ -680,7 +691,7 @@ export const register: Register = on => {
           <Box flexDirection="column" marginTop={1}>
             {pair('runs', 'runs today', String(opusRuns), PALETTE.opus)}
             {pair('tok', 'opus tokens', tokens(opusTokens), PALETTE.opus)}
-            {pair('ctx', 'main context', facts ? `${tokens(facts.contextTokens)} · ${Math.round(facts.percent ?? 0)}%` : '…', PALETTE.ok)}
+            {pair('ctx', 'context', facts ? `${tokens(facts.contextTokens)} · ${Math.round(facts.percent ?? 0)}%` : '…', PALETTE.ok)}
           </Box>
         </>,
       )
@@ -800,16 +811,21 @@ export const register: Register = on => {
           picks.push({ name: a.type, model: a.steps?.model ?? day[a.type]?.model ?? def?.model ?? null, description: a.description, agent: a })
         }
       }
-      // Then the helpers that aren't the planner's, the busiest today first.
+      // Then the helpers that aren't the planner's, the busiest today first (by runs, then the latest).
       const rest = helpers
         .filter(h => family(h.model) !== 'opus' && !seen.has(h.name))
         .map(h => ({ name: h.name, model: day[h.name]?.model ?? h.model, description: h.description }))
       for (const [name, d] of Object.entries(day)) if (!seen.has(name) && !rest.some(r => r.name === name) && !opusDefs.some(o => o.name === name)) rest.push({ name, model: d.model, description: '' })
-      rest.sort((a, b) => (day[b.name]?.lastAt ?? 0) - (day[a.name]?.lastAt ?? 0))
+      rest.sort((a, b) => (day[b.name]?.runs ?? 0) - (day[a.name]?.runs ?? 0) || (day[b.name]?.lastAt ?? 0) - (day[a.name]?.lastAt ?? 0))
       for (const r of rest) if (picks.length < k) picks.push(r)
-      const xs = centres(picks.length, bw, gap)
+      // Fewer boxes than room: centred, the middle one (an odd count) right under the line.
+      const n = Math.max(1, picks.length)
+      const used = n * bw + (n - 1) * gap
+      const packed = centres(n, bw, gap)
+      const offset = Math.max(0, Math.min(w - used, n % 2 === 1 ? Math.floor(w / 2) - (packed[Math.floor(n / 2)] ?? 0) : Math.floor((w - used) / 2)))
+      const xs = picks.length === 0 ? [] : packed.map(x => x + offset)
       const boxes = (
-        <Box key="helpers" width={w}>
+        <Box key="helpers" width={w} paddingLeft={offset}>
           {picks.map((p, i) => {
             const color = modelColor(p.model)
             const today = day[p.name]
@@ -885,12 +901,12 @@ export const register: Register = on => {
             </Box>
           </Box>
           <Text color="inactive" wrap="truncate-end">
-            {fan.count > 1 ? branch(w, c, fan.xs) : marks(w, [c], '│')}
+            {branch(w, c, fan.xs.length > 0 ? fan.xs : [c])}
           </Text>
           {connector('arrows', w, fan.xs, '▼', PALETTE.haiku)}
           {fan.boxes}
           <Text color="inactive" wrap="truncate-end">
-            {fan.count > 1 ? branch(w, c, fan.xs, true) : marks(w, [c], '│')}
+            {branch(w, c, fan.xs.length > 0 ? fan.xs : [c], true)}
           </Text>
           {connector('to-back', w, [c], '●')}
           <Box width={w} justifyContent="center">

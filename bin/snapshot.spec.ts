@@ -204,7 +204,7 @@ describe('events in the transcripts', () => {
   const from = new Date(2026, 9, 20).getTime()
   const to = new Date(2026, 9, 21).getTime()
   const noon = new Date(2026, 9, 20, 12).toISOString()
-  const state = (): EventState => ({ root: '/f', models: { reviewer: 'opus' }, pending: {}, events: [], helpers: {} })
+  const state = (): EventState => ({ root: '/f', models: { reviewer: 'opus' }, pending: {}, events: [], helpers: {}, known: new Set() })
   const call = (id: string, name: string, input: Record<string, unknown>, cwd = '/f/yonder') => ({
     type: 'assistant',
     timestamp: noon,
@@ -249,6 +249,15 @@ describe('events in the transcripts', () => {
       to,
       s,
     )
+    // ...and still once when the 40 kept events have long dropped it.
+    s.events.length = 0
+    eventRow(
+      result('t1', { toolUseResult: { status: 'completed', agentType: 'reviewer', resolvedModel: 'claude-opus-5-5', totalTokens: 106_689, totalDurationMs: 503_770 } }),
+      from,
+      to,
+      s,
+    )
+    expect(s.events).toEqual([])
     expect(s.helpers).toEqual({
       reviewer: { runs: 1, tokens: 106_689, ms: 503_770, lastAt: Date.parse(noon), model: 'claude-opus-5-5' },
       Explore: { runs: 1, tokens: 0, ms: 0, lastAt: Date.parse(noon), model: null },

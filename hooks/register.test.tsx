@@ -141,6 +141,10 @@ describe('numbers', () => {
     expect(branch(9, 4, [1, 7])).toBe(' ┌──┴──┐ ')
     expect(branch(9, 4, [1, 7], true)).toBe(' └──┬──┘ ')
     expect(branch(5, 2, [2])).toBe('  │  ')
+    // The line's own end over a box, and past the last box.
+    expect(branch(9, 7, [1, 7])).toBe(' ┌─────┤ ')
+    expect(branch(9, 7, [1, 7], true)).toBe(' └─────┤ ')
+    expect(branch(9, 8, [1, 6])).toBe(' ┌────┬─┘')
   })
 
   test('columns as asked when they fit, narrower in step when they do not', async () => {

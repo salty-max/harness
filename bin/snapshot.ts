@@ -220,8 +220,8 @@ export function readBoard(dir: string, today: string, kit?: CardKit): BoardCard[
 
 // (version 2 added the events, 3 left every Bash call out of the pending
 // ones but pushes and releases, 4 added each helper's day: an older day
-// cache is read again whole)
-const CACHE_VERSION = 4
+// cache is read again whole; 5 keeps every event id seen today)
+const CACHE_VERSION = 5
 
 type UsageCache = {
   version: number
@@ -232,6 +232,7 @@ type UsageCache = {
   pending: Record<string, PendingCall>
   events: HarnessEvent[]
   helpers: Record<string, HelperDay>
+  known: string[]
 }
 
 function listTranscripts(dir: string, since: number): { path: string; size: number }[] {
@@ -314,6 +315,8 @@ export type EventState = {
   pending: Record<string, PendingCall>
   events: HarnessEvent[]
   helpers: Record<string, HelperDay>
+  /** Every event id seen today: the events keep only the last 40, a reread line must not come back as new. */
+  known: Set<string>
 }
 
 // The part of a command a push or release prompt is about (the root's ask rules).
@@ -335,9 +338,10 @@ export function repoOf(root: string, cwd: string | undefined, command = ''): str
   return cwd?.startsWith(`${root}/`) ? (cwd.slice(root.length + 1).split('/')[0] ?? '') : ''
 }
 
-/** Adds an event once, by its id; false when it was there already. */
+/** Adds an event once a day, by its id; false when it was seen already. */
 function addEvent(state: EventState, event: HarnessEvent): boolean {
-  if (state.events.some(e => e.id === event.id)) return false
+  if (event.id === undefined || state.known.has(event.id)) return false
+  state.known.add(event.id)
   state.events.push(event)
   return true
 }
@@ -504,14 +508,14 @@ export async function readTranscripts(
 ): Promise<{ usage: Snapshot['usage']; events: HarnessEvent[]; helperDay: Record<string, HelperDay> }> {
   const [from, to] = dayBounds(day)
   const cachePath = join(cacheDir, `usage-${day}.json`)
-  let cache: UsageCache = { version: CACHE_VERSION, day, files: {}, seen: [], models: {}, pending: {}, events: [], helpers: {} }
+  let cache: UsageCache = { version: CACHE_VERSION, day, files: {}, seen: [], models: {}, pending: {}, events: [], helpers: {}, known: [] }
   try {
     const saved = JSON.parse(readFileSync(cachePath, 'utf8')) as UsageCache
     if (saved.day === day && saved.version === CACHE_VERSION) cache = saved
   } catch {}
 
   const seen = new Set(cache.seen)
-  const state: EventState = { root, models: helpers, pending: cache.pending, events: cache.events, helpers: cache.helpers }
+  const state: EventState = { root, models: helpers, pending: cache.pending, events: cache.events, helpers: cache.helpers, known: new Set(cache.known) }
   const files = listTranscripts(projects, from)
   for (const { path, size } of files) {
     const known = cache.files[path]?.offset ?? 0
@@ -524,6 +528,7 @@ export async function readTranscripts(
 
   cache.seen = [...seen]
   cache.events = state.events.sort((a, b) => b.at - a.at).slice(0, MAX_EVENTS)
+  cache.known = [...state.known]
   mkdirSync(cacheDir, { recursive: true })
   // A week of days is plenty: older day caches go.
   for (const name of readdirSync(cacheDir)) {
