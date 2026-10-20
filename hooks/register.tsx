@@ -415,32 +415,53 @@ async function refreshStatus($: EngineInterface) {
   if (isChanged('status', line)) $.ui.status(line)
 }
 
+/**
+ * Starts the mod's work in a family session and stops it anywhere else; true
+ * when it started now. Read again after the start: the desktop starts a
+ * session in a spare folder of its own (`~/.claude/spares/`) and moves it to
+ * the folder picked afterwards, with no new start.
+ */
+async function gate($: EngineInterface, isStart = false): Promise<boolean> {
+  const isFamily = await isFamilySession($).catch(() => false)
+  if (isFamily === isActive && !isStart) return false
+  // Decided and the timers swapped with no await between, so two reads at once start them once.
+  isActive = isFamily
+  for (const timer of timers) timer.cancel()
+  timers = []
+  ticker?.cancel()
+  ticker = null
+  if (!isActive) {
+    if (written.delete('status')) $.ui.status(undefined)
+    return false
+  }
+  timers = [
+    $.clock.every(SNAPSHOT_MS, () => void refreshSnapshot($).catch(() => {})),
+    $.clock.every(SESSION_MS, () => {
+      void refreshSession($).catch(() => {})
+      void refreshAgents($).catch(() => {})
+    }),
+  ]
+  await $.command.register({
+    name: 'harness',
+    description: 'Open the harness panel: session, subagents, board, checks, usage today',
+  })
+  void refreshSnapshot($).catch(() => {})
+  void refreshSession($).catch(() => {})
+  void refreshAgents($).catch(() => {})
+  void $.ui.open({ id: PANE, title: TITLE }).catch(() => {})
+  return true
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    isActive = await isFamilySession($).catch(() => false)
-    if (!isActive) {
-      for (const timer of timers) timer.cancel()
-      timers = []
-      return next(e)
-    }
-    await $.command.register({
-      name: 'harness',
-      description: 'Open the harness panel: session, subagents, board, checks, usage today',
-    })
-    for (const timer of timers) timer.cancel()
-    ticker?.cancel()
-    ticker = null
-    timers = [
-      $.clock.every(SNAPSHOT_MS, () => void refreshSnapshot($).catch(() => {})),
-      $.clock.every(SESSION_MS, () => {
-        void refreshSession($).catch(() => {})
-        void refreshAgents($).catch(() => {})
-      }),
-    ]
-    void refreshSnapshot($).catch(() => {})
-    void refreshSession($).catch(() => {})
-    void refreshAgents($).catch(() => {})
-    void $.ui.open({ id: PANE, title: TITLE }).catch(() => {})
+    await gate($, true).catch(() => {})
+
+    return next(e)
+  })
+
+  // A desktop session moved out of its spare folder: the gate opens before the prompt's turn.
+  on('prompt.submit', async ($, e, next) => {
+    await gate($).catch(() => {})
 
     return next(e)
   })
@@ -457,7 +478,11 @@ export const register: Register = on => {
 
   // The desktop attaches after the session starts: read at once, not at the next tick.
   on('session.attach', async ($, e, next) => {
-    if (isActive) void refreshSnapshot($).catch(() => {})
+    void gate($)
+      .then(isStarted => {
+        if (isActive && !isStarted) void refreshSnapshot($).catch(() => {})
+      })
+      .catch(() => {})
 
     return next(e)
   })

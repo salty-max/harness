@@ -293,6 +293,45 @@ for (const [where, project, isShown] of [
   })
 }
 
+for (const [moment, move] of [
+  ['the next prompt', ($: Parameters<Parameters<typeof test>[1]>[0]) => $.prompt.submit({ text: 'hi' })],
+  ['the desktop attaching', ($: Parameters<Parameters<typeof test>[1]>[0]) => $.session.attach({ surface: 'desktop', clientId: 'desktop:default' })],
+] as const) {
+  test(`a session moved out of the desktop's spare folder opens the pane at ${moment}`, async ($, on) => {
+    mock.env(on, { HOME: '/Users/someone' })
+    mock.clock(on)
+    let project = '/Users/someone/.claude/spares/spare-abc'
+    const opened: string[] = []
+    const commands: string[] = []
+    on('session.root', () => ({ value: project }))
+    on('session.surfaces', () => ({ value: ['desktop'] }))
+    on('process.run', () => ({ value: { exitCode: 0, stdout: JSON.stringify(SNAPSHOT), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+    on('ui.status', () => ({ value: undefined }))
+    on('ui.open', ($, e) => {
+      opened.push(e.id)
+      return { value: { isPlaced: true } }
+    })
+    on('command.register', ($, e) => {
+      commands.push(e.name)
+      return { value: { command: e.name } }
+    })
+    on('session.start', ($, e) => ({ cwd: e.cwd }))
+    on('session.attach', ($, e) => ({ clientId: e.clientId }))
+    on('prompt.submit', ($, e) => ({ text: e.text }))
+    await $.session.start({ cwd: project, surface: 'desktop', isInteractive: true })
+    expect([opened, commands]).toEqual([[], []])
+
+    project = '/Users/someone/code/wow-addons'
+    await move($)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect([opened, commands]).toEqual([['harness'], ['harness']])
+    // Read again with nothing moved, the gate stays as it is.
+    await move($)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect([opened, commands]).toEqual([['harness'], ['harness']])
+  })
+}
+
 test('a headless run reads nothing, /harness opens the pane and reads anew', async ($, on) => {
   mock.env(on, { HOME: '/Users/someone' })
   mock.clock(on)

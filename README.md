@@ -92,7 +92,11 @@ untouched. `/harness` opens the pane again once closed.
 
 The mod stays silent in a session whose project root is outside
 `~/code/wow-addons` (or `WOW_ADDONS_ROOT`), and reads nothing in a run
-that draws nowhere (`claude -p`) until a surface attaches.
+that draws nowhere (`claude -p`) until a surface attaches. The root is read
+again when a surface attaches and at each prompt, not only at the start:
+the desktop starts a session in a spare folder of its own
+(`~/.claude/spares/`) and moves it to the folder picked afterwards, with no
+new start, so `/harness` and the pane come with the first prompt there.
 
 ## Where it loads from
 
