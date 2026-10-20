@@ -1,0 +1,6 @@
+{
+  "name": "harness-view",
+  "version": "0.1.0",
+  "description": "The wow-addons harness at work: the session's model and context, its subagents, each repository's check stamp and review, today's usage by model, and the task board",
+  "types": "./types/index.d.ts"
+}
