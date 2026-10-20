@@ -2,7 +2,27 @@ import type { RenderSurface } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
 import type { Snapshot } from '../types'
-import { agentTone, bar, checkMark, clockTime, eventText, fit, modelColor, modelName, sourceColor, statusLine, tokens, toneColor, verdictTone } from './register'
+import {
+  agentColor,
+  bar,
+  branch,
+  centre,
+  checkMark,
+  clockTime,
+  eventFigure,
+  eventText,
+  fit,
+  marks,
+  modelColor,
+  modelName,
+  PALETTE,
+  sourceColor,
+  sourceLabel,
+  statusLine,
+  tokens,
+  toneColor,
+  verdictTone,
+} from './register'
 
 const SNAPSHOT: Snapshot = {
   at: 1_760_940_000_000,
@@ -52,6 +72,16 @@ const SNAPSHOT: Snapshot = {
     { at: 1_760_939_700_000, source: 'board', tone: 'wait', repo: 'addon-kit', text: 'The harness panel running → waiting-test' },
     { at: 1_760_939_600_000, source: 'review', tone: '', repo: 'yonder', text: 'f4ab31a no findings' },
   ],
+  helpers: [
+    { name: 'reviewer', model: 'opus', description: 'Reviews one change.' },
+    { name: 'architect', model: 'opus', description: 'A second opinion.' },
+    { name: 'data-scout', model: 'sonnet', description: 'Answers a data question.' },
+    { name: 'prose-reader', model: 'sonnet', description: 'Reads text cold.' },
+  ],
+  helperDay: {
+    reviewer: { runs: 2, tokens: 190_000, ms: 900_000, lastAt: 1_760_939_800_000, model: 'claude-opus-5-5' },
+    Explore: { runs: 1, tokens: 40_000, ms: 60_000, lastAt: 1_760_939_000_000, model: 'claude-haiku-5-5' },
+  },
 }
 
 const PANE = {
@@ -77,18 +107,18 @@ describe('numbers', () => {
   })
 
   test('a clean verdict is green, findings amber', async () => {
-    expect(verdictTone('no findings')).toBe('success')
-    expect(verdictTone('0 findings')).toBe('success')
-    expect(verdictTone('clean')).toBe('success')
-    expect(verdictTone('clean (7 findings fixed in f73192e)')).toBe('success')
-    expect(verdictTone('f4ab31a no findings')).toBe('success')
-    expect(verdictTone('f4ab31a 2 findings')).toBe('warning')
-    expect(verdictTone('2 findings')).toBe('warning')
-    expect(verdictTone('6 findings on 5c2476b, fixed in 1d0646a')).toBe('warning')
-    expect(verdictTone('3 findings, otherwise ok')).toBe('warning')
-    expect(verdictTone('not clean')).toBe('warning')
-    expect(verdictTone('looked')).toBe('text')
-    expect(verdictTone(null)).toBe('inactive')
+    expect(verdictTone('no findings')).toBe('ok')
+    expect(verdictTone('0 findings')).toBe('ok')
+    expect(verdictTone('clean')).toBe('ok')
+    expect(verdictTone('clean (7 findings fixed in f73192e)')).toBe('ok')
+    expect(verdictTone('f4ab31a no findings')).toBe('ok')
+    expect(verdictTone('f4ab31a 2 findings')).toBe('wait')
+    expect(verdictTone('2 findings')).toBe('wait')
+    expect(verdictTone('6 findings on 5c2476b, fixed in 1d0646a')).toBe('wait')
+    expect(verdictTone('3 findings, otherwise ok')).toBe('wait')
+    expect(verdictTone('not clean')).toBe('wait')
+    expect(verdictTone('looked')).toBe('plain')
+    expect(verdictTone(null)).toBe('none')
   })
 
   test('bars fill in eighths of a cell, a sliver for anything above zero', async () => {
@@ -98,6 +128,19 @@ describe('numbers', () => {
     expect(bar(0, 100, 3)).toEqual({ filled: '', empty: '░░░' })
     expect(bar(200, 100, 3)).toEqual({ filled: '███', empty: '' })
     expect(bar(5, 0, 2)).toEqual({ filled: '', empty: '░░' })
+    // The mock-up's checkered rest.
+    expect(bar(50, 100, 4, '▒')).toEqual({ filled: '██', empty: '▒▒' })
+  })
+
+  test("the diagram's lines: centred words, marks, the fan-out and the merge", async () => {
+    expect(centre('ab', 6)).toBe('  ab  ')
+    expect(centre('abcdef', 4)).toBe('abcd')
+    expect(marks(7, [1, 5], '▼')).toBe(' ▼   ▼ ')
+    expect(branch(11, 5, [1, 5, 9])).toBe(' ┌───┼───┐ ')
+    expect(branch(11, 5, [1, 5, 9], true)).toBe(' └───┼───┘ ')
+    expect(branch(9, 4, [1, 7])).toBe(' ┌──┴──┐ ')
+    expect(branch(9, 4, [1, 7], true)).toBe(' └──┬──┘ ')
+    expect(branch(5, 2, [2])).toBe('  │  ')
   })
 
   test('columns as asked when they fit, narrower in step when they do not', async () => {
@@ -108,17 +151,19 @@ describe('numbers', () => {
   })
 
   test('each model its colour, each status its own', async () => {
-    expect(modelColor('claude-opus-5-5')).toBe('#8b5cf6')
-    expect(modelColor('opus')).toBe('#8b5cf6')
-    expect(modelColor('claude-sonnet-5-5')).toBe('#f97316')
-    expect(modelColor('claude-haiku-4-5-20251001')).toBe('#3b82f6')
+    expect(modelColor('claude-opus-5-5')).toBe(PALETTE.opus)
+    expect(modelColor('opus')).toBe(PALETTE.opus)
+    expect(modelColor('claude-sonnet-5-5')).toBe(PALETTE.sonnet)
+    expect(modelColor('claude-haiku-4-5-20251001')).toBe(PALETTE.haiku)
     expect(modelColor(undefined)).toBe('inactive')
-    expect([toneColor('ok'), toneColor('wait'), toneColor('fail'), toneColor('info')]).toEqual(['success', 'warning', 'error', 'text'])
-    expect(toneColor('', 'f4ab31a no findings')).toBe('success')
-    expect(toneColor('', 'f4ab31a 2 findings')).toBe('warning')
-    expect([agentTone('running'), agentTone('completed'), agentTone('failed'), agentTone('killed')]).toEqual(['warning', 'success', 'error', 'error'])
-    expect(sourceColor({ source: 'helper', model: 'claude-haiku-5-5' })).toBe('#3b82f6')
-    expect(sourceColor({ source: 'test' })).toBe(sourceColor({ source: 'check' }))
+    expect([toneColor('ok'), toneColor('wait'), toneColor('fail'), toneColor('info')]).toEqual([PALETTE.ok, PALETTE.wait, PALETTE.fail, 'text'])
+    expect(toneColor('', 'f4ab31a no findings')).toBe(PALETTE.ok)
+    expect(toneColor('', 'f4ab31a 2 findings')).toBe(PALETTE.wait)
+    expect([agentColor('running'), agentColor('completed'), agentColor('failed'), agentColor('killed')]).toEqual([PALETTE.wait, PALETTE.ok, PALETTE.fail, PALETTE.fail])
+    expect(sourceColor({ source: 'helper', model: 'claude-haiku-5-5' })).toBe(PALETTE.haiku)
+    // The gates (any q.ts run, the hooks) are the mock-up's green.
+    expect(sourceColor({ source: 'test' })).toBe(PALETTE.gate)
+    expect(sourceColor({ source: 'hook' })).toBe(PALETTE.gate)
   })
 
   test("a log line says a helper's model, tokens and time", async () => {
@@ -127,18 +172,28 @@ describe('numbers', () => {
     )
     // A start says its model in its colour only: no time yet.
     expect(eventText({ at: 0, source: 'helper', tone: 'info', repo: '', text: 'reviewer started: Review', model: 'opus' })).toBe('reviewer started: Review')
-    expect(clockTime(new Date(2026, 9, 20, 9, 5).getTime())).toBe('09:05')
+    expect(clockTime(new Date(2026, 9, 20, 9, 5, 7).getTime())).toBe('09:05:07')
+    // The source as the mock-up says a helper's, the figure on the right.
+    expect(sourceLabel({ source: 'helper', text: 'reviewer done', model: 'claude-opus-5-5' })).toBe('opus:reviewer')
+    expect(sourceLabel({ source: 'check', text: 'check: ok' })).toBe('check')
+    expect(eventFigure({ at: 0, source: 'helper', tone: 'info', repo: '', text: 'reviewer started: Review' })).toBe('spawn')
+    expect(eventFigure({ at: 0, source: 'helper', tone: 'ok', repo: '', text: 'reviewer done', tokens: 106_689 })).toBe('107k tok')
+    expect(eventFigure({ at: 0, source: 'check', tone: 'ok', repo: '', text: 'check: ok (3s) · stamped abc1234' })).toBe('stamped')
+    expect(eventFigure({ at: 0, source: 'check', tone: 'fail', repo: '', text: 'check: FAILED (exit 1, 3s)' })).toBe('failed')
+    expect(eventFigure({ at: 0, source: 'review', tone: '', repo: '', text: 'abc1234 clean' })).toBe('clean')
+    expect(eventFigure({ at: 0, source: 'board', tone: 'wait', repo: '', text: 'Panel running → waiting-test' })).toBe('waiting-test')
+    expect(eventFigure({ at: 0, source: 'ask', tone: 'ok', repo: '', text: 'git push allowed' })).toBe('allowed')
   })
 
   test('a check says whether a push of HEAD passes and what changed since', async () => {
     const at = 1_000_000
     const now = at + 12 * 60_000
-    expect(checkMark(null, now)).toEqual({ text: 'no stamp', tone: 'inactive' })
-    expect(checkMark({ tree: 't', at, isFresh: true, isWorkFresh: true }, now, { at: at + 60_000, exit: 1 })).toEqual({ text: '✗ 11m exit 1', tone: 'error' })
-    expect(checkMark({ tree: 't', at, isFresh: true, isWorkFresh: true }, now)).toEqual({ text: '✓ 12m', tone: 'success' })
-    expect(checkMark({ tree: 't', at, isFresh: true, isWorkFresh: false }, now)).toEqual({ text: '✓ 12m +edits', tone: 'success' })
-    expect(checkMark({ tree: 't', at, isFresh: false, isWorkFresh: true }, now)).toEqual({ text: '◐ 12m commit', tone: 'warning' })
-    expect(checkMark({ tree: 't', at, isFresh: false, isWorkFresh: false }, now)).toEqual({ text: '· 12m old', tone: 'inactive' })
+    expect(checkMark(null, now)).toEqual({ text: 'no stamp', color: 'inactive' })
+    expect(checkMark({ tree: 't', at, isFresh: true, isWorkFresh: true }, now, { at: at + 60_000, exit: 1 })).toEqual({ text: '✗ 11m exit 1', color: PALETTE.fail })
+    expect(checkMark({ tree: 't', at, isFresh: true, isWorkFresh: true }, now)).toEqual({ text: '✓ 12m', color: PALETTE.ok })
+    expect(checkMark({ tree: 't', at, isFresh: true, isWorkFresh: false }, now)).toEqual({ text: '✓ 12m +edits', color: PALETTE.ok })
+    expect(checkMark({ tree: 't', at, isFresh: false, isWorkFresh: true }, now)).toEqual({ text: '◐ 12m commit', color: PALETTE.wait })
+    expect(checkMark({ tree: 't', at, isFresh: false, isWorkFresh: false }, now)).toEqual({ text: '· 12m old', color: 'inactive' })
   })
 })
 
@@ -158,28 +213,42 @@ test('the pane draws the board, the checks and the day on every surface', async 
   on('session.surfaces', () => ({ value: ['desktop'] }))
 
   for (const surface of ['terminal', 'desktop'] as const) {
-    const ui = await $.ui.mount({ plugin: 'harness-view', surface, ...PANE })
-    await ui.press({ key: 'refresh' })
-    expect(await ui.find({ text: /The harness panel/ })).toBeDefined()
-    expect(await ui.find({ text: / 1 waiting / })).toBeDefined()
-    expect(await ui.find({ text: / checks 1\/2 / })).toBeDefined()
-    expect(await ui.find({ text: /^no findings$/ })).toBeDefined()
-    expect(await ui.find({ text: /opus 5.5/ })).toBeDefined()
-    expect(await ui.find({ text: /✗ \d+\w exit 1/ })).toBeDefined()
-    // The log, newest first, a helper's model, tokens and time after it.
-    const log = await ui.findAll({ type: 'Text', text: /check: FAILED|reviewer done|running → waiting-test|f4ab31a no findings/ })
-    expect(log.map(t => t.text)).toEqual([
-      'check: FAILED (exit 1, 3.2s) · .cache/logs/check.log',
-      'reviewer done · opus 5.5 · 107k tok · 8m 24s',
-      'The harness panel running → waiting-test',
-      'f4ab31a no findings',
-    ])
-    // Each section a rounded box, its label on the top border.
-    for (const title of [' Session ', ' Subagents ', ' Repositories ', ' Today ', ' Board ', ' Log ']) {
-      expect(await ui.find({ type: 'Text', text: title })).toBeDefined()
+    // The three layouts: the mock-up's three columns, two, one.
+    for (const bodyColumns of [110, 80, 48]) {
+      const ui = await $.ui.mount({ plugin: 'harness-view', surface, ...PANE, props: { ...PANE.props, bodyColumns } })
+      await ui.press({ key: 'refresh' })
+      const at = `${surface} ${bodyColumns}`
+      const has = async (text: string | RegExp) => expect([at, text, (await ui.find({ text })) !== undefined]).toEqual([at, text, true])
+      await has(bodyColumns >= 64 ? 'WOW-ADDONS HARNESS' : 'HARNESS')
+      await has('OPUS 5.5 PLANS')
+      await has('CONFIG & LIMITS')
+      await has(/^GATES /)
+      await has(/^back to /)
+      await has('[ reviewer · architect ]')
+      await has('◇ before a push')
+      // The helpers fanned out: the busiest today first, the planner's left to it.
+      await has('Explore')
+      await has('The harness panel')
+      await has(/^1 waiting on you$/)
+      await has('1/2 pushable')
+      await has('no findings 6b545ad')
+      await has(/✗ \d+\w exit 1/)
+      // The log, newest first: the repository, then what happened, its figure on the right.
+      const log = await ui.findAll({ type: 'Text', text: /check: FAILED|reviewer done|running → waiting-test|f4ab31a no findings/ })
+      expect([at, log.map(t => t.text)]).toEqual([
+        at,
+        [
+          'wow-data check: FAILED (exit 1, 3.2s) · .cache/logs/check.log',
+          'yonder reviewer done · opus 5.5 · 107k tok · 8m 24s',
+          'addon-kit The harness panel running → waiting-test',
+          'yonder f4ab31a no findings',
+        ],
+      ])
+      await has('opus:reviewer')
+      // The main session's boxes dashed, as in the mock-up.
+      expect(JSON.stringify(await ui.drawn())).toContain('"borderStyle":"dashed"')
+      await ui.unmount()
     }
-    expect(JSON.stringify(await ui.drawn())).toContain('"borderStyle":"round"')
-    await ui.unmount()
   }
   expect(runs[0]?.[0]).toBe('bun')
   expect(runs[0]?.slice(2)).toEqual(['--root', '/Users/someone/code/wow-addons', '--fresh'])

@@ -16,7 +16,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, 
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 
-import type { BoardCard, HarnessEvent, ModelDay, RepoRow, Snapshot } from '../types'
+import type { BoardCard, HarnessEvent, HelperDay, HelperDef, ModelDay, RepoRow, Snapshot } from '../types'
 
 const CHUNK = 16 * 1024 * 1024
 
@@ -219,8 +219,9 @@ export function readBoard(dir: string, today: string, kit?: CardKit): BoardCard[
 // --- today's usage --------------------------------------------------------
 
 // (version 2 added the events, 3 left every Bash call out of the pending
-// ones but pushes and releases: an older day cache is read again whole)
-const CACHE_VERSION = 3
+// ones but pushes and releases, 4 added each helper's day: an older day
+// cache is read again whole)
+const CACHE_VERSION = 4
 
 type UsageCache = {
   version: number
@@ -230,6 +231,7 @@ type UsageCache = {
   models: Record<string, ModelDay>
   pending: Record<string, PendingCall>
   events: HarnessEvent[]
+  helpers: Record<string, HelperDay>
 }
 
 function listTranscripts(dir: string, since: number): { path: string; size: number }[] {
@@ -305,12 +307,13 @@ export function readEventLog(path: string, from: number, max = MAX_EVENTS): Harn
 /** A push or release waiting for its result: a prompt the user answers is told by it. */
 type PendingCall = { at: number; repo: string; command: string }
 
-/** What the transcript scan keeps between lines: the family folder, the helpers' models, calls and events. */
+/** What the transcript scan keeps between lines: the family folder, the helpers' models, calls, events and each helper's day. */
 export type EventState = {
   root: string
   models: Record<string, string>
   pending: Record<string, PendingCall>
   events: HarnessEvent[]
+  helpers: Record<string, HelperDay>
 }
 
 // The part of a command a push or release prompt is about (the root's ask rules).
@@ -332,8 +335,11 @@ export function repoOf(root: string, cwd: string | undefined, command = ''): str
   return cwd?.startsWith(`${root}/`) ? (cwd.slice(root.length + 1).split('/')[0] ?? '') : ''
 }
 
-function addEvent(state: EventState, event: HarnessEvent) {
-  if (!state.events.some(e => e.id === event.id)) state.events.push(event)
+/** Adds an event once, by its id; false when it was there already. */
+function addEvent(state: EventState, event: HarnessEvent): boolean {
+  if (state.events.some(e => e.id === event.id)) return false
+  state.events.push(event)
+  return true
 }
 
 /**
@@ -373,17 +379,27 @@ export function eventRow(row: Row, from: number, to: number, state: EventState) 
         const r = result as { agentType?: string; status?: string; resolvedModel?: string; totalTokens?: number; totalDurationMs?: number }
         if (r.status === 'async_launched') continue
         const isDone = r.status === 'completed'
-        addEvent(state, {
+        const type = r.agentType ?? 'helper'
+        const isNew = addEvent(state, {
           id: `${id}:end`,
           at,
           source: 'helper',
           tone: isDone ? 'ok' : 'fail',
           repo: repoOf(state.root, cwd),
-          text: `${r.agentType ?? 'helper'} ${isDone ? 'done' : (r.status ?? 'stopped')}`,
+          text: `${type} ${isDone ? 'done' : (r.status ?? 'stopped')}`,
           ...(r.resolvedModel ? { model: r.resolvedModel } : {}),
           ...(typeof r.totalTokens === 'number' ? { tokens: r.totalTokens } : {}),
           ...(typeof r.totalDurationMs === 'number' ? { ms: r.totalDurationMs } : {}),
         })
+        // The events keep only the last 40: each helper's day is summed as its runs end.
+        if (isNew) {
+          const day = (state.helpers[type] ??= { runs: 0, tokens: 0, ms: 0, lastAt: 0, model: null })
+          day.runs += 1
+          day.tokens += r.totalTokens ?? 0
+          day.ms += r.totalDurationMs ?? 0
+          day.lastAt = Math.max(day.lastAt, at)
+          day.model = r.resolvedModel ?? day.model
+        }
       }
     }
   }
@@ -418,20 +434,26 @@ export function scanLine(line: string, from: number, to: number, seen: Set<strin
   if (isEvent) eventRow(row, from, to, state)
 }
 
-/** Each helper's model from its definition (`.claude/agents/<name>.md`), `inherit` left out. */
-export function agentModels(dirs: string[]): Record<string, string> {
-  const models: Record<string, string> = {}
+/** The helpers the family defines (`.claude/agents/<name>.md`): name, model (`inherit` as none), the description's first sentence. */
+export function agentDefs(dirs: string[]): HelperDef[] {
+  const defs = new Map<string, HelperDef>()
   for (const dir of dirs) {
     if (!existsSync(dir)) continue
-    for (const name of readdirSync(dir).filter(n => n.endsWith('.md'))) {
-      const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(readFileSync(join(dir, name), 'utf8'))?.[1] ?? ''
-      const field = (key: string) => new RegExp(`^${key}:\\s*["']?([^"'\\n]+?)["']?\\s*$`, 'm').exec(front)?.[1]
-      const model = field('model')
-      if (model && model !== 'inherit') models[field('name') ?? name.slice(0, -3)] ??= model
+    for (const file of readdirSync(dir).filter(n => n.endsWith('.md'))) {
+      const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(readFileSync(join(dir, file), 'utf8'))?.[1] ?? ''
+      const field = (key: string) => new RegExp(`^${key}:\\s*["']?(.+?)["']?\\s*$`, 'm').exec(front)?.[1]
+      const name = field('name') ?? file.slice(0, -3)
+      const model = field('model') ?? null
+      const description = (field('description') ?? '').replace(/\\"/g, '"').split(/(?<=[.:])\s/)[0] ?? ''
+      if (!defs.has(name)) defs.set(name, { name, model: model === 'inherit' ? null : model, description })
     }
   }
-  return models
+  return [...defs.values()]
 }
+
+/** Each helper's model by its name, for the events. */
+export const agentModels = (defs: HelperDef[]): Record<string, string> =>
+  Object.fromEntries(defs.filter(d => d.model).map(d => [d.name, d.model as string]))
 
 /** Reads whole lines from `offset`; returns where the next read starts. */
 async function readFrom(path: string, offset: number, size: number, onLine: (line: string) => void): Promise<number> {
@@ -479,17 +501,17 @@ export async function readTranscripts(
   day: string,
   root: string,
   helpers: Record<string, string> = {},
-): Promise<{ usage: Snapshot['usage']; events: HarnessEvent[] }> {
+): Promise<{ usage: Snapshot['usage']; events: HarnessEvent[]; helperDay: Record<string, HelperDay> }> {
   const [from, to] = dayBounds(day)
   const cachePath = join(cacheDir, `usage-${day}.json`)
-  let cache: UsageCache = { version: CACHE_VERSION, day, files: {}, seen: [], models: {}, pending: {}, events: [] }
+  let cache: UsageCache = { version: CACHE_VERSION, day, files: {}, seen: [], models: {}, pending: {}, events: [], helpers: {} }
   try {
     const saved = JSON.parse(readFileSync(cachePath, 'utf8')) as UsageCache
     if (saved.day === day && saved.version === CACHE_VERSION) cache = saved
   } catch {}
 
   const seen = new Set(cache.seen)
-  const state: EventState = { root, models: helpers, pending: cache.pending, events: cache.events }
+  const state: EventState = { root, models: helpers, pending: cache.pending, events: cache.events, helpers: cache.helpers }
   const files = listTranscripts(projects, from)
   for (const { path, size } of files) {
     const known = cache.files[path]?.offset ?? 0
@@ -515,7 +537,7 @@ export async function readTranscripts(
   const models = Object.values(cache.models).sort(
     (a, b) => b.input + b.cacheRead + b.cacheWrite + b.output - (a.input + a.cacheRead + a.cacheWrite + a.output),
   )
-  return { usage: { day, models, files: files.length }, events: cache.events }
+  return { usage: { day, models, files: files.length }, events: cache.events, helperDay: cache.helpers }
 }
 
 // --- the command ----------------------------------------------------------
@@ -546,8 +568,8 @@ if (import.meta.main) {
     try {
       cards = (await import(join(root, 'addon-kit', 'board.ts'))) as CardKit
     } catch {}
-    const helpers = agentModels([join(root, '.claude', 'agents'), join(homedir(), '.claude', 'agents')])
-    const transcripts = await readTranscripts(projects, cacheDir, day, root, helpers)
+    const helpers = agentDefs([join(root, '.claude', 'agents'), join(homedir(), '.claude', 'agents')])
+    const transcripts = await readTranscripts(projects, cacheDir, day, root, agentModels(helpers))
     const log = process.env.HARNESS_EVENTS === 'off' ? [] : readEventLog(process.env.HARNESS_EVENTS || join(root, '.cache', 'harness', 'events.log'), dayBounds(day)[0])
     const snapshot: Snapshot = {
       at: Date.now(),
@@ -555,6 +577,8 @@ if (import.meta.main) {
       board: readBoard(join(root, 'board'), day, cards),
       usage: transcripts.usage,
       events: [...log, ...transcripts.events].sort((a, b) => b.at - a.at).slice(0, MAX_EVENTS),
+      helpers,
+      helperDay: transcripts.helperDay,
     }
     const text = JSON.stringify(snapshot)
     const tmp = `${shared}.${process.pid}`

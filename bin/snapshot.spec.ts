@@ -5,6 +5,7 @@ import { join } from 'node:path'
 
 import type { ModelDay } from '../types'
 import {
+  agentDefs,
   agentModels,
   askedPart,
   countLine,
@@ -187,12 +188,15 @@ describe('the log', () => {
     expect(repoOf('/f', '/elsewhere')).toBe('')
   })
 
-  test("a helper's model comes from its definition", () => {
+  test("a helper's model and description come from its definition", () => {
     const dir = temp()
-    writeFileSync(join(dir, 'reviewer.md'), '---\nname: reviewer\nmodel: opus\ntools: Read\n---\nReview.\n')
+    writeFileSync(join(dir, 'reviewer.md'), '---\nname: reviewer\ndescription: "Reviews one change. Read-only."\nmodel: opus\ntools: Read\n---\nReview.\n')
     writeFileSync(join(dir, 'scout.md'), "---\nname: data-scout\nmodel: 'sonnet'\n---\n")
     writeFileSync(join(dir, 'plain.md'), '---\nmodel: inherit\n---\n')
-    expect(agentModels([dir, join(dir, 'missing')])).toEqual({ reviewer: 'opus', 'data-scout': 'sonnet' })
+    const defs = agentDefs([dir, join(dir, 'missing')])
+    expect(defs.find(d => d.name === 'reviewer')).toEqual({ name: 'reviewer', model: 'opus', description: 'Reviews one change.' })
+    expect(defs.find(d => d.name === 'plain')).toEqual({ name: 'plain', model: null, description: '' })
+    expect(agentModels(defs)).toEqual({ reviewer: 'opus', 'data-scout': 'sonnet' })
   })
 })
 
@@ -200,7 +204,7 @@ describe('events in the transcripts', () => {
   const from = new Date(2026, 9, 20).getTime()
   const to = new Date(2026, 9, 21).getTime()
   const noon = new Date(2026, 9, 20, 12).toISOString()
-  const state = (): EventState => ({ root: '/f', models: { reviewer: 'opus' }, pending: {}, events: [] })
+  const state = (): EventState => ({ root: '/f', models: { reviewer: 'opus' }, pending: {}, events: [], helpers: {} })
   const call = (id: string, name: string, input: Record<string, unknown>, cwd = '/f/yonder') => ({
     type: 'assistant',
     timestamp: noon,
@@ -238,6 +242,17 @@ describe('events in the transcripts', () => {
       ['Explore started', 'info', 'haiku'],
       ['Explore failed', 'fail', undefined],
     ])
+    // Each helper's day: a run counted once, however often its line is read.
+    eventRow(
+      result('t1', { toolUseResult: { status: 'completed', agentType: 'reviewer', resolvedModel: 'claude-opus-5-5', totalTokens: 106_689, totalDurationMs: 503_770 } }),
+      from,
+      to,
+      s,
+    )
+    expect(s.helpers).toEqual({
+      reviewer: { runs: 1, tokens: 106_689, ms: 503_770, lastAt: Date.parse(noon), model: 'claude-opus-5-5' },
+      Explore: { runs: 1, tokens: 0, ms: 0, lastAt: Date.parse(noon), model: null },
+    })
   })
 
   test('a push the user allowed or refused, never one a rule let through, nor another command', () => {

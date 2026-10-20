@@ -6,21 +6,32 @@ hooks), no router, nothing sent anywhere.
 
 ## What it shows
 
-A dashboard of text, after the mock-up the user shared: each section a
-rounded box in its own colour, its title a coloured label on the top
-border; per-model bars of block characters (eighths of a cell) with the
-numbers beside them; Opus purple, Sonnet orange, Haiku blue; statuses ok
-green, waiting amber, failed red. Top to bottom:
+The flow diagram of the mock-up the user shared (an "opusplan" dashboard in
+a video, 20 October 2026), drawn in text with this family's numbers. Boxes
+in each model's colour (Opus lavender, Sonnet orange, Haiku blue, the gates
+green), the main session's boxes dashed, connectors and arrows between
+them, bars of block characters with a checkered rest, statuses ok green,
+waiting amber, failed red. The mock-up's "JEV router" is not ours: its place
+holds the gates, the part of the harness that runs in code.
 
-- **Session**: the model, the last call's model when it differs (opusplan),
-  the context window's fill, the session's cost.
-- **Subagents**: every agent the engine lists, with the model, its status
-  (running amber, done green, failed red), context and output tokens
-  counted from its own model calls as they stream.
-- **Board**: the cards in `~/code/wow-addons/board/*.md`, written by
-  `addon-kit/board.ts` and read with its own parser (the first line under
-  `## Try` as summary, else the lead before any section). Waiting and ready-to-push cards
-  first, done cards only from today.
+- **Header**: the harness, the planner's model, the model building now
+  (the last call's: opusplan's Sonnet), a legend of the colours.
+- **Planner** (Opus, the tall box on the left): the Opus helpers at their
+  moments: the architect before a plan, when the same error comes back,
+  before a big change is done, the reviewer before a push (its last
+  verdict). The moment a running Opus helper is at is lit. Their runs and
+  tokens today, the main session's context.
+- **Main session** (dashed): its model, context fill, effort, cost, and the
+  helpers running. **Config & limits**: model and mode from the settings,
+  the context window, the plan's rate limits (percent used), the ask rules,
+  the subagent model (`CLAUDE_CODE_SUBAGENT_MODEL`, else per helper).
+- **Gates**: checks fresh (HEAD stamped), reviews current, cards waiting.
+- **Helpers**, fanned out from the hand-off: running ones first, then the
+  family's (`.claude/agents/*.md`) and today's, the busiest first, the
+  planner's left to it. Each with its model, status, its share of today's
+  helper tokens, runs and tokens (or its live context and calls).
+- **Back to lead** (dashed): the last helper's handback, tokens and time.
+- **Today**, **Board**: tokens by model, the board's cards (below).
 - **Repositories**: each family repository's newest check stamp
   (`.git/harness/check-<tree>`, read through `addon-kit/q.ts`) and review.
   `✓ 12m`: HEAD's tree is stamped, so a push of HEAD passes pre-push.
@@ -35,9 +46,14 @@ green, waiting amber, failed red. Top to bottom:
 - **Today**: tokens by model from every transcript under
   `~/.claude/projects/**/*.jsonl` (each assistant message once, by its id,
   local day), with the share of cache reads.
-- **Board**: as above, under Today (the mock-up's order).
-- **Log**: today's last 10 events, newest first: the time, the source in
-  its colour, the repository, what happened in its status's colour.
+- **Board**: the cards in `~/code/wow-addons/board/*.md`, written by
+  `addon-kit/board.ts` and read with its own parser. Waiting and
+  ready-to-push cards first, done cards only from today.
+- **Session log**: today's last 10 events, newest first: the time, the
+  source in its colour (a helper as `opus:reviewer`), the repository and
+  what happened, a figure on the right in its status's colour (stamped,
+  failed, spawn, 86k tok, allowed). Under it the prompt line and a status
+  bar: helpers active, Opus runs, gates, cards waiting, today's tokens.
   - `check` (or a q.ts run of another name): the verdict line and the
     stamp, written by `addon-kit/q.ts`;
   - `hook`: a git hook refusing a commit or a push (`githooks/_event`);
@@ -53,15 +69,20 @@ green, waiting amber, failed red. Top to bottom:
   (`addon-kit/events.ts`; `HARNESS_EVENTS` names another file, `off`
   none); the transcripts' events are read with the usage, incrementally.
 
-What the pane can't draw: no pixels (bars and the context fill are block
-characters, so a bar's last cell is an eighth at best), no charts or
-trends, no border title of its own (the label is a Box placed over the
-border row). The desktop's paint of borders, background colours and the
-placed label is the desktop page's own and was checked in tests only, not
-by eye: the terminal's was seen (a `claude --plugin-dir` session), the
-desktop app can't be captured from here. A prompt shows in the log once
-answered: the transcript records the answer, not the prompt. Helpers and
-prompts are today's only (the transcripts are read by day).
+The layout follows the pane's width: the mock-up's three columns from 96
+columns, two from 64, one below; every column truncates rather than wraps.
+The spinners turn once a second while a helper runs, and stand still
+otherwise.
+
+What the pane can't draw: no pixels (bars and meters are block
+characters, an eighth of a cell at best), no charts or trends, no
+background of its own (the mock-up's navy is the app's background here),
+connectors only as text between boxes. The desktop's paint of borders
+(dashed among them) and colours is the desktop page's own and was checked
+in tests only: the terminal's was seen (a `claude --plugin-dir` session,
+and the whole pane painted with Ink), the desktop app can't be captured
+from here. A prompt shows in the log once answered. Helpers, prompts and
+their day totals are today's only.
 
 The status line under the prompt (`$.ui.status`) says what claude-hud does
 not: cards waiting, agents running, repositories a push of HEAD would pass,

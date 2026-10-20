@@ -61,6 +61,12 @@ export type ModelDay = {
   output: number
 }
 
+/** A helper the family defines (`.claude/agents/<name>.md`). */
+export type HelperDef = { name: string; model: string | null; description: string }
+
+/** A helper's runs today, from the transcripts. */
+export type HelperDay = { runs: number; tokens: number; ms: number; lastAt: number; model: string | null }
+
 /** What `bin/snapshot.ts` prints: the numbers every session shares. */
 export type Snapshot = {
   at: number
@@ -69,6 +75,9 @@ export type Snapshot = {
   usage: { day: string; models: ModelDay[]; files: number }
   /** Today's events, newest first. */
   events: HarnessEvent[]
+  /** The family's helpers, and each helper's runs today by its type. */
+  helpers: HelperDef[]
+  helperDay: Record<string, HelperDay>
 }
 
 /** The session the panel is drawn in. */
@@ -79,6 +88,10 @@ export type SessionFacts = {
   window: number
   percent: number | null
   costUsd: number | null
+  /** The plan's limits as the engine reports them (`five_hour`, `seven_day`, ...). */
+  rateLimits: { kind: string; percentUsed: number }[]
+  /** The settings the panel's Config box shows. */
+  settings: { model: string | null; mode: string | null; effort: string | null; asks: number; subagentModel: string | null }
 }
 
 /** A subagent's model calls, counted as they stream. */
@@ -106,6 +119,7 @@ declare module 'claude-code' {
       session: SessionFacts | null
       agents: AgentRow[]
       steps: Record<string, AgentSteps>
+      tick: number
     }
   }
 }
