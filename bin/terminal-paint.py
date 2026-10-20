@@ -7,15 +7,13 @@
 #   <venv>/python -I terminal-paint.py render LOG OUT FROM_S TO_S STEP_S
 #       the log replayed through pyte, the pane's columns at each moment: OUT.txt
 #       (every frame as text) and OUT.html (the frames in colour, faint kept).
-import base64, html, json, os, sys, time
+import base64, fcntl, html, json, os, pty, select, signal, struct, sys, termios, time
 
 COLS, ROWS = 130, 60
 PROMPT = "Without using any tools, write six short paragraphs about the Barrens in Classic WoW."
 
 
 def record(log_path, mod, family, seconds=38.0, start=11.0):
-    import fcntl, pty, select, signal, struct, termios
-
     pid, fd = pty.fork()
     if pid == 0:
         fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
@@ -33,35 +31,44 @@ def record(log_path, mod, family, seconds=38.0, start=11.0):
         time.sleep(0.4)
         os.write(fd, b"\r")
 
-    t0, raised, sent = time.time(), False, False
-    with open(log_path, "w") as log:
-        while time.time() - t0 < seconds:
-            ready, _, _ = select.select([fd], [], [], 0.05)
-            if ready:
-                try:
-                    data = os.read(fd, 65536)
-                except OSError:
-                    break
-                log.write(json.dumps([round(time.time() - t0, 3), base64.b64encode(data).decode()]) + "\n")
-                # The terminal's answers: the cursor's place, the device, the background.
-                if b"\x1b[6n" in data:
-                    os.write(fd, b"\x1b[1;1R")
-                if b"\x1b[c" in data or b"\x1b[0c" in data:
-                    os.write(fd, b"\x1b[?62;22c")
-                if b"\x1b]11;?" in data:
-                    os.write(fd, b"\x1b]11;rgb:1e1e/1e1e/2828\x1b\\")
-            if not raised and time.time() - t0 > start - 2.5:
-                type_line("/harness")
-                raised = True
-            if not sent and time.time() - t0 > start:
-                type_line(PROMPT)
-                sent = True
-    os.kill(pid, signal.SIGTERM)
-    time.sleep(0.5)
+    t0 = time.time()
     try:
-        os.kill(pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
+        with open(log_path, "w") as log:
+            _record(fd, log, t0, seconds, start, type_line)
+    finally:
+        # (an interrupted run too: the session never outlives the recording)
+        os.kill(pid, signal.SIGTERM)
+        time.sleep(0.5)
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def _record(fd, log, t0, seconds, start, type_line):
+    """The session's output into `log` until `seconds`: /harness raised, then the prompt typed."""
+    raised, sent = False, False
+    while time.time() - t0 < seconds:
+        ready, _, _ = select.select([fd], [], [], 0.05)
+        if ready:
+            try:
+                data = os.read(fd, 65536)
+            except OSError:
+                break
+            log.write(json.dumps([round(time.time() - t0, 3), base64.b64encode(data).decode()]) + "\n")
+            # The terminal's answers: the cursor's place, the device, the background.
+            if b"\x1b[6n" in data:
+                os.write(fd, b"\x1b[1;1R")
+            if b"\x1b[c" in data or b"\x1b[0c" in data:
+                os.write(fd, b"\x1b[?62;22c")
+            if b"\x1b]11;?" in data:
+                os.write(fd, b"\x1b]11;rgb:1e1e/1e1e/2828\x1b\\")
+        if not raised and time.time() - t0 > start - 2.5:
+            type_line("/harness")
+            raised = True
+        if not sent and time.time() - t0 > start:
+            type_line(PROMPT)
+            sent = True
 
 
 NAMED = {

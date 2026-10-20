@@ -272,7 +272,10 @@ can't be captured from a session):
   moment with headless Chrome: `.cache/paint/terminal.png`, and every frame
   as text in `terminal.txt` to measure columns and steps (`22 22.8 0.08`:
   each 80 ms frame). The file tree's pane is turned off for that session.
-  It caught the beat's blink, which a still can't.
+  It is a real session: run from a terminal, its turn lands in
+  `~/.claude/projects` and in the pane's Today (from inside a session it
+  saves no transcript), and it shows in the Sessions box while it runs. It
+  caught the beat's blink, which a still can't.
 
 - The desktop's paint: `zsh bin/desktop-paint.sh` mounts the pane on the
   desktop surface (this machine's last snapshot, mid-turn, a helper
