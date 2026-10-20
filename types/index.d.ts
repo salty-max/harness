@@ -17,7 +17,27 @@ export type RepoRow = {
   name: string
   head: string
   check: CheckStamp | null
+  /** The last check run when it failed after the newest stamp (`.cache/logs/check.log`). */
+  failed: { at: number; exit: number } | null
   review: ReviewMark | null
+}
+
+/**
+ * One line of the panel's log: a tool's line in the harness's events.log
+ * (addon-kit/events.ts), or a helper or an answered prompt from today's
+ * transcripts. `tone` empty: the panel reads it from the words.
+ */
+export type HarnessEvent = {
+  id?: string
+  at: number
+  source: string
+  tone: 'ok' | 'wait' | 'fail' | 'info' | ''
+  repo: string
+  text: string
+  /** A helper's model, its tokens and how long it ran, when known. */
+  model?: string
+  tokens?: number
+  ms?: number
 }
 
 /** One card of the task board (`board/<id>.md`). */
@@ -47,6 +67,8 @@ export type Snapshot = {
   repos: RepoRow[]
   board: BoardCard[]
   usage: { day: string; models: ModelDay[]; files: number }
+  /** Today's events, newest first. */
+  events: HarnessEvent[]
 }
 
 /** The session the panel is drawn in. */

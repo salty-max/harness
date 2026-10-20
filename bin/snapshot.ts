@@ -1,8 +1,10 @@
 #!/usr/bin/env bun
 // The harness view's shared numbers, as one JSON object on stdout: each
-// repository's check stamp and review, the task board, and today's tokens
-// by model from every Claude Code transcript on this machine. The panel
-// runs it on a timer; nothing here writes outside its own cache.
+// repository's check stamp and review, the task board, today's tokens by
+// model from every Claude Code transcript on this machine, and today's
+// events (the harness's events.log, helpers and answered prompts from the
+// transcripts). The panel runs it on a timer; nothing here writes outside
+// its own cache.
 //
 //   bun snapshot.ts [--root <family folder>] [--projects <dir>]
 //                   [--cache <dir>] [--day YYYY-MM-DD] [--fresh]
@@ -10,11 +12,11 @@
 // Every open session runs it: a snapshot younger than 15 seconds is printed
 // again from the cache instead of read anew (--fresh reads anew).
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 
-import type { BoardCard, ModelDay, RepoRow, Snapshot } from '../types'
+import type { BoardCard, HarnessEvent, ModelDay, RepoRow, Snapshot } from '../types'
 
 const CHUNK = 16 * 1024 * 1024
 
@@ -45,6 +47,31 @@ function newest(dir: string, prefix: string): { name: string; at: number } | nul
     if (best === null || at > best.at) best = { name, at }
   }
   return best
+}
+
+/** A file's last `bytes`, a line cut at the start left out. */
+function tailText(path: string, bytes: number): string {
+  const size = statSync(path).size
+  const start = Math.max(0, size - bytes)
+  const buffer = Buffer.alloc(size - start)
+  const fd = openSync(path, 'r')
+  try {
+    readSync(fd, buffer, 0, buffer.length, start)
+  } finally {
+    closeSync(fd)
+  }
+  const text = buffer.toString('utf8')
+  return start === 0 ? text : text.slice(text.indexOf('\n') + 1)
+}
+
+/** The last check run when it failed after `after`: q.ts's log ends `[exit N, 41s]`. */
+export function failedCheck(dir: string, after: number): RepoRow['failed'] {
+  const log = join(dir, '.cache', 'logs', 'check.log')
+  if (!existsSync(log)) return null
+  const at = statSync(log).mtimeMs
+  if (at <= after) return null
+  const exit = Number(/\[exit (\d+),[^\]]*\]\s*$/.exec(tailText(log, 256))?.[1] ?? 0)
+  return exit === 0 ? null : { at, exit }
 }
 
 function firstLine(path: string): string | null {
@@ -111,7 +138,7 @@ export function readRepo(dir: string, kit?: StampKit): RepoRow | null {
     review = { sha, at: packet.at, verdict: null, isCurrent: head.startsWith(sha) || sha.startsWith(head) }
   }
 
-  return { name: basename(dir), head: head.slice(0, 7), check, review }
+  return { name: basename(dir), head: head.slice(0, 7), check, failed: failedCheck(dir, check?.at ?? 0), review }
 }
 
 export function readRepos(root: string, kit?: StampKit): RepoRow[] {
@@ -191,11 +218,17 @@ export function readBoard(dir: string, today: string, kit?: CardKit): BoardCard[
 
 // --- today's usage --------------------------------------------------------
 
+// (version 2 added the events: a day cache of version 1 is read again whole)
+const CACHE_VERSION = 2
+
 type UsageCache = {
+  version: number
   day: string
   files: Record<string, { offset: number }>
   seen: string[]
   models: Record<string, ModelDay>
+  pending: Record<string, PendingCall>
+  events: HarnessEvent[]
 }
 
 function listTranscripts(dir: string, since: number): { path: string; size: number }[] {
@@ -209,19 +242,27 @@ function listTranscripts(dir: string, since: number): { path: string; size: numb
   return out
 }
 
+type Block = { type?: string; id?: unknown; name?: string; input?: Record<string, unknown>; tool_use_id?: unknown }
+
+/** A transcript line, as much of it as the panel reads. */
+type Row = {
+  type?: string
+  timestamp?: string
+  cwd?: string
+  message?: { id?: string; model?: string; usage?: Record<string, number>; content?: unknown }
+  toolUseResult?: unknown
+  permissionDecision?: { decision?: string; source?: string }
+}
+
 /** Adds one transcript line to the day's sums; a repeated message counts once. */
 export function countLine(line: string, from: number, to: number, seen: Set<string>, models: Record<string, ModelDay>) {
   if (!line.includes('"type":"assistant"') || !line.includes('"usage"')) return
-  let row: {
-    type?: string
-    timestamp?: string
-    message?: { id?: string; model?: string; usage?: Record<string, number> }
-  }
   try {
-    row = JSON.parse(line)
-  } catch {
-    return
-  }
+    countRow(JSON.parse(line), from, to, seen, models)
+  } catch {}
+}
+
+function countRow(row: Row, from: number, to: number, seen: Set<string>, models: Record<string, ModelDay>) {
   const msg = row.message
   if (row.type !== 'assistant' || !msg?.usage || !msg.id || !msg.model || msg.model.startsWith('<')) return
   const at = Date.parse(row.timestamp ?? '')
@@ -234,6 +275,152 @@ export function countLine(line: string, from: number, to: number, seen: Set<stri
   day.cacheRead += u.cache_read_input_tokens ?? 0
   day.cacheWrite += u.cache_creation_input_tokens ?? 0
   day.output += u.output_tokens ?? 0
+}
+
+// --- today's events ---------------------------------------------------------
+
+const TONES = ['ok', 'wait', 'fail', 'info']
+const MAX_EVENTS = 40
+
+/** One line of the harness's events.log (addon-kit/events.ts writes it), or null. */
+export function parseEventLine(line: string): HarnessEvent | null {
+  const [iso = '', source = '', tone = '', repo = '', ...text] = line.split('\t')
+  const at = Date.parse(iso)
+  if (Number.isNaN(at) || !source || text.length === 0) return null
+  return { at, source, tone: (TONES.includes(tone) ? tone : '') as HarnessEvent['tone'], repo, text: text.join(' ') }
+}
+
+/** The log's events since `from`, newest first, read from its end (its writer trims it past 256 KB). */
+export function readEventLog(path: string, from: number, max = MAX_EVENTS): HarnessEvent[] {
+  if (!existsSync(path)) return []
+  return tailText(path, 64 * 1024)
+    .split('\n')
+    .map(parseEventLine)
+    .filter((e): e is HarnessEvent => e !== null && e.at >= from)
+    .reverse()
+    .slice(0, max)
+}
+
+/** A Bash call waiting for its result: a prompt the user answers is told by it. */
+type PendingCall = { at: number; repo: string; command: string }
+
+/** What the transcript scan keeps between lines: the family folder, the helpers' models, calls and events. */
+export type EventState = {
+  root: string
+  models: Record<string, string>
+  pending: Record<string, PendingCall>
+  events: HarnessEvent[]
+}
+
+// The part of a command a push or release prompt is about.
+const ASKED =
+  /\bgit\b[^;&|]*?\spush\b[^;&|]*|[\w./-]*release\.sh\b[^;&|]*|\bgh\b[^;&|]*?\b(?:release|pr merge|workflow run)\b[^;&|]*|\bvercel\b[^;&|]*|\bstore\.ts\b[^;&|]*--apply[^;&|]*/
+
+/** A command as the log says it: the push or release in it, else its start. */
+export function askedPart(command: string): string {
+  const part = (ASKED.exec(command)?.[0] ?? command).replace(/\s+/g, ' ').replace(/\s*\d*>.*$/, '').trim()
+  return part.length > 60 ? `${part.slice(0, 59)}…` : part
+}
+
+/** The family repository a line is about: a path in its command first, else its working directory. */
+export function repoOf(root: string, cwd: string | undefined, command = ''): string {
+  const named = command.split(`${root}/`)[1]?.split(/[/\s"';&|]/)[0]
+  if (named) return named
+  const relative = /\bgit\s+-C\s+["']?([\w.-]+)["']?(?:\s|$)/.exec(command)?.[1]
+  if (relative && cwd === root) return relative
+  return cwd?.startsWith(`${root}/`) ? (cwd.slice(root.length + 1).split('/')[0] ?? '') : ''
+}
+
+function addEvent(state: EventState, event: HarnessEvent) {
+  if (!state.events.some(e => e.id === event.id)) state.events.push(event)
+}
+
+/**
+ * Finds the events in one transcript line of a family session: a helper
+ * started (the Agent call) or finished (its result: model, tokens, time),
+ * and a Bash call whose prompt the user answered (`permissionDecision` from
+ * the user, or a rejection).
+ */
+export function eventRow(row: Row, from: number, to: number, state: EventState) {
+  const at = Date.parse(row.timestamp ?? '')
+  const cwd = row.cwd
+  if (!(at >= from && at < to) || (cwd !== state.root && !cwd?.startsWith(`${state.root}/`))) return
+  const blocks = (Array.isArray(row.message?.content) ? row.message.content : []) as Block[]
+  for (const block of blocks) {
+    if (row.type === 'assistant' && block?.type === 'tool_use' && typeof block.id === 'string') {
+      const input = block.input ?? {}
+      if (block.name === 'Agent' || block.name === 'Task') {
+        const type = String(input.subagent_type ?? 'general-purpose')
+        const model = typeof input.model === 'string' ? input.model : state.models[type]
+        const description = typeof input.description === 'string' ? `: ${input.description}` : ''
+        addEvent(state, { id: `${block.id}:start`, at, source: 'helper', tone: 'info', repo: repoOf(state.root, cwd), text: `${type} started${description}`, ...(model ? { model } : {}) })
+      } else if (block.name === 'Bash' && typeof input.command === 'string') {
+        state.pending[block.id] = { at, repo: repoOf(state.root, cwd, input.command), command: askedPart(input.command) }
+      }
+    } else if (row.type === 'user' && block?.type === 'tool_result' && typeof block.tool_use_id === 'string') {
+      const id = block.tool_use_id
+      const result = row.toolUseResult
+      const call = state.pending[id]
+      if (call) {
+        delete state.pending[id]
+        const decision = row.permissionDecision
+        const isRefused = result === 'User rejected tool use' || (decision?.decision === 'reject' && !!decision.source?.startsWith('user'))
+        if (isRefused || decision?.source?.startsWith('user')) {
+          addEvent(state, { id: `${id}:ask`, at, source: 'ask', tone: isRefused ? 'fail' : 'ok', repo: call.repo, text: `${call.command} ${isRefused ? 'refused' : 'allowed'}` })
+        }
+      } else if (result !== null && typeof result === 'object' && 'agentType' in result) {
+        const r = result as { agentType?: string; status?: string; resolvedModel?: string; totalTokens?: number; totalDurationMs?: number }
+        if (r.status === 'async_launched') continue
+        const isDone = r.status === 'completed'
+        addEvent(state, {
+          id: `${id}:end`,
+          at,
+          source: 'helper',
+          tone: isDone ? 'ok' : 'fail',
+          repo: repoOf(state.root, cwd),
+          text: `${r.agentType ?? 'helper'} ${isDone ? 'done' : (r.status ?? 'stopped')}`,
+          ...(r.resolvedModel ? { model: r.resolvedModel } : {}),
+          ...(typeof r.totalTokens === 'number' ? { tokens: r.totalTokens } : {}),
+          ...(typeof r.totalDurationMs === 'number' ? { ms: r.totalDurationMs } : {}),
+        })
+      }
+    }
+  }
+}
+
+// A line worth parsing for an event: an Agent or Bash call, or a result that is a helper's or a prompt's answer.
+const isEventLine = (line: string) =>
+  /"name":"(?:Agent|Task|Bash)"/.test(line) ||
+  (line.includes('"tool_use_id"') && (line.includes('"agentType"') || line.includes('"source":"user') || line.includes('User rejected tool use')))
+
+/** One transcript line into the day's sums and events, parsed once. */
+export function scanLine(line: string, from: number, to: number, seen: Set<string>, models: Record<string, ModelDay>, state: EventState) {
+  const isUsage = line.includes('"type":"assistant"') && line.includes('"usage"')
+  const isEvent = isEventLine(line)
+  if (!isUsage && !isEvent) return
+  let row: Row
+  try {
+    row = JSON.parse(line)
+  } catch {
+    return
+  }
+  if (isUsage) countRow(row, from, to, seen, models)
+  if (isEvent) eventRow(row, from, to, state)
+}
+
+/** Each helper's model from its definition (`.claude/agents/<name>.md`), `inherit` left out. */
+export function agentModels(dirs: string[]): Record<string, string> {
+  const models: Record<string, string> = {}
+  for (const dir of dirs) {
+    if (!existsSync(dir)) continue
+    for (const name of readdirSync(dir).filter(n => n.endsWith('.md'))) {
+      const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(readFileSync(join(dir, name), 'utf8'))?.[1] ?? ''
+      const field = (key: string) => new RegExp(`^${key}:\\s*["']?([^"'\\n]+?)["']?\\s*$`, 'm').exec(front)?.[1]
+      const model = field('model')
+      if (model && model !== 'inherit') models[field('name') ?? name.slice(0, -3)] ??= model
+    }
+  }
+  return models
 }
 
 /** Reads whole lines from `offset`; returns where the next read starts. */
@@ -275,27 +462,36 @@ async function readLine(file: ReturnType<typeof Bun.file>, start: number, size: 
   return null
 }
 
-export async function readUsage(projects: string, cacheDir: string, day: string): Promise<Snapshot['usage']> {
+/** Today's tokens by model and today's helper and prompt events, read on from where the last read stopped. */
+export async function readTranscripts(
+  projects: string,
+  cacheDir: string,
+  day: string,
+  root: string,
+  helpers: Record<string, string> = {},
+): Promise<{ usage: Snapshot['usage']; events: HarnessEvent[] }> {
   const [from, to] = dayBounds(day)
   const cachePath = join(cacheDir, `usage-${day}.json`)
-  let cache: UsageCache = { day, files: {}, seen: [], models: {} }
+  let cache: UsageCache = { version: CACHE_VERSION, day, files: {}, seen: [], models: {}, pending: {}, events: [] }
   try {
     const saved = JSON.parse(readFileSync(cachePath, 'utf8')) as UsageCache
-    if (saved.day === day) cache = saved
+    if (saved.day === day && saved.version === CACHE_VERSION) cache = saved
   } catch {}
 
   const seen = new Set(cache.seen)
+  const state: EventState = { root, models: helpers, pending: cache.pending, events: cache.events }
   const files = listTranscripts(projects, from)
   for (const { path, size } of files) {
     const known = cache.files[path]?.offset ?? 0
     // A file that shrank was rewritten: read it whole, the seen ids keep the sums right.
     const offset = known > size ? 0 : known
     if (offset === size) continue
-    const next = await readFrom(path, offset, size, line => countLine(line, from, to, seen, cache.models))
+    const next = await readFrom(path, offset, size, line => scanLine(line, from, to, seen, cache.models, state))
     cache.files[path] = { offset: next }
   }
 
   cache.seen = [...seen]
+  cache.events = state.events.sort((a, b) => b.at - a.at).slice(0, MAX_EVENTS)
   mkdirSync(cacheDir, { recursive: true })
   // A week of days is plenty: older day caches go.
   for (const name of readdirSync(cacheDir)) {
@@ -309,7 +505,7 @@ export async function readUsage(projects: string, cacheDir: string, day: string)
   const models = Object.values(cache.models).sort(
     (a, b) => b.input + b.cacheRead + b.cacheWrite + b.output - (a.input + a.cacheRead + a.cacheWrite + a.output),
   )
-  return { day, models, files: files.length }
+  return { usage: { day, models, files: files.length }, events: cache.events }
 }
 
 // --- the command ----------------------------------------------------------
@@ -340,11 +536,15 @@ if (import.meta.main) {
     try {
       cards = (await import(join(root, 'addon-kit', 'board.ts'))) as CardKit
     } catch {}
+    const helpers = agentModels([join(root, '.claude', 'agents'), join(homedir(), '.claude', 'agents')])
+    const transcripts = await readTranscripts(projects, cacheDir, day, root, helpers)
+    const log = process.env.HARNESS_EVENTS === 'off' ? [] : readEventLog(process.env.HARNESS_EVENTS || join(root, '.cache', 'harness', 'events.log'), dayBounds(day)[0])
     const snapshot: Snapshot = {
       at: Date.now(),
       repos: readRepos(root, stamps),
       board: readBoard(join(root, 'board'), day, cards),
-      usage: await readUsage(projects, cacheDir, day),
+      usage: transcripts.usage,
+      events: [...log, ...transcripts.events].sort((a, b) => b.at - a.at).slice(0, MAX_EVENTS),
     }
     const text = JSON.stringify(snapshot)
     const tmp = `${shared}.${process.pid}`

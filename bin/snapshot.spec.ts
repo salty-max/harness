@@ -1,10 +1,25 @@
 import { describe, expect, test } from 'bun:test'
-import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import type { ModelDay } from '../types'
-import { countLine, parseCard, readBoard, readRepo, readUsage, summaryOf } from './snapshot'
+import {
+  agentModels,
+  askedPart,
+  countLine,
+  type EventState,
+  eventRow,
+  failedCheck,
+  parseCard,
+  parseEventLine,
+  readBoard,
+  readEventLog,
+  readRepo,
+  readTranscripts,
+  repoOf,
+  summaryOf,
+} from './snapshot'
 
 const temp = () => mkdtempSync(join(tmpdir(), 'harness-view-'))
 
@@ -105,7 +120,7 @@ describe('usage', () => {
     writeFileSync(main, `${line('m1', noon)}\n${line('m2', noon)}\n${half.slice(0, 40)}`)
     writeFileSync(sub, `${line('s1', noon, 'claude-sonnet-5-5')}\n`)
 
-    const first = await readUsage(projects, cache, '2026-10-20')
+    const first = (await readTranscripts(projects, cache, '2026-10-20', '/family')).usage
     expect(first.files).toBe(2)
     expect(first.models.map(m => [m.model, m.calls])).toEqual([
       ['claude-opus-5-5', 2],
@@ -113,11 +128,157 @@ describe('usage', () => {
     ])
 
     appendFileSync(main, `${half.slice(40)}\n${line('m1', noon)}\n`)
-    const second = await readUsage(projects, cache, '2026-10-20')
+    const second = (await readTranscripts(projects, cache, '2026-10-20', '/family')).usage
     expect(second.models.map(m => [m.model, m.calls])).toEqual([
       ['claude-opus-5-5', 2],
       ['claude-sonnet-5-5', 2],
     ])
+  })
+})
+
+describe('the log', () => {
+  const from = new Date(2026, 9, 20).getTime()
+  const at = (h: number, m = 0) => new Date(2026, 9, 20, h, m)
+
+  test('a line of events.log reads back, a broken one is left out', () => {
+    expect(parseEventLine(`${at(9).toISOString()}\tcheck\tok\tyonder\tcheck: ok (41s) · stamped 3f2a1b9`)).toEqual({
+      at: at(9).getTime(),
+      source: 'check',
+      tone: 'ok',
+      repo: 'yonder',
+      text: 'check: ok (41s) · stamped 3f2a1b9',
+    })
+    // An unknown tone is read from the words; an empty repository is the family folder.
+    expect(parseEventLine(`${at(9).toISOString()}\treview\t\t\tabc1234 clean`)).toMatchObject({ tone: '', repo: '', text: 'abc1234 clean' })
+    expect(parseEventLine(`${at(9).toISOString()}\thook\tloud\tr\tx`)?.tone).toBe('')
+    expect(parseEventLine('not a date\tcheck\tok\tr\tx')).toBeNull()
+    expect(parseEventLine(`${at(9).toISOString()}\tcheck\tok\tr`)).toBeNull()
+    expect(parseEventLine('')).toBeNull()
+  })
+
+  test("today's events newest first, read from the end of a long log", () => {
+    const file = join(temp(), 'events.log')
+    const row = (d: Date, text: string) => `${d.toISOString()}\tboard\twait\tyonder\t${text}\n`
+    let text = row(new Date(2026, 9, 19, 23, 59), 'yesterday')
+    // 100 KB of older lines first: only the last 64 KB is read, its cut first line left out.
+    for (let i = 0; i < 1000; i++) text += row(at(1), `filler ${i} ${'x'.repeat(80)}`)
+    text += row(at(9), 'first') + 'a torn line\n' + row(at(10, 30), 'second')
+    writeFileSync(file, text)
+    const events = readEventLog(file, from)
+    expect(events[0]?.text).toBe('second')
+    expect(events[1]?.text).toBe('first')
+    expect(events).toHaveLength(40)
+    expect(events.every(e => e.at >= from)).toBe(true)
+    expect(readEventLog(file, at(10).getTime()).map(e => e.text)).toEqual(['second'])
+    expect(readEventLog(join(temp(), 'missing.log'), from)).toEqual([])
+  })
+
+  test('a push or a release is said short, its repository found', () => {
+    expect(askedPart('cd /x/addon-kit && git status --short && git push -q origin main 2>&1 | tail -3')).toBe('git push -q origin main')
+    expect(askedPart('scripts/release.sh --version 1.2.3 NOTES.md')).toBe('scripts/release.sh --version 1.2.3 NOTES.md')
+    expect(askedPart('gh workflow run release.yml -f tag=v0.2.0')).toBe('gh workflow run release.yml -f tag=v0.2.0')
+    expect(askedPart('ls -la')).toBe('ls -la')
+    expect(askedPart(`echo ${'y'.repeat(100)}`)).toHaveLength(60)
+    expect(repoOf('/f', '/f', 'cd /f/addon-kit && git push')).toBe('addon-kit')
+    expect(repoOf('/f', '/f', 'git -C yonder push origin main')).toBe('yonder')
+    expect(repoOf('/f', '/f/wow-data/src', 'git push')).toBe('wow-data')
+    expect(repoOf('/f', '/f', 'git push')).toBe('')
+    expect(repoOf('/f', '/elsewhere')).toBe('')
+  })
+
+  test("a helper's model comes from its definition", () => {
+    const dir = temp()
+    writeFileSync(join(dir, 'reviewer.md'), '---\nname: reviewer\nmodel: opus\ntools: Read\n---\nReview.\n')
+    writeFileSync(join(dir, 'scout.md'), "---\nname: data-scout\nmodel: 'sonnet'\n---\n")
+    writeFileSync(join(dir, 'plain.md'), '---\nmodel: inherit\n---\n')
+    expect(agentModels([dir, join(dir, 'missing')])).toEqual({ reviewer: 'opus', 'data-scout': 'sonnet' })
+  })
+})
+
+describe('events in the transcripts', () => {
+  const from = new Date(2026, 9, 20).getTime()
+  const to = new Date(2026, 9, 21).getTime()
+  const noon = new Date(2026, 9, 20, 12).toISOString()
+  const state = (): EventState => ({ root: '/f', models: { reviewer: 'opus' }, pending: {}, events: [] })
+  const call = (id: string, name: string, input: Record<string, unknown>, cwd = '/f/yonder') => ({
+    type: 'assistant',
+    timestamp: noon,
+    cwd,
+    message: { content: [{ type: 'tool_use', id, name, input }] },
+  })
+  const result = (id: string, extra: Record<string, unknown>, cwd = '/f/yonder') => ({
+    type: 'user',
+    timestamp: noon,
+    cwd,
+    message: { content: [{ type: 'tool_result', tool_use_id: id, content: 'x' }] },
+    ...extra,
+  })
+
+  test('a helper starting and finishing, with its model, tokens and time', () => {
+    const s = state()
+    eventRow(call('t1', 'Agent', { subagent_type: 'reviewer', description: 'Review the riddles' }), from, to, s)
+    eventRow(
+      result('t1', {
+        toolUseResult: { status: 'completed', agentType: 'reviewer', resolvedModel: 'claude-opus-5-5', totalTokens: 106_689, totalDurationMs: 503_770 },
+      }),
+      from,
+      to,
+      s,
+    )
+    expect(s.events).toEqual([
+      { id: 't1:start', at: Date.parse(noon), source: 'helper', tone: 'info', repo: 'yonder', text: 'reviewer started: Review the riddles', model: 'opus' },
+      { id: 't1:end', at: Date.parse(noon), source: 'helper', tone: 'ok', repo: 'yonder', text: 'reviewer done', model: 'claude-opus-5-5', tokens: 106_689, ms: 503_770 },
+    ])
+    // Its own model wins over the definition's; a failure is red; a background start has no end yet.
+    eventRow(call('t2', 'Agent', { subagent_type: 'Explore', model: 'haiku' }), from, to, s)
+    eventRow(result('t2', { toolUseResult: { status: 'failed', agentType: 'Explore' } }), from, to, s)
+    eventRow(result('t3', { toolUseResult: { status: 'async_launched', agentType: 'Explore' } }), from, to, s)
+    expect(s.events.slice(2).map(e => [e.text, e.tone, e.model])).toEqual([
+      ['Explore started', 'info', 'haiku'],
+      ['Explore failed', 'fail', undefined],
+    ])
+  })
+
+  test('a push the user allowed or refused, never one a rule let through', () => {
+    const s = state()
+    eventRow(call('b1', 'Bash', { command: 'git push -q origin main 2>&1 | tail -3' }), from, to, s)
+    eventRow(call('b2', 'Bash', { command: 'git -C wow-data push' }, '/f'), from, to, s)
+    eventRow(call('b3', 'Bash', { command: 'git status' }), from, to, s)
+    eventRow(call('b4', 'Bash', { command: 'scripts/release.sh NOTES.md' }), from, to, s)
+    expect(Object.keys(s.pending)).toEqual(['b1', 'b2', 'b3', 'b4'])
+    eventRow(result('b1', { permissionDecision: { decision: 'accept', source: 'user_temporary' } }), from, to, s)
+    eventRow(result('b2', { toolUseResult: 'User rejected tool use' }, '/f'), from, to, s)
+    eventRow(result('b3', { permissionDecision: { decision: 'accept', source: 'config', reasonType: 'classifier' } }), from, to, s)
+    eventRow(result('b4', { permissionDecision: { decision: 'reject', source: 'user_reject' } }), from, to, s)
+    expect(s.events.map(e => [e.source, e.tone, e.repo, e.text])).toEqual([
+      ['ask', 'ok', 'yonder', 'git push -q origin main allowed'],
+      ['ask', 'fail', 'wow-data', 'git -C wow-data push refused'],
+      ['ask', 'fail', 'yonder', 'scripts/release.sh NOTES.md refused'],
+    ])
+    expect(s.pending).toEqual({})
+  })
+
+  test('outside the family folder or the day, nothing', () => {
+    const s = state()
+    eventRow(call('o1', 'Agent', { subagent_type: 'reviewer' }, '/elsewhere'), from, to, s)
+    eventRow({ ...call('o2', 'Agent', { subagent_type: 'reviewer' }), timestamp: new Date(2026, 9, 19, 23).toISOString() }, from, to, s)
+    expect(s.events).toEqual([])
+  })
+
+  test('a call and its answer in two reads, an old day cache read again whole', async () => {
+    const projects = temp()
+    const cache = temp()
+    mkdirSync(join(projects, 'p'), { recursive: true })
+    const file = join(projects, 'p', 's.jsonl')
+    writeFileSync(join(cache, 'usage-2026-10-20.json'), JSON.stringify({ day: '2026-10-20', files: { [file]: { offset: 999 } }, seen: [], models: {} }))
+    writeFileSync(file, `${JSON.stringify(call('b1', 'Bash', { command: 'git push' }))}\n`)
+    expect((await readTranscripts(projects, cache, '2026-10-20', '/f')).events).toEqual([])
+    appendFileSync(file, `${JSON.stringify(result('b1', { permissionDecision: { decision: 'accept', source: 'user_temporary' } }))}\n`)
+    const read = await readTranscripts(projects, cache, '2026-10-20', '/f')
+    expect(read.events.map(e => e.text)).toEqual(['git push allowed'])
+    // Read again from the start (a rewritten file): the same event once.
+    writeFileSync(join(cache, 'usage-2026-10-20.json'), JSON.stringify({ ...JSON.parse(readFileSync(join(cache, 'usage-2026-10-20.json'), 'utf8')), files: {} }))
+    expect((await readTranscripts(projects, cache, '2026-10-20', '/f')).events).toHaveLength(1)
   })
 })
 
@@ -165,6 +326,20 @@ describe('repositories', () => {
     // Checked, committed, then edited again.
     expect(readRepo(dir, { ...kit, headTree: () => 'work1', workTree: () => 'work2' })?.check).toMatchObject({ isFresh: true, isWorkFresh: false })
     expect(readRepo(dir, { ...kit, lastStamp: () => undefined })?.check).toBeNull()
+  })
+
+  test('a check that failed after the newest stamp is told', () => {
+    const dir = repo()
+    mkdirSync(join(dir, '.cache', 'logs'), { recursive: true })
+    const log = join(dir, '.cache', 'logs', 'check.log')
+    writeFileSync(log, '$ bun run check\n(fail) a test\n\n[exit 1, 3.2s]\n')
+    expect(failedCheck(dir, 0)).toMatchObject({ exit: 1 })
+    expect(failedCheck(dir, Date.now() + 1000)).toBeNull()
+    writeFileSync(log, '$ bun run check\nok\n\n[exit 0, 41s]\n')
+    expect(failedCheck(dir, 0)).toBeNull()
+    writeFileSync(log, '$ bun run check\nstill running\n')
+    expect(failedCheck(dir, 0)).toBeNull()
+    expect(readRepo(dir)?.failed).toBeNull()
   })
 
   test('an older stamp is stale, a packet alone has no verdict', () => {

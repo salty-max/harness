@@ -1,12 +1,13 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
-import type { AgentRow, AgentSteps, BoardCard, CheckStamp, ModelDay, RepoRow, SessionFacts, Snapshot } from '../types'
+import type { AgentRow, AgentSteps, BoardCard, CheckStamp, HarnessEvent, ModelDay, RepoRow, SessionFacts, Snapshot } from '../types'
 
 const PANE = 'harness'
 const TITLE = 'Harness'
 const SNAPSHOT_MS = 30_000
 const SESSION_MS = 5_000
+const LOG_LINES = 10
 
 const snapshot = atom({ plugin: 'harness-view', key: 'snapshot' } as const, null)
 const snapshotError = atom({ plugin: 'harness-view', key: 'snapshotError' } as const, null)
@@ -38,34 +39,130 @@ export function ago(at: number, now: number): string {
   return `${Math.round(s / 86400)}d`
 }
 
-function bar(value: number, max: number, width: number): string {
-  if (max <= 0 || width <= 0) return ''
-  const cells = Math.round((value / max) * width)
-  return '█'.repeat(cells) + '░'.repeat(width - cells)
+/** How long a helper ran: `42s`, `8m 24s`, `1h 3m`. */
+export function duration(ms: number): string {
+  const s = Math.round(ms / 1000)
+  if (s < 60) return `${s}s`
+  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`
+}
+
+const EIGHTHS = ['', '▏', '▎', '▍', '▌', '▋', '▊', '▉']
+
+/** A bar of block characters in eighths of a cell; a value above zero shows at least a sliver. */
+export function bar(value: number, max: number, width: number): { filled: string; empty: string } {
+  if (max <= 0 || width <= 0) return { filled: '', empty: '░'.repeat(Math.max(0, width)) }
+  const share = Math.min(1, Math.max(0, value / max))
+  const eighths = Math.max(value > 0 ? 1 : 0, Math.round(share * width * 8))
+  const part = EIGHTHS[eighths % 8] ?? ''
+  const full = Math.floor(eighths / 8)
+  return { filled: '█'.repeat(full) + part, empty: '░'.repeat(width - full - (part ? 1 : 0)) }
 }
 
 const total = (d: ModelDay) => d.input + d.cacheRead + d.cacheWrite + d.output
 
-/** A recorded verdict's colour: a clean one green, findings or a failure amber. */
+// --- colours ----------------------------------------------------------------
+
+/** Each model family its own: Opus purple, Sonnet orange, Haiku blue. */
+export function modelColor(model: string | null | undefined): string {
+  const m = (model ?? '').toLowerCase()
+  if (m.includes('opus')) return '#8b5cf6'
+  if (m.includes('sonnet')) return '#f97316'
+  if (m.includes('haiku')) return '#3b82f6'
+  return 'inactive'
+}
+
+// A section's label and border.
+const SECTION = {
+  session: '#0891b2',
+  agents: '#7c3aed',
+  repos: '#0d9488',
+  today: '#4f46e5',
+  board: '#ca8a04',
+  log: '#64748b',
+} as const
+
+// A source of the log; a q.ts run of another name (test, build) is a check's colour.
+const CHECK = '#14b8a6'
+const SOURCE: Record<string, string> = {
+  check: CHECK,
+  hook: '#ec4899',
+  review: '#d946ef',
+  board: '#ca8a04',
+  ask: '#06b6d4',
+}
+
+export function sourceColor(e: Pick<HarnessEvent, 'source' | 'model'>): string {
+  if (e.source === 'helper') return modelColor(e.model)
+  return SOURCE[e.source] ?? CHECK
+}
+
+type Tone = 'success' | 'warning' | 'error' | 'inactive' | 'text'
+
+/** A status: ok green, waiting amber, failed red. */
+export function toneColor(tone: HarnessEvent['tone'], text = ''): Tone {
+  if (tone === 'ok') return 'success'
+  if (tone === 'wait') return 'warning'
+  if (tone === 'fail') return 'error'
+  if (tone === 'info') return 'text'
+  return verdictTone(text)
+}
+
+/**
+ * A recorded verdict's colour: a clean one green (one that says so first, its
+ * fixed findings after it, too), findings or a failure amber. A log line's
+ * verdict may lead with the commit.
+ */
 export function verdictTone(verdict: string | null): 'inactive' | 'success' | 'warning' | 'text' {
   if (verdict === null) return 'inactive'
-  if (/^\W*(no|zero|0) (findings?|issues?)\b/i.test(verdict)) return 'success'
+  if (/^\W*([0-9a-f]{7,40}\s+)?((no|zero|0) (findings?|issues?)|clean|lgtm|approved?)\b/i.test(verdict)) return 'success'
   if (/\b[1-9]\d* (findings?|issues?)\b|fail|block|reject|\bnot\b/i.test(verdict)) return 'warning'
   if (/\b(ok|pass(ed)?|clean|approved?|lgtm)\b/i.test(verdict)) return 'success'
+  return 'text'
+}
+
+/** A subagent's status: running amber, done green, failed or stopped red. */
+export function agentTone(status: string): Tone {
+  if (status === 'running') return 'warning'
+  if (status === 'completed' || status === 'done') return 'success'
+  if (/fail|kill|error|stop|cancel/.test(status)) return 'error'
+  return 'inactive'
+}
+
+/** A card's status: what waits on the user amber, done green. */
+export function cardTone(status: string): Tone {
+  if (status.startsWith('waiting') || status === 'ready-to-push') return 'warning'
+  if (status === 'done') return 'success'
   return 'text'
 }
 
 /**
  * A check stamp as the panel says it: a push of HEAD passes (✓), edits made
  * since were not checked (+edits), the checked state is not committed yet
- * (commit), or the last check was on something else (old).
+ * (commit), the last check was on something else (old), or the last run
+ * failed after the newest stamp (✗).
  */
-export function checkMark(check: CheckStamp, now: number): { text: string; tone: 'success' | 'warning' | 'inactive' } {
+export function checkMark(check: CheckStamp | null, now: number, failed: RepoRow['failed'] = null): { text: string; tone: Tone } {
+  if (failed) return { text: `✗ ${ago(failed.at, now)} exit ${failed.exit}`, tone: 'error' }
+  if (!check) return { text: 'no stamp', tone: 'inactive' }
   const age = ago(check.at, now)
   if (check.isFresh) return { text: check.isWorkFresh ? `✓ ${age}` : `✓ ${age} +edits`, tone: 'success' }
   if (check.isWorkFresh) return { text: `◐ ${age} commit`, tone: 'warning' }
   return { text: `· ${age} old`, tone: 'inactive' }
 }
+
+/** A log line's words: a helper's model, tokens and time after what it did. */
+export function eventText(e: HarnessEvent): string {
+  const more = [e.model && e.ms !== undefined ? modelName(e.model) : '', e.tokens ? `${tokens(e.tokens)} tok` : '', e.ms ? duration(e.ms) : '']
+  return [e.text, ...more.filter(Boolean)].join(' · ')
+}
+
+/** A log line's time: `14:02`, local. */
+export function clockTime(at: number): string {
+  const d = new Date(at)
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
 const WAITING = (c: BoardCard) => c.status.startsWith('waiting') || c.status === 'ready-to-push'
 
 /** The one status line: what claude-hud does not already say. */
@@ -290,60 +387,97 @@ export const register: Register = on => {
       read($, agents),
     ])
     const now = await $.clock.now()
-    const width = Math.max(30, e.props.bodyColumns)
-    const barWidth = Math.max(4, Math.min(16, width - 34))
+    const width = Math.max(32, e.props.bodyColumns)
+    // Inside a section: its border and a column of padding each side.
+    const inner = width - 4
 
-    const heading = (title: string, note?: string) => (
-      <Box key={`heading-${title}`} marginTop={1}>
-        <Text bold>{title}</Text>
-        {note ? <Text dimColor> {note}</Text> : null}
+    // A section: a rounded box in its colour, its title a label over the
+    // box's top border: a later sibling in a wrapper with no border, so it
+    // paints over the border row and no offset reaches outside the wrapper.
+    const section = (key: keyof typeof SECTION, title: string, note: string | undefined, body: RenderChildren) => (
+      <Box key={key} flexDirection="column" width={width} marginTop={1}>
+        <Box flexDirection="column" width={width} paddingX={1} borderStyle="round" borderColor={SECTION[key]}>
+          {body}
+        </Box>
+        <Box position="absolute" top={0} left={2}>
+          <Text backgroundColor={SECTION[key]} color="#ffffff" bold>
+            {` ${title} `}
+          </Text>
+          {note ? <Text color={SECTION[key]}>{` ${note} `}</Text> : null}
+        </Box>
       </Box>
     )
+    const cell = (w: number, child: RenderChildren, isRight = false) => (
+      <Box width={w} flexShrink={0} justifyContent={isRight ? 'flex-end' : 'flex-start'}>
+        {child}
+      </Box>
+    )
+    const quiet = (text: string) => <Text dimColor>{text}</Text>
 
     // The session
-    const sessionRows = facts ? (
+    const contextBar = bar(facts?.contextTokens ?? 0, facts?.window ?? 0, Math.max(6, Math.min(24, inner - 26)))
+    const contextTone = (facts?.percent ?? 0) >= 90 ? 'error' : (facts?.percent ?? 0) >= 80 ? 'warning' : modelColor(facts?.model)
+    const sessionBody = facts ? (
       <Box flexDirection="column">
+        <Box justifyContent="space-between">
+          <Text wrap="truncate-end">
+            <Text color={modelColor(facts.model)} bold>
+              {modelName(facts.model)}
+            </Text>
+            {facts.lastModel && modelName(facts.lastModel) !== modelName(facts.model) ? (
+              <Text>
+                <Text dimColor> · last call </Text>
+                <Text color={modelColor(facts.lastModel)}>{modelName(facts.lastModel)}</Text>
+              </Text>
+            ) : null}
+          </Text>
+          {facts.costUsd !== null ? <Text dimColor>${facts.costUsd.toFixed(2)}</Text> : null}
+        </Box>
         <Text wrap="truncate-end">
-          {modelName(facts.model)}
-          {facts.lastModel && modelName(facts.lastModel) !== modelName(facts.model) ? (
-            <Text dimColor> · last call {modelName(facts.lastModel)}</Text>
-          ) : null}
-        </Text>
-        <Text wrap="truncate-end">
-          <Text color={(facts.percent ?? 0) >= 80 ? 'warning' : 'text'}>
-            {bar(facts.contextTokens ?? 0, facts.window, barWidth)}
-          </Text>{' '}
-          {tokens(facts.contextTokens)} / {tokens(facts.window)}
-          {facts.percent !== null ? ` ${Math.round(facts.percent)}%` : ''}
-          {facts.costUsd !== null ? <Text dimColor> · ${facts.costUsd.toFixed(2)}</Text> : null}
+          <Text dimColor>context </Text>
+          <Text color={contextTone}>{contextBar.filled}</Text>
+          <Text dimColor>{contextBar.empty}</Text> {tokens(facts.contextTokens)}
+          <Text dimColor> / {tokens(facts.window)}</Text>
+          {facts.percent !== null ? <Text color={contextTone}> {Math.round(facts.percent)}%</Text> : null}
         </Text>
       </Box>
     ) : (
-      <Text dimColor>Reading the session…</Text>
+      quiet('Reading the session…')
     )
 
-    // The subagents
-    const running = rows.filter(a => a.status === 'running')
-    const agentRows =
+    // The subagents: model, status, tokens
+    const running = rows.filter(a => a.status === 'running').length
+    const nameWidth = Math.min(16, Math.max(8, ...rows.map(a => a.type.length + 1)))
+    const agentsBody =
       rows.length === 0 ? (
-        <Text dimColor>None running.</Text>
+        quiet('None running.')
       ) : (
         <Box flexDirection="column">
           {rows.map(a => (
             <Box key={`agent-${a.id}`} flexDirection="column">
-              <Text wrap="truncate-end">
-                <Text color={a.status === 'running' ? 'success' : 'inactive'}>{a.status === 'running' ? '●' : '○'}</Text>{' '}
-                <Text bold>{a.type}</Text>
-                {a.steps ? (
-                  <Text>
-                    {' '}
-                    {modelName(a.steps.model)} · ctx {tokens(a.steps.context)} · out {tokens(a.steps.output)} ·{' '}
-                    {a.steps.steps} calls
-                  </Text>
-                ) : (
-                  <Text dimColor> {a.status}</Text>
+              <Box>
+                {cell(2, <Text color={agentTone(a.status)}>{a.status === 'running' ? '●' : '○'}</Text>)}
+                {cell(
+                  nameWidth,
+                  <Text bold wrap="truncate-end">
+                    {a.type}
+                  </Text>,
                 )}
-              </Text>
+                {cell(11, <Text color={modelColor(a.steps?.model)}>{a.steps ? modelName(a.steps.model) : '…'}</Text>)}
+                {cell(10, <Text color={agentTone(a.status)}>{a.status}</Text>)}
+                <Text wrap="truncate-end">
+                  {a.steps ? (
+                    <Text>
+                      {tokens(a.steps.context)}
+                      <Text dimColor> ctx </Text>
+                      {tokens(a.steps.output)}
+                      <Text dimColor> out · {a.steps.steps} calls</Text>
+                    </Text>
+                  ) : (
+                    <Text dimColor>no calls yet</Text>
+                  )}
+                </Text>
+              </Box>
               <Text dimColor wrap="truncate-end">
                 {'  '}
                 {a.description}
@@ -353,26 +487,115 @@ export const register: Register = on => {
         </Box>
       )
 
+    // The repositories: each one's check and review
+    const repos = snap?.repos ?? []
+    const fresh = repos.filter(r => r.check?.isFresh).length
+    const repoWidth = Math.min(20, Math.max(10, ...repos.map(r => r.name.length + 2)))
+    const reposBody =
+      repos.length === 0 ? (
+        quiet('Reading…')
+      ) : (
+        <Box flexDirection="column">
+          {repos.map(r => {
+            const mark = checkMark(r.check, now, r.failed)
+            const verdict = r.review?.verdict ?? null
+            return (
+              <Box key={`repo-${r.name}`}>
+                {cell(
+                  repoWidth,
+                  <Text bold wrap="truncate-end">
+                    {r.name}
+                  </Text>,
+                )}
+                {cell(
+                  15,
+                  <Text color={mark.tone} wrap="truncate-end">
+                    {mark.text}
+                  </Text>,
+                )}
+                <Box flexGrow={1}>
+                  {r.review ? (
+                    <Text wrap="truncate-end">
+                      <Text color={verdictTone(verdict)}>{verdict ?? 'packet'}</Text>
+                      <Text dimColor>
+                        {' '}
+                        {r.review.sha.slice(0, 7)}
+                        {r.review.isCurrent ? '' : ' older'}
+                      </Text>
+                    </Text>
+                  ) : (
+                    quiet('no review')
+                  )}
+                </Box>
+              </Box>
+            )
+          })}
+        </Box>
+      )
+
+    // Today: tokens by model, a bar each
+    const models = snap?.usage.models ?? []
+    const dayTotal = models.reduce((sum, d) => sum + total(d), 0)
+    const cacheRead = models.reduce((sum, d) => sum + d.cacheRead, 0)
+    const top = models[0] ? total(models[0]) : 0
+    const usageBar = Math.max(6, Math.min(28, inner - 12 - 7 - 11))
+    const todayBody =
+      models.length === 0 ? (
+        quiet('No calls today yet.')
+      ) : (
+        <Box flexDirection="column">
+          {models.map(d => {
+            const b = bar(total(d), top, usageBar)
+            return (
+              <Box key={`model-${d.model}`}>
+                {cell(
+                  12,
+                  <Text color={modelColor(d.model)} wrap="truncate-end">
+                    {modelName(d.model)}
+                  </Text>,
+                )}
+                <Text>
+                  <Text color={modelColor(d.model)}>{b.filled}</Text>
+                  <Text dimColor>{b.empty}</Text>
+                </Text>
+                {cell(7, <Text bold>{tokens(total(d))}</Text>, true)}
+                <Text dimColor wrap="truncate-end">
+                  {' '}
+                  {d.calls} calls
+                </Text>
+              </Box>
+            )
+          })}
+        </Box>
+      )
+
     // The board
     const board = snap?.board ?? []
     const waiting = board.filter(WAITING).length
-    const boardRows =
+    const statusWidth = Math.min(15, Math.max(5, ...board.map(c => c.status.length + 1)))
+    const ageWidth = 5
+    const boardBody =
       board.length === 0 ? (
-        <Text dimColor>No cards. (board/*.md)</Text>
+        quiet('No cards. (board/*.md)')
       ) : (
         <Box flexDirection="column">
           {board.map(c => {
             const at = Date.parse(c.updated)
             return (
               <Box key={`card-${c.id}`} flexDirection="column">
-                <Text wrap="truncate-end">
-                  <Text color={WAITING(c) ? 'warning' : c.status === 'done' ? 'inactive' : 'text'}>{c.status || '?'}</Text>{' '}
-                  <Text bold>{c.repo}</Text> {c.title}
-                  <Text dimColor> · {Number.isNaN(at) ? c.updated : ago(at, now)}</Text>
-                </Text>
+                <Box>
+                  {cell(statusWidth, <Text color={cardTone(c.status)}>{c.status || '?'}</Text>)}
+                  {cell(
+                    Math.max(8, inner - statusWidth - ageWidth),
+                    <Text wrap="truncate-end">
+                      <Text bold>{c.repo}</Text> {c.title}
+                    </Text>,
+                  )}
+                  {cell(ageWidth, <Text dimColor>{Number.isNaN(at) ? '?' : ago(at, now)}</Text>, true)}
+                </Box>
                 {c.summary ? (
                   <Text dimColor wrap="truncate-end">
-                    {'  '}
+                    {' '.repeat(statusWidth)}
                     {c.summary}
                   </Text>
                 ) : null}
@@ -382,63 +605,27 @@ export const register: Register = on => {
         </Box>
       )
 
-    // The repositories
-    const repos = snap?.repos ?? []
-    const fresh = repos.filter(r => r.check?.isFresh).length
-    const repoRow = (r: RepoRow) => {
-      const verdict = r.review?.verdict ?? null
-      const verdictColor = verdictTone(verdict)
-      const mark = r.check && checkMark(r.check, now)
-      return (
-        <Box key={`repo-${r.name}`}>
-          <Box width={18} flexShrink={0}>
-            <Text wrap="truncate-end">{r.name}</Text>
-          </Box>
-          <Box width={14} flexShrink={0}>
-            {mark ? (
-              <Text color={mark.tone} wrap="truncate-end">
-                {mark.text}
-              </Text>
-            ) : (
-              <Text dimColor>no stamp</Text>
-            )}
-          </Box>
-          <Box flexGrow={1}>
-            {r.review ? (
-              <Text color={verdictColor} wrap="truncate-end">
-                {verdict ?? 'packet'} {r.review.sha.slice(0, 7)}
-                {r.review.isCurrent ? '' : ' (older)'}
-              </Text>
-            ) : (
-              <Text dimColor>no review</Text>
-            )}
-          </Box>
-        </Box>
-      )
-    }
-
-    // Today
-    const models = snap?.usage.models ?? []
-    const dayTotal = models.reduce((sum, d) => sum + total(d), 0)
-    const cacheRead = models.reduce((sum, d) => sum + d.cacheRead, 0)
-    const top = models[0] ? total(models[0]) : 0
-    const usageRows =
-      models.length === 0 ? (
-        <Text dimColor>No calls today yet.</Text>
+    // The log: today's events, newest first
+    const events = (snap?.events ?? []).slice(0, LOG_LINES)
+    const sourceWidth = Math.min(8, Math.max(5, ...events.map(ev => ev.source.length + 1)))
+    const logRepoWidth = Math.min(12, Math.max(1, ...events.map(ev => (ev.repo ? ev.repo.length + 1 : 0))))
+    const logBody =
+      events.length === 0 ? (
+        quiet('Nothing yet today.')
       ) : (
         <Box flexDirection="column">
-          {models.map(d => (
-            <Box key={`model-${d.model}`}>
-              <Box width={11} flexShrink={0}>
-                <Text wrap="truncate-end">{modelName(d.model)}</Text>
-              </Box>
-              <Box width={7} flexShrink={0} justifyContent="flex-end">
-                <Text>{tokens(total(d))}</Text>
-              </Box>
-              <Text> {bar(total(d), top, barWidth)}</Text>
-              <Text dimColor wrap="truncate-end">
-                {' '}
-                {d.calls} calls · out {tokens(d.output)}
+          {events.map((ev, i) => (
+            <Box key={`event-${i}-${ev.at}`}>
+              {cell(6, <Text dimColor>{clockTime(ev.at)}</Text>)}
+              {cell(sourceWidth, <Text color={sourceColor(ev)}>{ev.source}</Text>)}
+              {cell(
+                logRepoWidth,
+                <Text bold wrap="truncate-end">
+                  {ev.repo}
+                </Text>,
+              )}
+              <Text color={toneColor(ev.tone, ev.text)} wrap="truncate-end">
+                {eventText(ev)}
               </Text>
             </Box>
           ))}
@@ -456,24 +643,17 @@ export const register: Register = on => {
             Snapshot failed: {error}
           </Text>
         ) : null}
-
-        {heading('Session')}
-        {sessionRows}
-
-        {heading('Subagents', running.length > 0 ? `${running.length} running` : undefined)}
-        {agentRows}
-
-        {heading('Board', waiting > 0 ? `${waiting} waiting on you` : undefined)}
-        {boardRows}
-
-        {heading('Repositories', snap ? `checks ${fresh}/${repos.length} fresh` : undefined)}
-        {repos.length === 0 ? <Text dimColor>Reading…</Text> : <Box flexDirection="column">{repos.map(repoRow)}</Box>}
-
-        {heading(
+        {section('session', 'Session', undefined, sessionBody)}
+        {section('agents', 'Subagents', running > 0 ? `${running} running` : undefined, agentsBody)}
+        {section('repos', 'Repositories', snap ? `checks ${fresh}/${repos.length}` : undefined, reposBody)}
+        {section(
+          'today',
           'Today',
           dayTotal > 0 ? `${tokens(dayTotal)} tokens · ${Math.round((cacheRead / dayTotal) * 100)}% cache reads` : undefined,
+          todayBody,
         )}
-        {usageRows}
+        {section('board', 'Board', waiting > 0 ? `${waiting} waiting` : undefined, boardBody)}
+        {section('log', 'Log', events.length > 0 ? 'today' : undefined, logBody)}
       </Box>
     )
   })
