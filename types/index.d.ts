@@ -166,7 +166,6 @@ declare module 'claude-code' {
       agents: AgentRow[]
       steps: Record<string, AgentSteps>
       tick: number
-      beat: number
       turn: TurnState
       handback: Handback | null
     }

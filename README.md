@@ -159,10 +159,14 @@ pane itself redraws only when a number moved. It moves when work does:
   breathe brighter and fainter while a comet laps them, top, right, bottom,
   left, on the wall clock's phase. One frame at rest and at work, so a box
   keeps its size as work starts (measured: `HARNESS_PAINT_IDLE=1` paints
-  the pane at rest beside the busy one); in the terminal the
-  border pulses bright and dim on a beat (every 450 ms, ticked only while
-  something runs and a terminal draws the pane, read by the terminal's
-  drawing alone so the desktop doesn't redraw with it);
+  the pane at rest beside the busy one); in the terminal the box keeps
+  the terminal's own border, dimmed at work, and its top and bottom edges
+  are laid over it (`edgeText`, on a plain Box at top 0 and bottom 0), a
+  comet on each, a bold heavy head and a heavy tail of four: the top's
+  left to right, the bottom's right to left, so the pair turns the box
+  round, a cell a frame, then a pause as long as the sides. The motion
+  module draws them: the pane doesn't redraw for them (it did every 450 ms
+  for the beat that blinked the whole border before, 21 October 2026);
 - the spinners (braille) turn while what they stand for works: the gates
   and the session in a turn, a helper while it runs, the planner while an
   Opus helper runs;
@@ -256,9 +260,19 @@ claude plugin validate .
 
 ## Seeing the paint
 
-The tests hold the tree to each surface's elements, never the paint. Three
+The tests hold the tree to each surface's elements, never the paint. Four
 ways to look before calling a visual change done (the desktop app itself
 can't be captured from a session):
+
+- The terminal in motion: `zsh bin/terminal-paint.sh [from to step]` runs a
+  claude session with this mod (`--plugin-dir`) in a pty in the family
+  folder, `/harness`, one prompt that needs no tool (a turn runs, a few
+  cents), rebuilds its screen frame by frame with pyte (a venv in `.cache/`;
+  pyte drops faint, kept here) and screenshots the pane's columns at each
+  moment with headless Chrome: `.cache/paint/terminal.png`, and every frame
+  as text in `terminal.txt` to measure columns and steps (`22 22.8 0.08`:
+  each 80 ms frame). The file tree's pane is turned off for that session.
+  It caught the beat's blink, which a still can't.
 
 - The desktop's paint: `zsh bin/desktop-paint.sh` mounts the pane on the
   desktop surface (this machine's last snapshot, mid-turn, a helper

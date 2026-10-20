@@ -30,14 +30,21 @@ const agents = atom({ plugin: 'harness-view', key: 'agents' } as const, [])
 const steps = atom({ plugin: 'harness-view', key: 'steps' } as const, {})
 // Bumped every half minute while the pane is shown: the ages (12m, 3h) drawn again.
 const tick = atom({ plugin: 'harness-view', key: 'tick' } as const, 0)
-// The terminal's beat: a running box's border pulses with it (the desktop's laps a comet, no redraw).
-const beat = atom({ plugin: 'harness-view', key: 'beat' } as const, 0)
 // The main session's turn: the diagram's lines pulse while it runs.
 const turn = atom({ plugin: 'harness-view', key: 'turn' } as const, { isRunning: false, at: null })
 // A helper of this session just done: the diagram's way back to the lead lights up this long, then goes dark.
 const handback = atom({ plugin: 'harness-view', key: 'handback' } as const, null)
 const HANDBACK_MS = 6_000
 let handbackTimer: { cancel: () => void } | null = null
+// A running box's comets in the terminal: the head and this many cells of trail.
+const COMET_TAIL = 4
+
+/** A box's top or bottom edge as the terminal draws it: Ink's single style, or its dashed one (the corners blank). */
+export function edgeText(w: number, isDashed: boolean, side: 'top' | 'bottom'): string {
+  if (w < 2) return ''
+  if (isDashed) return ` ${'╌'.repeat(w - 2)} `
+  return side === 'top' ? `┌${'─'.repeat(w - 2)}┐` : `└${'─'.repeat(w - 2)}┘`
+}
 
 // --- numbers as the panel says them ---------------------------------------
 
@@ -351,9 +358,6 @@ let watched = ''
 // Each vector bar's last value, so its next drawing slides from it.
 const barsShown = new Map<string, number>()
 let timers: { cancel: () => void }[] = []
-// Ticks the terminal's beat while something runs and a terminal draws the pane.
-let beater: { cancel: () => void } | null = null
-const BEAT_MS = 450
 const written = new Map<string, string>()
 
 /** Whether `value` differs from what was last written under `key`, so the panel redraws only when a number moved. */
@@ -465,18 +469,6 @@ async function watch($: EngineInterface) {
 async function setTurn($: EngineInterface, isRunning: boolean) {
   const at = isRunning ? await $.clock.now() : null
   if (isChanged('turn', isRunning)) await update($, turn, () => ({ isRunning, at }))
-  await refreshBeat($)
-}
-
-/** The terminal's beat runs while the turn or a helper does, and a terminal draws the pane. */
-async function refreshBeat($: EngineInterface) {
-  const [work, rows, back, surfaces] = await Promise.all([read($, turn), read($, agents), read($, handback), $.session.surfaces()])
-  const isWanted = isActive && (work.isRunning || rows.some(a => a.status === 'running') || back !== null) && surfaces.includes('terminal')
-  if (isWanted && !beater) beater = $.clock.every(BEAT_MS, () => void update($, beat, n => n + 1).catch(() => {}))
-  if (!isWanted && beater) {
-    beater.cancel()
-    beater = null
-  }
 }
 
 async function refreshSession($: EngineInterface, lastModel?: string, lastEffort?: string) {
@@ -530,9 +522,8 @@ async function refreshAgents($: EngineInterface) {
     const at = await $.clock.now()
     await update($, handback, () => ({ at, type: back.type }))
     handbackTimer?.cancel()
-    handbackTimer = $.clock.after(HANDBACK_MS, () => void update($, handback, () => null).then(() => refreshBeat($)).catch(() => {}))
+    handbackTimer = $.clock.after(HANDBACK_MS, () => void update($, handback, () => null).catch(() => {}))
   }
-  await refreshBeat($)
   await refreshStatus($)
 }
 
@@ -555,8 +546,6 @@ async function gate($: EngineInterface, isStart = false): Promise<boolean> {
   isActive = isFamily
   for (const timer of timers) timer.cancel()
   timers = []
-  beater?.cancel()
-  beater = null
   handbackTimer?.cancel()
   handbackTimer = null
   // (a handback whose timer was just cancelled would stay lit; an old session's running rows would hand back falsely)
@@ -686,8 +675,6 @@ export const register: Register = on => {
     // The desktop draws an Svg: the bars and the diagram's lines are vector there. Its renderer
     // is the one read (README, "The desktop's paint"): the editor's and the phone's are not, they keep characters.
     const Svg = e.surface === 'desktop' && 'Svg' in table ? table.Svg : undefined
-    // The terminal's border beat: read there alone, so the desktop doesn't redraw with it.
-    const isDim = e.surface === 'terminal' ? (await read($, beat)) % 2 === 1 : false
     // A row between stacked boxes: the desktop's vertical unit is half a line.
     const gapY = e.surface === 'desktop' ? 2 : GAP_Y
     const [snap, error, facts, rows, work, back] = await Promise.all([
@@ -790,7 +777,7 @@ export const register: Register = on => {
     // A box. On the desktop its border is four vector edges, at rest as at work
     // (one frame, so it keeps its size as work starts), a comet lapping them
     // while it works (`running`, its height in lines about). In the terminal
-    // the terminal's own border, pulsing with the beat while it works.
+    // the terminal's own border, a comet on its top and bottom edges while it works.
     const frame = (key: string, w: number, color: string, children: RenderChildren, opts: { dashed?: boolean; middle?: boolean; running?: { lines: number } } = {}) => {
       if (Svg) {
         const edge = { cells: w, lines: opts.running?.lines ?? 6, color, nowMs: now, isRunning: opts.running !== undefined, isDashed: opts.dashed }
@@ -809,19 +796,52 @@ export const register: Register = on => {
           </Box>
         )
       }
-      return (
+      // At work (and a Client to draw it), the border dims and its top and bottom
+      // edges are laid over it, a comet on each: the top's left to right, the
+      // bottom's right to left, so the pair turns the box round. The motion module
+      // draws them, the pane doesn't redraw. (On a plain Box at top 0 and bottom 0:
+      // one at top -1 inside a bordered Box isn't drawn.)
+      const isLapped = opts.running !== undefined && Client !== undefined
+      const bordered = (
         <Box
-          key={key}
+          key={isLapped ? `${key}-frame` : key}
           flexDirection="column"
           width={w}
           flexShrink={0}
+          flexGrow={isLapped ? 1 : undefined}
           paddingX={1}
           justifyContent={opts.middle ? 'center' : 'flex-start'}
           borderStyle={opts.dashed ? 'dashed' : 'single'}
           borderColor={color}
-          borderDimColor={opts.running ? isDim : undefined}
+          borderDimColor={isLapped ? true : undefined}
         >
           {children}
+        </Box>
+      )
+      if (!isLapped || !opts.running) return bordered
+      const across = Array.from({ length: w }, (_, x) => [x])
+      // (the comet's way across, its tail out of sight, a pause as long as the box's sides)
+      const cycle = w + COMET_TAIL + Math.max(2, opts.running.lines)
+      const edge = (side: 'top' | 'bottom') =>
+        motion(`${key}-${side}`, {
+          kind: 'flow',
+          text: edgeText(w, opts.dashed === true, side),
+          path: side === 'top' ? across : [...across].reverse(),
+          start: 0,
+          cycle,
+          on: true,
+          color,
+          tail: COMET_TAIL,
+        })
+      return (
+        <Box key={key} flexDirection="column" width={w} flexShrink={0}>
+          {bordered}
+          <Box position="absolute" top={0} left={0} width={w}>
+            {edge('top')}
+          </Box>
+          <Box position="absolute" bottom={0} left={0} width={w}>
+            {edge('bottom')}
+          </Box>
         </Box>
       )
     }

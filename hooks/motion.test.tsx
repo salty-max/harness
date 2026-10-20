@@ -4,7 +4,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { HarnessEvent, Snapshot } from '../types'
 import { FRESH_MS, tokens } from './format'
 import { FRAME_MS, lit } from './motion'
-import { pulsePath } from './register'
+import { edgeText, pulsePath } from './register'
 import { barSvg, edgeSvg, lap, lineSvg } from './vector'
 
 const AT = 1_760_940_000_000
@@ -69,6 +69,24 @@ describe('the pulse', () => {
     // The next round.
     expect(lit(p, 12).head.has(0)).toBe(true)
     expect(lit({ ...p, on: false }, 2).head.size).toBe(0)
+  })
+
+  test('a comet: the head, its tail behind it, gone once the tail is past the end', async () => {
+    const p = { kind: 'flow', text: '─────', path: [[0], [1], [2], [3], [4]], start: 0, cycle: 12, on: true, color: 'x', tail: 3 } as const
+    expect([...lit(p, 3).head]).toEqual([3])
+    expect([...lit(p, 3).trail].sort()).toEqual([0, 1, 2])
+    expect([...lit(p, 1).trail]).toEqual([0])
+    // Past the last cell its tail runs out, then nothing.
+    expect(lit(p, 6).head.size).toBe(0)
+    expect([...lit(p, 6).trail].sort()).toEqual([3, 4])
+    expect(lit(p, 8).head.size + lit(p, 8).trail.size).toBe(0)
+  })
+
+  test("a box's edges as the terminal draws them", async () => {
+    expect(edgeText(6, false, 'top')).toBe('┌────┐')
+    expect(edgeText(6, false, 'bottom')).toBe('└────┘')
+    expect(edgeText(6, true, 'top')).toBe(' ╌╌╌╌ ')
+    expect(edgeText(1, false, 'top')).toBe('')
   })
 })
 
@@ -378,30 +396,47 @@ test('on the desktop a box has one vector frame at rest and at work, the comet o
   await ui.unmount()
 })
 
-test("in the terminal a box at work pulses its border with the beat", async ($, on) => {
+test("in the terminal a box at work wears a comet on its top and bottom edges, the pane not redrawn for it", async ($, on) => {
   const { clock } = world(on, { surface: 'terminal' })
   await $.session.start({ cwd: FAMILY, surface: 'terminal', isInteractive: true })
   const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'terminal', ...PANE })
   await ui.press({ key: 'refresh' })
-  const dimOf = async () => {
-    const find = (n: unknown): unknown => {
-      if (!n || typeof n !== 'object') return undefined
-      if (Array.isArray(n)) return n.map(find).find(v => v !== undefined)
-      const node = n as { props?: Record<string, unknown>; children?: unknown[] }
-      return node.props?.key === 'session' ? (node.props.borderDimColor ?? 'unset') : find(node.children)
-    }
-    return find(await ui.drawn())
+  type Node = { type?: string; props?: Record<string, any>; children?: unknown[] }
+  const find = (n: unknown, f: (node: Node) => boolean): Node | undefined => {
+    if (!n || typeof n !== 'object') return undefined
+    if (Array.isArray(n)) return n.map(c => find(c, f)).find(Boolean)
+    const node = n as Node
+    return f(node) ? node : find(node.children, f)
   }
-  expect(await dimOf()).toBe('unset')
+  const edge = async (side: string) => find(await ui.drawn(), n => n.type === 'Client' && n.props?.key === `session-${side}`)?.props?.props
+  // (the bordered Box: the wrapper's own at work, the box itself at rest)
+  const border = async () => {
+    const tree = await ui.drawn()
+    return find(tree, n => n.props?.key === 'session-frame') ?? find(tree, n => n.props?.key === 'session')
+  }
+  // At rest: the terminal's own border, in full colour, no comet.
+  expect(await edge('top')).toBeUndefined()
+  expect((await border())?.props?.borderDimColor).toBeUndefined()
   await $.turn.start({ text: 'hi', turnId: 't1' })
-  const seen = new Set<unknown>()
-  for (let i = 0; i < 4; i++) {
-    await clock.advance(450)
-    seen.add(await dimOf())
-  }
-  // Bright and dim in turn while the turn runs.
-  expect([...seen].sort()).toEqual([false, true])
+  const top = await edge('top')
+  const bottom = await edge('bottom')
+  // The dashed box's edges, a comet each: the top's left to right, the bottom's right to left.
+  expect(top.kind).toBe('flow')
+  expect(top.on).toBe(true)
+  expect(top.text).toBe(` ${'╌'.repeat(top.text.length - 2)} `)
+  expect(top.path[0]).toEqual([0])
+  expect(bottom.path[0]).toEqual([top.text.length - 1])
+  expect(top.cycle).toBe(bottom.cycle)
+  expect(top.tail).toBeGreaterThan(1)
+  // Laid over the border, which dims beneath them.
+  expect((await border())?.props?.key).toBe('session-frame')
+  expect((await border())?.props?.borderDimColor).toBe(true)
+  // The motion module moves them: the pane's tree is the same a beat later.
+  const before = JSON.stringify(await ui.drawn())
+  await clock.advance(900)
+  expect(JSON.stringify(await ui.drawn())).toBe(before)
   await $.turn.complete({ answer: 'ok', durationMs: 5, isAborted: false, turnId: 't1', reason: 'answer' })
-  expect(await dimOf()).toBe('unset')
+  expect(await edge('top')).toBeUndefined()
+  expect((await border())?.props?.borderDimColor).toBeUndefined()
   await ui.unmount()
 })

@@ -23,6 +23,7 @@ export const SPIN = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '�
 const HEAVY: Record<string, string> = {
   '│': '┃', '─': '━', '┌': '┏', '┐': '┓', '└': '┗', '┘': '┛',
   '┬': '┳', '┴': '┻', '├': '┣', '┤': '┫', '┼': '╋', '┄': '┅',
+  '╌': '╍', '╎': '╏',
 }
 export const heavy = (ch: string) => HEAVY[ch] ?? ch
 
@@ -34,10 +35,11 @@ export type MotionProps =
   /**
    * A line of the diagram (`text`) a pulse runs along while `on`: at step
    * `k` of the drawing's cycle the cells `path[k - start]` are lit in
-   * `color`, the step before them as its trail. The line itself is drawn in
-   * `base`, else in `color` dimmed.
+   * `color`, the `tail` steps before them (one unless said) as its trail. The
+   * line itself is drawn in `base`, else in `color` dimmed. A running box's
+   * top and bottom edges in the terminal are flows too, a comet on each.
    */
-  | { kind: 'flow'; text: string; path: number[][]; start: number; cycle: number; on: boolean; color: string; base?: string }
+  | { kind: 'flow'; text: string; path: number[][]; start: number; cycle: number; on: boolean; color: string; base?: string; tail?: number }
   /** A bar of `width` cells rolling to `value` of `max`. */
   | { kind: 'bar'; value: number; max: number; width: number; rest?: string; color: string }
   /** A figure rolling to `value`. */
@@ -98,8 +100,12 @@ export function lit(p: Extract<MotionProps, { kind: 'flow' }>, frame: number): {
   const none = { head: new Set<number>(), trail: new Set<number>() }
   if (!p.on || p.cycle <= 0) return none
   const k = (((frame % p.cycle) + p.cycle) % p.cycle) - p.start
-  if (k < 0 || k > p.path.length) return none
-  return { head: new Set(p.path[k] ?? []), trail: new Set(p.path[k - 1] ?? []) }
+  const tail = Math.max(1, p.tail ?? 1)
+  if (k < 0 || k > p.path.length - 1 + tail) return none
+  const head = new Set(p.path[k] ?? [])
+  const trail = new Set<number>()
+  for (let i = 1; i <= tail; i++) for (const x of p.path[k - i] ?? []) if (!head.has(x)) trail.add(x)
+  return { head, trail }
 }
 
 type Elements = ClientSurface<number>['elements']
