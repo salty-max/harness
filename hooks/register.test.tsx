@@ -392,6 +392,88 @@ test("the pane's board shows a blocked card's blocker, free once it is done; the
   expect(statusLine(snap, 0)).toContain('3 blocked')
 })
 
+test("the sessions: each live one's status, model, card and an Open that hands the desktop its link; a running card whose session is gone", async ($, on) => {
+  const session = (id: string, extra: Partial<NonNullable<Snapshot['sessions']>[number]>) => ({
+    id,
+    pid: 1,
+    name: id,
+    status: 'idle',
+    waitingFor: null,
+    since: SNAPSHOT.at - 3_600_000,
+    entrypoint: 'claude-desktop',
+    link: `claude://claude.ai/epitaxy/local_${id}`,
+    model: 'claude-opus-5-5',
+    helpers: [],
+    ...extra,
+  })
+  const snap: Snapshot = {
+    ...SNAPSHOT,
+    sessions: [
+      session('downloads', { name: 'Addon downloads', status: 'waiting', waitingFor: 'permission prompt' }),
+      session('self', { name: 'This one', status: 'busy', helpers: [{ type: 'reviewer', at: SNAPSHOT.at }] }),
+      session('term', { name: 'In a terminal', entrypoint: 'cli', link: null, model: 'claude-sonnet-5-5' }),
+    ],
+    board: [
+      { ...SNAPSHOT.board[0]!, session: 'self', status: 'running', title: 'The panel' },
+      { ...SNAPSHOT.board[0]!, id: 'orphan', session: 'dead-one', status: 'running', title: 'Left running' },
+    ],
+  }
+  const opened: string[][] = []
+  mock.env(on, { HOME: '/Users/someone' })
+  const clock = mock.clock(on, { now: SNAPSHOT.at })
+  on('process.run', ($, e) => {
+    if (e.argv[0] === '/usr/bin/open') {
+      opened.push([...e.argv])
+      return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
+    return { value: { exitCode: 0, stdout: JSON.stringify(snap), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('command.register', ($, e) => ({ value: { command: e.name } }))
+  on('session.root', () => ({ value: '/Users/someone/code/wow-addons' }))
+  on('session.surfaces', () => ({ value: ['desktop'] }))
+  on('session.id', () => ({ value: 'self' }))
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('session.usage', () => ({ value: { context: { tokens: 1000, window: 1_000_000, percent: 0 }, rateLimits: [] } }))
+  on('settings.read', () => ({ value: {} }))
+  on('agent.list', () => ({ value: [] }))
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/Users/someone/code/wow-addons', surface: 'desktop', isInteractive: true })
+  await clock.advance(1100)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    for (const bodyColumns of [110, 48]) {
+      const ui = await $.ui.mount({ plugin: 'harness-view', surface, ...PANE, props: { ...PANE.props, bodyColumns } })
+      await ui.press({ key: 'refresh' })
+      const at = `${surface} ${bodyColumns}`
+      const has = async (text: string | RegExp, isThere = true) => expect([at, text, (await ui.find({ text })) !== undefined]).toEqual([at, text, isThere])
+      await has(/^SESSIONS · 3/)
+      await has('1 waiting on you')
+      await has(' waiting')
+      await has('Addon downloads')
+      // This session's row: no Open, it says so; a terminal one can't be opened from here.
+      await has('this')
+      await has('terminal')
+      if (bodyColumns >= 96) {
+        await has('permission prompt')
+        await has('opus 5.5 · reviewer')
+        await has('sonnet 5.5')
+        await has('running')
+      }
+      // The board: a running card whose session isn't live is said gone, the live one's isn't.
+      expect([at, (await ui.findAll({ type: 'Text', text: ' · session gone' })).length]).toEqual([at, 1])
+      // Open: the desktop app gets the session's own link, through macOS.
+      opened.length = 0
+      await ui.press({ key: 'open-downloads' })
+      expect([at, opened]).toEqual([at, [['/usr/bin/open', 'claude://claude.ai/epitaxy/local_downloads']]])
+      await ui.unmount()
+    }
+  }
+  expect(statusLine(snap, 0, 'self')).toStartWith('harness · 1 session waiting · ')
+  // Its own prompt isn't another's: this session waiting says nothing of itself.
+  expect(statusLine({ ...snap, sessions: [session('self', { status: 'waiting' })] }, 0, 'self')).not.toContain('session waiting')
+})
+
 test('a failing snapshot says why in the pane', async ($, on) => {
   on('process.run', () => ({
     value: { exitCode: 1, stdout: '', stderr: 'boom: no projects', isStdoutTruncated: false, isStderrTruncated: false },

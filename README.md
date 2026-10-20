@@ -46,6 +46,8 @@ holds the gates, the part of the harness that runs in code.
 - **Back to lead** (dashed): the last helper's handback, tokens and time;
   "handing back" while a helper of this session has just finished and the
   shared numbers don't have its figures yet.
+- **Sessions**: every session running in the family folder, this one
+  among them (below).
 - **Today**, **Board**: tokens by model, the board's cards (below).
 - **Repositories**: each family repository's newest check stamp
   (`.git/harness/check-<tree>`, read through `addon-kit/q.ts`) and review.
@@ -62,6 +64,28 @@ holds the gates, the part of the harness that runs in code.
   running card names it (a session is at work there), `○` amber while
   only cards stopped mid-task do (blocked, or waiting on the user: their
   commits go out with its next push); the header counts the held ones.
+- **Sessions**: one row a live session, waiting on you first, then busy,
+  then idle: its status (a spinner while busy, amber while it waits on
+  you, with what for: "permission prompt"), its title, its main loop's
+  last model and its helpers running, its newest open card's status,
+  how long since its status changed, and **Open** for a desktop session:
+  the press hands the desktop app the session's own link
+  (`/usr/bin/open claude://claude.ai/epitaxy/<its desktop id>`; the
+  pane's links follow `https:` alone on the desktop, a button's press
+  runs anything). This session's row says "this", a terminal one
+  "terminal" (no window to bring up from here). Read from Claude Code's
+  registry of live sessions, `~/.claude/sessions/<pid>.json` (what its
+  agent list and ListAgents read: an internal format, read only, so the
+  box says when it can't read it): each file a session's id, folder,
+  title, status and desktop id, kept if its folder is the family's and
+  its process lives (`/bin/ps`, one call: started no later than the
+  session, so a pid reused since is left out). Its model and helpers come
+  from today's transcripts: an Agent call is open until its result (a
+  background one: until the notice of its end), a helper's own calls
+  aside, six hours at most. The Board says "session gone" on a running
+  card whose session isn't live (it still holds its repositories until
+  the user moves it), and the status line counts the other sessions
+  waiting on you.
 - **Today**: tokens by model from every transcript under
   `~/.claude/projects/**/*.jsonl` (each assistant message once, by its id,
   local day), with the share of cache reads.

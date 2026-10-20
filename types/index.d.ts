@@ -74,6 +74,33 @@ export type HelperDay = { runs: number; tokens: number; ms: number; lastAt: numb
 /** The Opus helpers' calls today at one moment (`plan`, `error`, `push`, `done`: hooks/format.ts's momentOf), counted as each starts. */
 export type MomentDay = { runs: number; lastAt: number }
 
+/**
+ * A session running in the family folder, as Claude Code's own registry of
+ * live sessions says (`~/.claude/sessions/<pid>.json`, what its agent list
+ * and ListAgents read; an internal format), its process alive, with its
+ * model and helpers from today's transcripts.
+ */
+export type LiveSession = {
+  /** Its session id: the transcript's, and the board cards' `session`. */
+  id: string
+  pid: number
+  /** Its title (the desktop's, or a derived name). */
+  name: string
+  /** `busy`, `idle` or `waiting` (on the user: `waitingFor`), as the registry says. */
+  status: string
+  waitingFor: string | null
+  /** When its status last changed. */
+  since: number
+  /** Where it runs: `claude-desktop`, `cli`, ... */
+  entrypoint: string
+  /** The desktop app's link to it (`claude://claude.ai/epitaxy/<id>`), a desktop session's alone. */
+  link: string | null
+  /** Its main loop's last model today. */
+  model: string | null
+  /** Its helpers running: started, no result yet (a background one: no notice of its end yet). */
+  helpers: { type: string; at: number }[]
+}
+
 /** What `bin/snapshot.ts` prints: the numbers every session shares. */
 export type Snapshot = {
   at: number
@@ -87,10 +114,14 @@ export type Snapshot = {
   helperDay: Record<string, HelperDay>
   /** Today's calls by moment; absent in a snapshot of an older version. */
   moments?: Record<string, MomentDay>
+  /** The live sessions in the family folder; absent when the registry can't be read (or an older snapshot). */
+  sessions?: LiveSession[]
 }
 
 /** The session the panel is drawn in. */
 export type SessionFacts = {
+  /** This session's id: its row among the live sessions. */
+  id: string | null
   model: string
   lastModel: string | null
   contextTokens: number | null

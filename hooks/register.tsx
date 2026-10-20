@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
-import type { AgentRow, AgentSteps, BoardCard, CheckStamp, HarnessEvent, ModelDay, RepoRow, SessionFacts, Snapshot } from '../types'
+import type { AgentRow, AgentSteps, BoardCard, CheckStamp, HarnessEvent, LiveSession, ModelDay, RepoRow, SessionFacts, Snapshot } from '../types'
 import { ago, bar, FRESH_MS, type Moment, momentOf, tokens } from './format'
 import type { MotionProps } from './motion'
 import { BAR_PX, barSvg, EDGE_PX, edgeSvg, LINE_PX, lineSvg, SIDE_PX } from './vector'
@@ -311,9 +311,12 @@ const MOMENTS: { key: Moment; title: string; who: string }[] = [
 const WAITING = (c: BoardCard) => c.status.startsWith('waiting') || c.status === 'ready-to-push'
 
 /** The one status line: what claude-hud does not already say. */
-export function statusLine(snap: Snapshot | null, running: number): string {
+export function statusLine(snap: Snapshot | null, running: number, self: string | null = null): string {
   const parts: string[] = []
   if (snap) {
+    // Another session stuck on a prompt first: it waits on the user, and nothing else says so.
+    const asking = (snap.sessions ?? []).filter(x => x.status === 'waiting' && x.id !== self).length
+    if (asking > 0) parts.push(`${asking} session${asking > 1 ? 's' : ''} waiting`)
     const waiting = snap.board.filter(WAITING).length
     const blocked = snap.board.filter(c => c.status === 'blocked').length
     if (waiting > 0) parts.push(`board ${waiting} waiting`)
@@ -419,6 +422,12 @@ async function refreshSnapshot($: EngineInterface, isFresh = false) {
   }
 }
 
+/** A session's row pressed: the desktop app opens it from its own link (`open` hands it the claude: URL). */
+async function openSession($: EngineInterface, link: string) {
+  if (!/^claude:\/\/claude\.ai\/epitaxy\/[\w-]+$/.test(link)) return
+  await $.process.run(['/usr/bin/open', link], { timeoutMs: 10_000 })
+}
+
 /** Whether the pane is drawn in front: the live pace's condition. */
 async function refreshShown($: EngineInterface): Promise<boolean> {
   const panes = await $.ui.panes().catch(() => [])
@@ -471,7 +480,8 @@ async function refreshBeat($: EngineInterface) {
 }
 
 async function refreshSession($: EngineInterface, lastModel?: string, lastEffort?: string) {
-  const [model, usage, previous, settings, subagentModel] = await Promise.all([
+  const [id, model, usage, previous, settings, subagentModel] = await Promise.all([
+    $.session.id().catch(() => null),
     $.session.model(),
     $.session.usage(),
     read($, session),
@@ -481,6 +491,7 @@ async function refreshSession($: EngineInterface, lastModel?: string, lastEffort
   const s = settings as { model?: unknown; effortLevel?: unknown; permissions?: { defaultMode?: unknown; ask?: unknown } }
   const text = (v: unknown) => (typeof v === 'string' && v ? v : null)
   const facts: SessionFacts = {
+    id,
     model,
     lastModel: lastModel ?? previous?.lastModel ?? null,
     contextTokens: usage.context.tokens ?? null,
@@ -526,8 +537,8 @@ async function refreshAgents($: EngineInterface) {
 }
 
 async function refreshStatus($: EngineInterface) {
-  const [snap, rows] = await Promise.all([read($, snapshot), read($, agents)])
-  const line = statusLine(snap, rows.filter(a => a.status === 'running').length)
+  const [snap, rows, facts] = await Promise.all([read($, snapshot), read($, agents), read($, session)])
+  const line = statusLine(snap, rows.filter(a => a.status === 'running').length, facts?.id ?? null)
   if (isChanged('status', line)) $.ui.status(line)
 }
 
@@ -888,6 +899,10 @@ export const register: Register = on => {
     const events = snap?.events ?? []
     const repos = snap?.repos ?? []
     const board = snap?.board ?? []
+    const live = snap?.sessions ?? []
+    const selfId = facts?.id ?? null
+    // A running card whose session is no longer live still holds its repositories (board.ts): said so, for the user to move.
+    const isGone = (c: BoardCard) => c.status === 'running' && !!c.session && !!snap?.sessions && !live.some(x => x.id === c.session)
     const models = snap?.usage.models ?? []
     const builder = facts ? (facts.lastModel ?? facts.model) : null
     const builderName = builder ? modelName(builder) : 'main'
@@ -1454,6 +1469,7 @@ export const register: Register = on => {
                       runs(`card-${c.id}-title`, [
                         [where(c), { bold: true, fixed: true }],
                         c.status === 'blocked' ? blocker(c) : null,
+                        isGone(c) ? [' · session gone', { color: PALETTE.wait, fixed: true }] : null,
                         [`${c.status === 'blocked' ? ' ·' : ''} ${c.title}`, {}],
                       ]),
                     )}
@@ -1525,15 +1541,77 @@ export const register: Register = on => {
     }
 
     const todayW = Math.floor((W - GAP_X) * 0.42)
+    // --- the sessions: every one running in the family folder ---------------------------
+    // Claude Code's registry of live sessions (the snapshot's `sessions`): what each
+    // does now, waiting on you first, with its card and an Open for a desktop one.
+    const sessionsBox = (w: number) => {
+      const inner = w - 4
+      const asking = live.filter(x => x.status === 'waiting' && x.id !== selfId).length
+      const busy = live.filter(x => x.status === 'busy').length
+      const isWide = inner >= 72
+      const isMid = inner >= 52
+      const [statusW = 10, whatW = 26, cardW = 15, ageW = 5, openW = 8] = fit([10, isMid ? 26 : 0, isWide ? 15 : 0, 5, 8], inner, 4)
+      // (a column apart from the next: a cut title's ellipsis would touch it)
+      const titleW = Math.max(8, inner - statusW - whatW - cardW - ageW - openW - 1)
+      // A session's card: its newest open one (board.ts writes the session's id on it).
+      const cardOf = (x: LiveSession) => board.filter(c => c.session === x.id && c.status !== 'done').sort((a, b) => b.updated.localeCompare(a.updated))[0]
+      const row = (x: LiveSession) => {
+        const isSelf = x.id === selfId
+        const color = x.status === 'waiting' ? PALETTE.wait : x.status === 'busy' ? PALETTE.ask : 'inactive'
+        const helping = x.helpers.map(h => h.type)
+        const what =
+          x.status === 'waiting'
+            ? line(x.waitingFor ?? 'waiting on you', { color: PALETTE.wait })
+            : line(`${x.model ? modelName(x.model) : '—'}${helping.length ? ` · ${helping.join(', ')}` : ''}`, { color: helping.length ? PALETTE.wait : x.model ? modelColor(x.model) : 'inactive' })
+        const card = cardOf(x)
+        return (
+          <Box key={`session-${x.id}`} alignItems="center">
+            <Box width={statusW} flexShrink={0}>
+              {x.status === 'busy' ? motion(`session-${x.id}-spin`, { kind: 'spin', on: true, color }) : line(x.status === 'waiting' ? '●' : '·', { color })}
+              {line(` ${x.status}`, { color, bold: x.status === 'waiting' })}
+            </Box>
+            {cell(titleW, line(x.name, { bold: isSelf || x.status === 'waiting' }))}
+            <Box width={1} flexShrink={0} />
+            {whatW > 0 ? cell(whatW, what) : null}
+            {cardW > 0 ? cell(cardW, card ? line(card.status, { color: cardColor(card.status) }) : line('no card', { dim: true })) : null}
+            {cell(ageW, line(ago(x.since, now), { dim: true }), true)}
+            <Box width={openW} flexShrink={0} justifyContent="flex-end">
+              {isSelf ? line('this', { dim: true }) : x.link ? <Button key={`open-${x.id}`} label="Open" onPress={() => void openSession($, x.link as string)} /> : line(x.entrypoint === 'cli' ? 'terminal' : '', { dim: true })}
+            </Box>
+          </Box>
+        )
+      }
+      return frame(
+        'sessions',
+        w,
+        'inactive',
+        <>
+          <Box justifyContent="space-between">
+            {line(inner >= 40 ? `SESSIONS · ${live.length} live in the family folder` : `SESSIONS · ${live.length}`, { bold: true })}
+            {runs('sessions-counts', [
+              asking > 0 ? [`${asking} waiting on you`, { color: PALETTE.wait }] : null,
+              asking > 0 && busy > 0 ? [' · ', { dim: true }] : null,
+              busy > 0 ? [`${busy} busy`, { color: PALETTE.ask }] : null,
+            ])}
+          </Box>
+          <Box flexDirection="column">
+            {!snap?.sessions ? line(snap ? "can't read Claude Code's sessions (~/.claude/sessions)" : 'reading…', { dim: true }) : live.length === 0 ? line('none', { dim: true }) : live.map(row)}
+          </Box>
+        </>,
+      )
+    }
+
     const ledger =
       tier === 'narrow' || W < 80 ? (
         <Box key="ledger" flexDirection="column" width={W} marginTop={gapY} gap={gapY}>
+          {sessionsBox(W)}
           {todayBox(W)}
           {boardBox(W)}
           {reposBox(W)}
         </Box>
       ) : (
         <Box key="ledger" flexDirection="column" width={W} marginTop={gapY} gap={gapY}>
+          {sessionsBox(W)}
           <Box width={W}>
             {todayBox(todayW)}
             <Box marginLeft={GAP_X}>{boardBox(W - GAP_X - todayW)}</Box>
@@ -1610,6 +1688,7 @@ export const register: Register = on => {
             statusPair('helpers', `${running.length}/${Math.max(helpers.length, running.length)} active`, running.length > 0 ? PALETTE.wait : PALETTE.haiku),
             statusPair(family(opusModel), `${opusRuns} runs`, PALETTE.opus),
             statusPair('gates', `${fresh}/${repos.length}`, fresh === repos.length ? PALETTE.ok : PALETTE.wait),
+            statusPair('sessions', `${live.length} live${live.some(x => x.status === 'waiting' && x.id !== selfId) ? ' · asking' : ''}`, live.some(x => x.status === 'waiting' && x.id !== selfId) ? PALETTE.wait : PALETTE.plain),
             statusPair('board', `${waiting} waiting`, waiting > 0 ? PALETTE.wait : PALETTE.ok),
             statusPair('today', tokens(dayTotal), PALETTE.plain),
           ].map((pair, i) => (

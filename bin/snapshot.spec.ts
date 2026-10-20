@@ -19,6 +19,7 @@ import {
   readBoard,
   readEventLog,
   readRepo,
+  readSessions,
   readTranscripts,
   repoMarks,
   repoOf,
@@ -213,7 +214,7 @@ describe('events in the transcripts', () => {
   const from = new Date(2026, 9, 20).getTime()
   const to = new Date(2026, 9, 21).getTime()
   const noon = new Date(2026, 9, 20, 12).toISOString()
-  const state = (): EventState => ({ root: '/f', models: { reviewer: 'opus' }, pending: {}, events: [], helpers: {}, moments: {}, known: new Set() })
+  const state = (): EventState => ({ root: '/f', models: { reviewer: 'opus' }, pending: {}, events: [], helpers: {}, moments: {}, sessions: { models: {}, open: {} }, known: new Set() })
   const call = (id: string, name: string, input: Record<string, unknown>, cwd = '/f/yonder') => ({
     type: 'assistant',
     timestamp: noon,
@@ -271,6 +272,32 @@ describe('events in the transcripts', () => {
       reviewer: { runs: 1, tokens: 106_689, ms: 503_770, lastAt: Date.parse(noon), model: 'claude-opus-5-5' },
       Explore: { runs: 1, tokens: 0, ms: 0, lastAt: Date.parse(noon), model: null },
     })
+  })
+
+  test("each session's helpers open from the call to its result, a background one to the notice of its end; its main loop's model", () => {
+    const s = state()
+    const of = (row: Record<string, unknown>) => ({ ...row, sessionId: 'S1' })
+    eventRow(of(call('h1', 'Agent', { subagent_type: 'data-scout', description: 'a question' })), from, to, s)
+    eventRow(of(call('h2', 'Agent', { subagent_type: 'reviewer', description: 'a review', run_in_background: true })), from, to, s)
+    // A helper's own calls (a sidechain) open nothing of the session's.
+    eventRow({ ...of(call('h3', 'Agent', { subagent_type: 'Explore' })), isSidechain: true }, from, to, s)
+    expect(Object.keys(s.sessions.open).sort()).toEqual(['h1', 'h2'])
+    // The background one only launched: still open; the other back.
+    eventRow(of(result('h2', { toolUseResult: { status: 'async_launched', agentType: 'reviewer' } })), from, to, s)
+    eventRow(of(result('h1', { toolUseResult: { status: 'completed', agentType: 'data-scout' } })), from, to, s)
+    expect(Object.keys(s.sessions.open)).toEqual(['h2'])
+    // Its end's notice closes it.
+    eventRow(of({ type: 'user', timestamp: noon, cwd: '/f', message: { content: '<task-notification>\n<task-id>a1</task-id>\n<tool-use-id>h2</tool-use-id>\n<status>completed</status>' } }), from, to, s)
+    expect(s.sessions.open).toEqual({})
+    // An interrupted call's result, read no further than its id, closes it too.
+    eventRow(of(call('h4', 'Agent', { subagent_type: 'data-scout' })), from, to, s)
+    scanLine(JSON.stringify(of(result('h4', {}))), from, to, new Set(), {}, s)
+    expect(s.sessions.open).toEqual({})
+    // The model: the main loop's, never a helper's.
+    const usage = (model: string, side = false) => JSON.stringify({ type: 'assistant', timestamp: noon, sessionId: 'S1', isSidechain: side, message: { id: `m-${model}-${side}`, model, usage: { input_tokens: 1, output_tokens: 1 } } })
+    scanLine(usage('claude-sonnet-5-5'), from, to, new Set(), {}, s)
+    scanLine(usage('claude-haiku-5-5', true), from, to, new Set(), {}, s)
+    expect(s.sessions.models).toEqual({ S1: 'claude-sonnet-5-5' })
   })
 
   test("the Opus helpers' calls by moment: the reviewer's the push, the architect's by its brief, each once", () => {
@@ -451,5 +478,37 @@ describe('repositories', () => {
     writeFileSync(path, JSON.stringify({ ...was, repos: [{ ...was.repos[0], head: 'cached' }] }))
     expect(cachedRepos(root, cache, undefined, false)[0]?.head).toBe('cached')
     expect(cachedRepos(root, cache, undefined, true)[0]?.head).not.toBe('cached')
+  })
+})
+
+describe('the live sessions', () => {
+  const root = '/Users/someone/code/wow-addons'
+  const write = (dir: string, pid: number, extra: Record<string, unknown>) =>
+    writeFileSync(join(dir, `${pid}.json`), JSON.stringify({ pid, sessionId: `s${pid}`, cwd: root, startedAt: 1_000_000, status: 'idle', statusUpdatedAt: 1_000_000, ...extra }))
+
+  test("the registry's sessions in the family folder whose process lives, waiting first, each with its link, model and helpers", () => {
+    const dir = temp()
+    write(dir, 11, { name: 'Riddles', status: 'busy', statusUpdatedAt: 2_000_000, entrypoint: 'claude-desktop', hostSessionId: 'local_aa-11' })
+    write(dir, 12, { name: 'Downloads', status: 'waiting', waitingFor: 'permission prompt', entrypoint: 'claude-desktop', hostSessionId: 'local_bb-12' })
+    write(dir, 13, { name: 'In a terminal', entrypoint: 'cli', cwd: `${root}/yonder` })
+    // Elsewhere, gone, or a pid since reused by a later process: left out.
+    write(dir, 14, { name: 'Elsewhere', cwd: '/Users/someone/code/other' })
+    write(dir, 15, { name: 'Gone' })
+    write(dir, 16, { name: 'Reused' })
+    writeFileSync(join(dir, '17.json'), 'not json')
+    writeFileSync(join(dir, '18.abc.key'), '{}')
+    const starts = (pids: number[]) => new Map(pids.filter(p => p !== 15).map(p => [p, p === 16 ? 9_000_000 : 999_000] as [number, number]))
+    const day = { models: { s11: 'claude-sonnet-5-5' }, open: { t1: { session: 's11', type: 'reviewer', at: 2_500_000 }, t2: { session: 's99', type: 'Explore', at: 2_500_000 } } }
+    const live = readSessions(dir, root, day, 3_000_000, starts)
+    expect(live?.map(s => [s.name, s.status, s.waitingFor, s.link])).toEqual([
+      ['Downloads', 'waiting', 'permission prompt', 'claude://claude.ai/epitaxy/local_bb-12'],
+      ['Riddles', 'busy', null, 'claude://claude.ai/epitaxy/local_aa-11'],
+      ['In a terminal', 'idle', null, null],
+    ])
+    expect(live?.[1]).toMatchObject({ id: 's11', model: 'claude-sonnet-5-5', helpers: [{ type: 'reviewer', at: 2_500_000 }], since: 2_000_000 })
+    // A helper open for hours was never seen back: left out.
+    expect(readSessions(dir, root, day, 2_500_000 + 7 * 3600_000, starts)?.[1]?.helpers).toEqual([])
+    // No registry: nothing known (undefined), not "no session".
+    expect(readSessions(join(dir, 'missing'), root, day, 0, starts)).toBeUndefined()
   })
 })

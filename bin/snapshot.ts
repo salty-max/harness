@@ -19,7 +19,7 @@ import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 
 import { momentOf } from '../hooks/format'
-import type { BoardCard, HarnessEvent, HelperDay, HelperDef, ModelDay, MomentDay, RepoRow, Snapshot } from '../types'
+import type { BoardCard, HarnessEvent, HelperDay, HelperDef, LiveSession, ModelDay, MomentDay, RepoRow, Snapshot } from '../types'
 
 const CHUNK = 16 * 1024 * 1024
 
@@ -264,8 +264,8 @@ export function readBoard(dir: string, today: string, kit?: CardKit): BoardCard[
 // (version 2 added the events, 3 left every Bash call out of the pending
 // ones but pushes and releases, 4 added each helper's day: an older day
 // cache is read again whole; 5 keeps every event id seen today, 6 the
-// Opus helpers' calls by moment)
-const CACHE_VERSION = 6
+// Opus helpers' calls by moment, 7 each session's model and open helpers)
+const CACHE_VERSION = 7
 
 type UsageCache = {
   version: number
@@ -277,8 +277,12 @@ type UsageCache = {
   events: HarnessEvent[]
   helpers: Record<string, HelperDay>
   moments: Record<string, MomentDay>
+  sessions: SessionDay
   known: string[]
 }
+
+/** What the transcripts say of each session: its main loop's last model, its helpers started and not yet back (by the Agent call's id). */
+export type SessionDay = { models: Record<string, string>; open: Record<string, { session: string; type: string; at: number }> }
 
 function listTranscripts(dir: string, since: number): { path: string; size: number }[] {
   const out: { path: string; size: number }[] = []
@@ -298,6 +302,8 @@ type Row = {
   type?: string
   timestamp?: string
   cwd?: string
+  sessionId?: string
+  isSidechain?: boolean
   message?: { id?: string; model?: string; usage?: Record<string, number>; content?: unknown }
   toolUseResult?: unknown
   permissionDecision?: { decision?: string; source?: string }
@@ -362,6 +368,8 @@ export type EventState = {
   helpers: Record<string, HelperDay>
   /** The Opus helpers' calls today by moment, counted as each starts. */
   moments: Record<string, MomentDay>
+  /** Each session's model and open helpers. */
+  sessions: SessionDay
   /** Every event id seen today: the events keep only the last 40, a reread line must not come back as new. */
   known: Set<string>
 }
@@ -403,7 +411,12 @@ export function eventRow(row: Row, from: number, to: number, state: EventState) 
   const at = Date.parse(row.timestamp ?? '')
   const cwd = row.cwd
   if (!(at >= from && at < to) || (cwd !== state.root && !cwd?.startsWith(`${state.root}/`))) return
-  const blocks = (Array.isArray(row.message?.content) ? row.message.content : []) as Block[]
+  const content = row.message?.content
+  // A background helper's end: the notice its session gets, naming the Agent call.
+  if (row.type === 'user' && typeof content === 'string' && content.includes('<task-notification>')) {
+    for (const [, id] of content.matchAll(/<tool-use-id>([^<]+)<\/tool-use-id>/g)) if (id) delete state.sessions.open[id]
+  }
+  const blocks = (Array.isArray(content) ? content : []) as Block[]
   for (const block of blocks) {
     if (row.type === 'assistant' && block?.type === 'tool_use' && typeof block.id === 'string') {
       const input = block.input ?? {}
@@ -420,6 +433,8 @@ export function eventRow(row: Row, from: number, to: number, state: EventState) 
           text: `${type} started${brief ? `: ${brief}` : ''}`,
           ...(model ? { model } : {}),
         })
+        // Open until its result comes back (a background one: until the notice of its end).
+        if (row.sessionId && !row.isSidechain) state.sessions.open[block.id] = { session: row.sessionId, type, at }
         const moment = momentOf(type, brief)
         if (isNew && moment) {
           const day = (state.moments[moment] ??= { runs: 0, lastAt: 0 })
@@ -432,6 +447,9 @@ export function eventRow(row: Row, from: number, to: number, state: EventState) 
     } else if (row.type === 'user' && block?.type === 'tool_result' && typeof block.tool_use_id === 'string') {
       const id = block.tool_use_id
       const result = row.toolUseResult
+      // An Agent call's result: back, unless it only launched a background helper.
+      const launched = (row.toolUseResult as { status?: string } | null)?.status === 'async_launched'
+      if (!launched) delete state.sessions.open[id]
       const call = state.pending[id]
       if (call) {
         delete state.pending[id]
@@ -474,6 +492,7 @@ export function eventRow(row: Row, from: number, to: number, state: EventState) 
 // (an Agent result names its agentType, a prompt's answer its user source or the rejection).
 const isEventLine = (line: string) =>
   /"name":"(?:Agent|Task|Bash)"/.test(line) ||
+  line.includes('<task-notification>') ||
   (line.includes('"tool_use_id"') && (line.includes('"agentType"') || line.includes('"source":"user') || line.includes('User rejected tool use')))
 
 const RESULT_ID = /"tool_use_id":"([^"]+)"/g
@@ -486,7 +505,12 @@ export function scanLine(line: string, from: number, to: number, seen: Set<strin
   const isUsage = line.includes('"type":"assistant"') && line.includes('"usage"')
   const isEvent = isEventLine(line)
   if (!isEvent && line.includes('"tool_result"')) {
-    for (const [, id] of line.matchAll(RESULT_ID)) if (id) delete state.pending[id]
+    for (const [, id] of line.matchAll(RESULT_ID)) {
+      if (!id) continue
+      delete state.pending[id]
+      // A helper's result read no further (an interrupt, say): back all the same, unless only launched.
+      if (state.sessions.open[id] && !line.includes('async_launched')) delete state.sessions.open[id]
+    }
   }
   if (!isUsage && !isEvent) return
   let row: Row
@@ -496,6 +520,8 @@ export function scanLine(line: string, from: number, to: number, seen: Set<strin
     return
   }
   if (isUsage) countRow(row, from, to, seen, models)
+  // A session's main loop's last model (a helper's rows are a sidechain).
+  if (isUsage && row.sessionId && !row.isSidechain && row.message?.model && !row.message.model.startsWith('<')) state.sessions.models[row.sessionId] = row.message.model
   if (isEvent) eventRow(row, from, to, state)
 }
 
@@ -566,17 +592,17 @@ export async function readTranscripts(
   day: string,
   root: string,
   helpers: Record<string, string> = {},
-): Promise<{ usage: Snapshot['usage']; events: HarnessEvent[]; helperDay: Record<string, HelperDay>; moments: Record<string, MomentDay> }> {
+): Promise<{ usage: Snapshot['usage']; events: HarnessEvent[]; helperDay: Record<string, HelperDay>; moments: Record<string, MomentDay>; sessions: SessionDay }> {
   const [from, to] = dayBounds(day)
   const cachePath = join(cacheDir, `usage-${day}.json`)
-  let cache: UsageCache = { version: CACHE_VERSION, day, files: {}, seen: [], models: {}, pending: {}, events: [], helpers: {}, moments: {}, known: [] }
+  let cache: UsageCache = { version: CACHE_VERSION, day, files: {}, seen: [], models: {}, pending: {}, events: [], helpers: {}, moments: {}, sessions: { models: {}, open: {} }, known: [] }
   try {
     const saved = JSON.parse(readFileSync(cachePath, 'utf8')) as UsageCache
     if (saved.day === day && saved.version === CACHE_VERSION) cache = saved
   } catch {}
 
   const seen = new Set(cache.seen)
-  const state: EventState = { root, models: helpers, pending: cache.pending, events: cache.events, helpers: cache.helpers, moments: cache.moments, known: new Set(cache.known) }
+  const state: EventState = { root, models: helpers, pending: cache.pending, events: cache.events, helpers: cache.helpers, moments: cache.moments, sessions: cache.sessions, known: new Set(cache.known) }
   const files = listTranscripts(projects, from)
   for (const { path, size } of files) {
     const known = cache.files[path]?.offset ?? 0
@@ -603,7 +629,90 @@ export async function readTranscripts(
   const models = Object.values(cache.models).sort(
     (a, b) => b.input + b.cacheRead + b.cacheWrite + b.output - (a.input + a.cacheRead + a.cacheWrite + a.output),
   )
-  return { usage: { day, models, files: files.length }, events: cache.events, helperDay: cache.helpers, moments: cache.moments }
+  return { usage: { day, models, files: files.length }, events: cache.events, helperDay: cache.helpers, moments: cache.moments, sessions: cache.sessions }
+}
+
+// --- the live sessions --------------------------------------------------------
+
+/** One file of Claude Code's registry of live sessions, as much of it as the panel reads. */
+type Registered = {
+  pid?: number
+  sessionId?: string
+  cwd?: string
+  startedAt?: number
+  name?: string
+  status?: string
+  waitingFor?: string
+  statusUpdatedAt?: number
+  updatedAt?: number
+  entrypoint?: string
+  hostSessionId?: string
+}
+
+/** Each pid's process start (`ps`'s lstart, local time), one call for all; a pid gone has none. */
+export function startsOf(pids: number[]): Map<number, number> {
+  const out = new Map<number, number>()
+  if (pids.length === 0) return out
+  const ran = Bun.spawnSync(['/bin/ps', '-o', 'pid=,lstart=', '-p', pids.join(',')])
+  for (const line of ran.stdout.toString().split('\n')) {
+    const m = /^\s*(\d+)\s+(.+?)\s*$/.exec(line)
+    const at = m ? Date.parse(m[2] ?? '') : Number.NaN
+    if (m && !Number.isNaN(at)) out.set(Number(m[1]), at)
+  }
+  return out
+}
+
+// A helper open longer than this was never seen back (a session killed mid-call): left out.
+const OPEN_MAX_MS = 6 * 3600_000
+
+/**
+ * The sessions running in the family folder, from Claude Code's registry
+ * (`<config>/sessions/<pid>.json`): those whose process is alive and
+ * started no later than the session (a pid reused since started after),
+ * waiting on the user first, then busy, then idle. The registry is Claude
+ * Code's internal format: undefined when it can't be read at all.
+ */
+export function readSessions(dir: string, root: string, day: SessionDay, now = Date.now(), starts: (pids: number[]) => Map<number, number> = startsOf): LiveSession[] | undefined {
+  let names: string[]
+  try {
+    names = readdirSync(dir).filter(n => /^\d+\.json$/.test(n))
+  } catch {
+    return undefined
+  }
+  const found: Registered[] = []
+  for (const name of names) {
+    try {
+      const r = JSON.parse(readFileSync(join(dir, name), 'utf8')) as Registered
+      if (r.pid && r.sessionId && r.cwd && (r.cwd === root || r.cwd.startsWith(`${root}/`))) found.push(r)
+    } catch {}
+  }
+  const alive = starts(found.map(r => r.pid as number))
+  const rank = (s: string) => (s === 'waiting' ? 0 : s === 'busy' ? 1 : 2)
+  return found
+    .filter(r => {
+      const at = alive.get(r.pid as number)
+      return at !== undefined && (!r.startedAt || at <= r.startedAt + 5_000)
+    })
+    .map((r): LiveSession => {
+      const id = r.sessionId as string
+      const helpers = Object.values(day.open)
+        .filter(h => h.session === id && now - h.at < OPEN_MAX_MS)
+        .map(({ type, at }) => ({ type, at }))
+        .sort((a, b) => a.at - b.at)
+      return {
+        id,
+        pid: r.pid as number,
+        name: r.name || basename(r.cwd as string),
+        status: r.status || 'idle',
+        waitingFor: r.status === 'waiting' ? (r.waitingFor ?? null) : null,
+        since: r.statusUpdatedAt ?? r.updatedAt ?? r.startedAt ?? now,
+        entrypoint: r.entrypoint ?? '',
+        link: r.entrypoint === 'claude-desktop' && r.hostSessionId && /^[\w-]+$/.test(r.hostSessionId) ? `claude://claude.ai/epitaxy/${r.hostSessionId}` : null,
+        model: day.models[id] ?? null,
+        helpers,
+      }
+    })
+    .sort((a, b) => rank(a.status) - rank(b.status) || b.since - a.since)
 }
 
 // --- the command ----------------------------------------------------------
@@ -648,6 +757,7 @@ if (import.meta.main) {
       helpers,
       helperDay: transcripts.helperDay,
       moments: transcripts.moments,
+      sessions: readSessions(join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'sessions'), root, transcripts.sessions),
     }
     const text = JSON.stringify(snapshot)
     const tmp = `${shared}.${process.pid}`

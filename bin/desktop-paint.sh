@@ -36,6 +36,7 @@ trap 'cleanup; exit 130' INT TERM HUP
   print -r -- "const SNAP = $(cat $snap)"
   print -r -- "const IDLE = $idle === 1"
   print -r -- "const AGENT = '$agent'"
+  print -r -- "const SELF = '${CLAUDE_CODE_SESSION_ID:-}'"
   cat <<'TS'
 test('desktop paint dump', async ($, on) => {
   mock.env(on, { HOME: '/Users/someone' })
@@ -50,6 +51,8 @@ test('desktop paint dump', async ($, on) => {
   on('agent.list', () => ({ value: IDLE ? [] : [{ id: 'a1', type: AGENT, description: AGENT === 'data-scout' ? 'A question about the data' : 'Review the panel change', status: 'running' }] }))
   // The session's own facts, so the boxes take the model's colour.
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  // The session it is painted from: its row among the live ones says "this".
+  on('session.id', () => ({ value: SELF }))
   on('session.usage', () => ({ value: { context: { tokens: 403_000, window: 1_000_000, percent: 40 }, cost: { usd: 14.72 }, rateLimits: [{ kind: 'five_hour', percentUsed: 28, resetsAt: new Date(SNAP.at + 8_000_000).toISOString() }, { kind: 'seven_day', percentUsed: 61 }] } }))
   on('settings.read', () => ({ value: { model: 'opus', effortLevel: 'xhigh' } }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
