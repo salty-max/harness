@@ -139,8 +139,10 @@ shown (`$.ui.panes()`: open and in front), every 30 seconds otherwise for
 the status line; a snapshot under 2 seconds old is shared by every open
 session through `~/.cache/harness-view/snapshot.json`. Each second it stats
 the event log and the board's folder: a line there (a check, a review, a
-card, a hook's refusal) reads anew at once (`--now`), so it shows within a
-second of its tool writing it. Refresh reads every number anew (`--fresh`).
+card, a hook's refusal) reads every number anew at once (`--fresh`, the
+repositories' rows too: a stamp or a verdict rewritten in place moves no
+mark), so it shows within a second of its tool writing it. Refresh does the
+same.
 The session's own facts come from `$` every second, at each model call and
 at the turn's start and end.
 

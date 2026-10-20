@@ -114,15 +114,25 @@ test('a new log line blinks its mark, then settles', async ($, on) => {
     { at: AT - 1_000, source: 'check', tone: 'ok', repo: 'yonder', text: 'check: ok (3s) · stamped abc1234' },
     { at: AT - 600_000, source: 'board', tone: 'wait', repo: 'yonder', text: 'Riddles running → waiting-test' },
   ]
-  world(on, { snapshot: () => snap(events) })
+  // Each read its own time, as a real one: the pane draws again with the line's later age.
+  let reads = 0
+  const { clock } = world(on, { snapshot: () => ({ ...snap(events), at: AT + reads++ }) })
   const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'desktop', ...PANE })
   await ui.press({ key: 'refresh' })
   const mark = async (key: string) => JSON.stringify(await ui.drawn({ in: key }))
-  expect(await mark(`fresh-${AT - 1_000}-check-yonder`)).toContain('●')
+  const fresh = `fresh-${AT - 1_000}-check-yonder`
+  expect(await mark(fresh)).toContain('●')
   // An old line has settled already.
   expect(await mark(`fresh-${AT - 600_000}-board-yonder`)).not.toContain('●')
-  await ui.advance(FRESH_MS)
-  expect(await mark(`fresh-${AT - 1_000}-check-yonder`)).toContain('›')
+  // Three seconds on the pane draws again, the line now 4 seconds old: still a second of blinking left.
+  await clock.advance(3_000)
+  await ui.advance(3_000)
+  await ui.press({ key: 'refresh' })
+  await ui.advance(FRAME_MS * 6)
+  expect(await mark(fresh)).toContain('●')
+  // Six seconds after the line was written, it has settled.
+  await ui.advance(2_000)
+  expect(await mark(fresh)).toContain('›')
   await ui.unmount()
 })
 
@@ -134,7 +144,7 @@ test('a line in the event log reads anew within a second while the pane is shown
   const before = runs.length
   size = 20
   await clock.advance(1_000)
-  expect(runs.slice(before).some(argv => argv.includes('--now'))).toBe(true)
+  expect(runs.slice(before).some(argv => argv.includes('--fresh'))).toBe(true)
 })
 
 for (const [where, isShown, most] of [

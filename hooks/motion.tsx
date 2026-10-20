@@ -42,7 +42,11 @@ export type MotionProps =
   | { kind: 'bar'; value: number; max: number; width: number; rest?: string; color: string }
   /** A figure rolling to `value`. */
   | { kind: 'count'; value: number; unit?: 'tokens' | 'int'; color?: string; bold?: boolean; dim?: boolean }
-  /** A log line's mark: blinks while the line is newer than FRESH_MS (`age` as drawn), then `mark`. */
+  /**
+   * A log line's mark: blinks while the line is newer than FRESH_MS, then
+   * `mark`. `age` is read as the instance first draws: a redraw's later age
+   * would count the time since twice.
+   */
   | { kind: 'fresh'; age: number; color: string; mark?: string }
 
 type Run = {
@@ -53,6 +57,8 @@ type Run = {
   to: number
   t0: number
   born: number
+  /** The frame a new log line's blink ends at, fixed as the instance first draws. */
+  until: number
 }
 
 const runs = new WeakMap<object, Run>()
@@ -78,7 +84,7 @@ function isMoving(r: Run, frame: number): boolean {
     case 'count':
       return frame - r.t0 < TWEEN_FRAMES
     case 'fresh':
-      return frame - r.born < Math.ceil((FRESH_MS - p.age) / FRAME_MS)
+      return frame < r.until
   }
 }
 
@@ -97,7 +103,8 @@ const Motion: ClientModule<MotionProps, number> = (p, s: ClientSurface<number>) 
   const now = Math.max(r?.frame ?? 0, wall())
   if (!r) {
     // A figure or a bar rolls up from nothing as it first shows.
-    r = { frame: now, cancel: null, props: p, from: 0, to: 0, t0: now, born: now }
+    const until = now + (p.kind === 'fresh' ? Math.ceil((FRESH_MS - p.age) / FRAME_MS) : 0)
+    r = { frame: now, cancel: null, props: p, from: 0, to: 0, t0: now, born: now, until }
     runs.set(s, r)
   }
   r.props = p
@@ -192,7 +199,7 @@ const Motion: ClientModule<MotionProps, number> = (p, s: ClientSurface<number>) 
       break
     }
     case 'fresh': {
-      const isAlive = frame - run.born < Math.ceil((FRESH_MS - p.age) / FRAME_MS)
+      const isAlive = frame < run.until
       const isUp = Math.floor((frame - run.born) / 3) % 2 === 0
       drawn = isAlive ? (
         <Text color={p.color} bold={isUp} dimColor={!isUp}>

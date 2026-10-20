@@ -7,12 +7,12 @@
 // its own cache.
 //
 //   bun snapshot.ts [--root <family folder>] [--projects <dir>]
-//                   [--cache <dir>] [--day YYYY-MM-DD] [--now | --fresh]
+//                   [--cache <dir>] [--day YYYY-MM-DD] [--fresh]
 //
 // Every open session runs it: a snapshot younger than two seconds is printed
-// again from the cache instead of read anew (--now reads anew). The
-// repositories' rows (git, the stamps: most of a read's time) are read again
-// only when one of them moved or 20 seconds went by (--fresh reads them anew too).
+// again from the cache instead of read anew. The repositories' rows (git, the
+// stamps: most of a read's time) are read again only when one of them moved
+// or 20 seconds went by. --fresh reads every number anew, the rows too.
 
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -602,8 +602,7 @@ if (import.meta.main) {
   const shared = join(cacheDir, 'snapshot.json')
 
   const isFresh = process.argv.includes('--fresh')
-  const isNow = isFresh || process.argv.includes('--now')
-  if (!isNow && existsSync(shared) && Date.now() - statSync(shared).mtimeMs < SHARED_MS) {
+  if (!isFresh && existsSync(shared) && Date.now() - statSync(shared).mtimeMs < SHARED_MS) {
     process.stdout.write(readFileSync(shared, 'utf8'))
   } else {
     // B's readers when the kit has them, so the panel and the gates agree.

@@ -287,18 +287,10 @@ export function statusLine(snap: Snapshot | null, running: number): string {
 
 // --- reading -----------------------------------------------------------------
 
-/**
- * How a snapshot is read: `shared`, a snapshot another session read in the
- * last two seconds; `now`, read anew (the repositories again only where one
- * moved); `fresh`, every number anew (Refresh).
- */
-export type ReadMode = 'shared' | 'now' | 'fresh'
-const STRENGTH: Record<ReadMode, number> = { shared: 0, now: 1, fresh: 2 }
-
 // The module's own: a reload starts them over.
 let bun: string | null = null
 let isReading = false
-let wanted: ReadMode | null = null
+let isFreshWanted = false
 let isActive = false
 let isShown = false
 let slowAt = 0
@@ -325,14 +317,14 @@ async function isFamilySession($: EngineInterface): Promise<boolean> {
   return project === root || project.startsWith(`${root}/`)
 }
 
-async function runSnapshot($: EngineInterface, mode: ReadMode): Promise<Snapshot> {
+async function runSnapshot($: EngineInterface, isFresh: boolean): Promise<Snapshot> {
   const { home, root } = await familyRoot($)
   const script = `${$.plugin.root}/bin/snapshot.ts`
   const candidates = bun ? [bun] : ['bun', `${home}/.volta/bin/bun`, `${home}/.bun/bin/bun`, '/opt/homebrew/bin/bun']
   let lastError = 'bun not found'
   for (const candidate of candidates) {
     try {
-      const argv = [candidate, script, '--root', root, ...(mode === 'shared' ? [] : [`--${mode}`])]
+      const argv = [candidate, script, '--root', root, ...(isFresh ? ['--fresh'] : [])]
       const ran = await $.process.run(argv, { timeoutMs: 60_000 })
       bun = candidate
       if (ran.exitCode !== 0) throw new Error(ran.stderr.trim().split('\n').slice(-1)[0] || `exit ${ran.exitCode}`)
@@ -345,17 +337,17 @@ async function runSnapshot($: EngineInterface, mode: ReadMode): Promise<Snapshot
   throw new Error(lastError)
 }
 
-async function refreshSnapshot($: EngineInterface, mode: ReadMode = 'shared') {
-  // A read asked for during another (a Refresh, a line in the log) runs once that one is done.
+async function refreshSnapshot($: EngineInterface, isFresh = false) {
+  // A fresh read asked for during another (a Refresh, a line in the log) runs once that one is done.
   if (isReading) {
-    if (mode !== 'shared' && (wanted === null || STRENGTH[mode] > STRENGTH[wanted])) wanted = mode
+    isFreshWanted ||= isFresh
     return
   }
   isReading = true
   try {
     // A headless run (claude -p) never draws: no snapshot until a surface attaches.
     if ((await $.session.surfaces()).length === 0) return
-    const snap = await runSnapshot($, mode)
+    const snap = await runSnapshot($, isFresh)
     if (isChanged('snapshot', snap)) await update($, snapshot, () => snap)
     if (isChanged('snapshotError', null)) await update($, snapshotError, () => null)
   } catch (error) {
@@ -365,10 +357,9 @@ async function refreshSnapshot($: EngineInterface, mode: ReadMode = 'shared') {
     isReading = false
   }
   await refreshStatus($)
-  if (wanted !== null) {
-    const next = wanted
-    wanted = null
-    await refreshSnapshot($, next)
+  if (isFreshWanted) {
+    isFreshWanted = false
+    await refreshSnapshot($, true)
   }
 }
 
@@ -389,8 +380,10 @@ async function pace($: EngineInterface) {
 
 /**
  * The event log (every check, review, card and hook refusal appends to it)
- * and the board's folder, a stat each: a change reads anew at once, so the
- * pane shows a line within a second of its tool writing it.
+ * and the board's folder, a stat each: a change reads every number anew at
+ * once, the repositories' rows too (a stamp or a verdict rewritten in place
+ * moves no mark the shared reads look at), so the pane shows it within a
+ * second of its tool writing it.
  */
 async function watch($: EngineInterface) {
   if (!isShown) return
@@ -401,7 +394,7 @@ async function watch($: EngineInterface) {
   if (seen === watched) return
   const isFirst = watched === ''
   watched = seen
-  if (!isFirst) await refreshSnapshot($, 'now')
+  if (!isFirst) await refreshSnapshot($, true)
 }
 
 async function setTurn($: EngineInterface, isRunning: boolean) {
@@ -512,7 +505,7 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'harness' }, async $ => {
-    void refreshSnapshot($, 'fresh').catch(() => {})
+    void refreshSnapshot($, true).catch(() => {})
     try {
       const opened = await $.ui.open({ id: PANE, title: TITLE })
       return { text: opened.isPlaced ? 'Harness panel opened.' : `Harness panel not drawn: ${opened.reason}` }
@@ -768,7 +761,7 @@ export const register: Register = on => {
         </Text>
         <Box justifyContent="space-between" width={W}>
           <Text dimColor>{snap ? `read ${ago(snap.at, now)} ago` : 'reading…'}</Text>
-          <Button key="refresh" label="Refresh" onPress={() => void refreshSnapshot($, 'fresh')} />
+          <Button key="refresh" label="Refresh" onPress={() => void refreshSnapshot($, true)} />
         </Box>
       </Box>
     )
