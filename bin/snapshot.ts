@@ -218,8 +218,9 @@ export function readBoard(dir: string, today: string, kit?: CardKit): BoardCard[
 
 // --- today's usage --------------------------------------------------------
 
-// (version 2 added the events: a day cache of version 1 is read again whole)
-const CACHE_VERSION = 2
+// (version 2 added the events, 3 left every Bash call out of the pending
+// ones but pushes and releases: an older day cache is read again whole)
+const CACHE_VERSION = 3
 
 type UsageCache = {
   version: number
