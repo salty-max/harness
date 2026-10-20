@@ -12,6 +12,7 @@ import {
   eventFigure,
   eventText,
   fit,
+  holds,
   marks,
   modelColor,
   modelName,
@@ -23,6 +24,7 @@ import {
   tokens,
   toneColor,
   verdictTone,
+  where,
 } from './register'
 
 const SNAPSHOT: Snapshot = {
@@ -322,6 +324,68 @@ test("the plan's limits are meters, the planner's moments say who, how often and
       await ui.unmount()
     }
   }
+})
+
+const card = (id: string, repo: string, status: string, extra: Partial<Snapshot['board'][number]> = {}) => ({
+  id,
+  repo,
+  title: id,
+  status,
+  session: '',
+  updated: '2026-10-20T21:00:00+02:00',
+  summary: '',
+  ...extra,
+})
+
+test('the board says who holds each repository: running and blocked cards hold, waiting ones are pending', async () => {
+  const board = [
+    card('riddles', 'yonder', 'running'),
+    card('trainers', 'wow-data', 'blocked', { repos: ['wow-data', 'mealbook', 'yonder'], waits: 'riddles' }),
+    card('german', 'lorekeepers-codex', 'waiting-test'),
+    card('older', 'yonder', 'ready-to-push'),
+    card('cleanup', 'every repo', 'done', { repos: [] }),
+  ]
+  expect([...holds(board)].sort()).toEqual([
+    ['lorekeepers-codex', 'pending'],
+    ['mealbook', 'held'],
+    ['wow-data', 'held'],
+    ['yonder', 'held'],
+  ])
+  expect(where(board[1]!)).toBe('wow-data +2')
+  expect(where({ ...board[1]!, repos: ['wow-data', 'yonder'] })).toBe('wow-data+yonder')
+  expect(where(board[0]!)).toBe('yonder')
+})
+
+test("the pane's board shows a blocked card's blocker, free once it is done; the repositories their holders", async ($, on) => {
+  const snap: Snapshot = {
+    ...SNAPSHOT,
+    board: [
+      card('riddles', 'yonder', 'running', { title: 'Three Westfall riddles' }),
+      card('trainers', 'wow-data', 'blocked', { title: 'New-land trainers', repos: ['wow-data', 'yonder'], waits: 'riddles' }),
+      card('german', 'wow-data', 'blocked', { title: 'German pages', waits: 'gone' }),
+    ],
+  }
+  mock.env(on, { HOME: '/Users/someone' })
+  mock.clock(on)
+  on('process.run', () => ({ value: { exitCode: 0, stdout: JSON.stringify(snap), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('ui.status', () => ({ value: undefined }))
+  on('session.surfaces', () => ({ value: ['desktop'] }))
+  for (const surface of ['terminal', 'desktop'] as const) {
+    for (const bodyColumns of [110, 48]) {
+      const ui = await $.ui.mount({ plugin: 'harness-view', surface, ...PANE, props: { ...PANE.props, bodyColumns } })
+      await ui.press({ key: 'refresh' })
+      const at = `${surface} ${bodyColumns}`
+      const has = async (text: string | RegExp) => expect([at, text, (await ui.find({ text })) !== undefined]).toEqual([at, text, true])
+      await has('wow-data+yonder')
+      await has(' · on yonder')
+      await has(' · free now')
+      await has(' · 2 blocked')
+      // yonder and wow-data held (the fixture's repositories), the count in the header.
+      await has('● 2 held · ')
+      await ui.unmount()
+    }
+  }
+  expect(statusLine(snap, 0)).toContain('2 blocked')
 })
 
 test('a failing snapshot says why in the pane', async ($, on) => {

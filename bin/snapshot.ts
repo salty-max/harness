@@ -191,7 +191,7 @@ export function cachedRepos(root: string, cacheDir: string, kit: StampKit | unde
 
 // --- the task board -------------------------------------------------------
 
-const ORDER = ['waiting-test', 'waiting-review', 'ready-to-push', 'running', 'done']
+const ORDER = ['waiting-test', 'waiting-review', 'ready-to-push', 'blocked', 'running', 'done']
 
 /** The cards as addon-kit's board.ts parses them (B), when it is there. */
 export type CardKit = {
@@ -232,11 +232,14 @@ export function parseCard(id: string, text: string): BoardCard {
       } else {
         value = value.replace(/^'(.*)'$/, '$1')
       }
-      if (m[1] in card && m[1] !== 'id' && m[1] !== 'summary') {
+      if (m[1] === 'repos') card.repos = [...new Set(value.split(',').map(r => r.trim()).filter(Boolean))]
+      else if (m[1] === 'waits') card.waits = value
+      else if (m[1] in card && m[1] !== 'id' && m[1] !== 'summary') {
         ;(card as Record<string, string>)[m[1]] = value
       }
     }
   }
+  card.repos ??= /^[a-z0-9][\w.-]*$/i.test(card.repo) && card.repo !== 'every-repo' ? [card.repo] : []
   card.summary = summaryOf(body)
   return card
 }

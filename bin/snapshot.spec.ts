@@ -50,7 +50,14 @@ describe('the board', () => {
       session: 'riddles-20oct',
       updated: '2026-10-20T09:00:00+02:00',
       summary: 'Walk to the Pool of Tears at night.',
+      repos: ['yonder'],
     })
+  })
+
+  test("a card's repositories and the card a blocked one waits on, as board.ts writes them", () => {
+    const text = '---\nrepo: wow-data\ntitle: t\nstatus: blocked\nrepos: wow-data, mealbook, yonder\nwaits: yonder-riddles\n---\n'
+    expect(parseCard('t', text)).toMatchObject({ status: 'blocked', repos: ['wow-data', 'mealbook', 'yonder'], waits: 'yonder-riddles' })
+    expect(parseCard('e', '---\nrepo: every repo\n---\n').repos).toEqual([])
   })
 
   test("board.ts's cards lead with what to try", () => {

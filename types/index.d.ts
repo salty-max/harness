@@ -49,6 +49,10 @@ export type BoardCard = {
   session: string
   updated: string
   summary: string
+  /** Every repository the task writes (its repo alone when the card names none); held while running or blocked. */
+  repos?: string[]
+  /** A blocked card's: the card it waits on. */
+  waits?: string
 }
 
 /** Today's tokens of one model, every transcript on this machine. */

@@ -147,10 +147,38 @@ export function agentColor(status: string): string {
 }
 
 /** A card's status: what waits on the user amber, done green. */
+/** A card's status: waiting on the user amber, a session at work cyan, waiting on another card red, done green. */
 export function cardColor(status: string): string {
   if (status.startsWith('waiting') || status === 'ready-to-push') return PALETTE.wait
   if (status === 'done') return PALETTE.ok
+  if (status === 'running') return PALETTE.ask
+  if (status === 'blocked') return PALETTE.fail
   return PALETTE.plain
+}
+
+/** A card holds its repositories while a session is in the middle of it. */
+export const HOLDS = (c: BoardCard) => c.status === 'running' || c.status === 'blocked'
+const reposOf = (c: BoardCard) => c.repos ?? [c.repo]
+
+/** The repositories as the board's row says them: `yonder`, `wow-data+yonder`, past two `wow-data +2` (the Repositories box has the rest). */
+export function where(c: BoardCard): string {
+  const others = reposOf(c).filter(r => r !== c.repo)
+  return others.length === 0 ? c.repo : others.length === 1 ? `${c.repo}+${others[0]}` : `${c.repo} +${others.length}`
+}
+
+/**
+ * Each repository's mark in the Repositories box: `held` while a running or
+ * blocked card names it (a session is at work there), `pending` while only
+ * cards waiting on the user do (their commits go out with its next push).
+ */
+export function holds(board: BoardCard[]): Map<string, 'held' | 'pending'> {
+  const out = new Map<string, 'held' | 'pending'>()
+  for (const c of board) {
+    const kind = HOLDS(c) ? 'held' : WAITING(c) ? 'pending' : null
+    if (!kind) continue
+    for (const r of reposOf(c)) if (kind === 'held' || !out.has(r)) out.set(r, kind)
+  }
+  return out
 }
 
 /**
@@ -281,7 +309,9 @@ export function statusLine(snap: Snapshot | null, running: number): string {
   const parts: string[] = []
   if (snap) {
     const waiting = snap.board.filter(WAITING).length
+    const blocked = snap.board.filter(c => c.status === 'blocked').length
     if (waiting > 0) parts.push(`board ${waiting} waiting`)
+    if (blocked > 0) parts.push(`${blocked} blocked`)
   }
   if (running > 0) parts.push(`${running} agent${running > 1 ? 's' : ''}`)
   if (snap) {
@@ -1351,6 +1381,14 @@ export const register: Register = on => {
     const boardBox = (w: number) => {
       const inner = w - 4
       const [statusW = 5, ageW = 4] = fit([Math.min(15, Math.max(5, ...board.map(c => c.status.length + 1))), 4], inner)
+      const busy = board.filter(c => c.status === 'running').length
+      const blocked = board.filter(c => c.status === 'blocked').length
+      // A blocked card's holder, by its repository (its card is on the board too), before the title so it is never cut;
+      // "free now" once it is done or gone.
+      const blocker = (c: BoardCard): Run => {
+        const holder = board.find(b => b.id === c.waits)
+        return holder && holder.status !== 'done' ? [` · on ${holder.repo}`, { color: PALETTE.fail, fixed: true }] : [' · free now', { color: PALETTE.ok, fixed: true }]
+      }
       return frame(
         'board',
         w,
@@ -1358,7 +1396,11 @@ export const register: Register = on => {
         <>
           <Box justifyContent="space-between">
             {line('BOARD', { bold: true })}
-            {line(waiting > 0 ? `${waiting} waiting on you` : `${board.length} cards`, { color: waiting > 0 ? PALETTE.wait : undefined, dim: waiting === 0 })}
+            {runs('board-counts', [
+              [waiting > 0 ? `${waiting} waiting on you` : `${board.length} cards`, { color: waiting > 0 ? PALETTE.wait : undefined, dim: waiting === 0 }],
+              busy > 0 && inner >= 40 ? [` · ${busy} running`, { color: PALETTE.ask }] : null,
+              blocked > 0 ? [` · ${blocked} blocked`, { color: PALETTE.fail }] : null,
+            ])}
           </Box>
           <Box flexDirection="column">
           {board.length === 0
@@ -1371,8 +1413,9 @@ export const register: Register = on => {
                     {cell(
                       Math.max(1, inner - statusW - ageW),
                       runs(`card-${c.id}-title`, [
-                        [c.repo, { bold: true, fixed: true }],
-                        [` ${c.title}`, {}],
+                        [where(c), { bold: true, fixed: true }],
+                        c.status === 'blocked' ? blocker(c) : null,
+                        [`${c.status === 'blocked' ? ' ·' : ''} ${c.title}`, {}],
                       ]),
                     )}
                     {cell(ageW, line(Number.isNaN(at) ? '?' : ago(at, now), { dim: true }), true)}
@@ -1388,14 +1431,24 @@ export const register: Register = on => {
       const columns = tier === 'wide' ? 2 : 1
       const inner = w - 4
       const colW = Math.floor((inner - (columns - 1) * 2) / columns)
-      const [nameW = 10, markW = 13] = fit([Math.min(18, Math.max(10, ...repos.map(r => r.name.length + 1))), 13], colW, 8)
+      // A dot before the name: a session at work there (cyan), or cards waiting on you there (amber).
+      const held = holds(board)
+      const heldN = [...held.values()].filter(k => k === 'held').length
+      const [nameW = 10, markW = 13] = fit([Math.min(20, Math.max(10, ...repos.map(r => r.name.length + 3))), 13], colW, 8)
       const perColumn = Math.ceil(repos.length / columns)
       const row = (r: RepoRow) => {
         const mark = checkMark(r.check, now, r.failed)
         const verdict = r.review?.verdict ?? null
+        const kind = held.get(r.name)
         return (
           <Box key={`repo-${r.name}`} width={colW}>
-            {cell(nameW, line(r.name, { bold: true }))}
+            {cell(
+              nameW,
+              runs(`repo-${r.name}-name`, [
+                [kind === 'held' ? '● ' : kind === 'pending' ? '○ ' : '  ', { color: kind === 'held' ? PALETTE.ask : PALETTE.wait, fixed: true }],
+                [r.name, { bold: true }],
+              ]),
+            )}
             {cell(markW, line(mark.text, { color: mark.color }))}
             <Box flexGrow={1} flexShrink={1} minWidth={0}>
               {r.review
@@ -1412,7 +1465,10 @@ export const register: Register = on => {
         <>
           <Box justifyContent="space-between">
             {line(inner >= 56 ? 'REPOSITORIES · checks and reviews' : 'REPOSITORIES', { bold: true, color: PALETTE.gate })}
-            {line(`${fresh}/${repos.length} pushable`, { color: fresh === repos.length ? PALETTE.ok : PALETTE.wait })}
+            {runs('repos-counts', [
+              heldN > 0 ? [`● ${heldN} held · `, { color: PALETTE.ask }] : null,
+              [`${fresh}/${repos.length} pushable`, { color: fresh === repos.length ? PALETTE.ok : PALETTE.wait }],
+            ])}
           </Box>
           {repos.length === 0 ? (
             line('reading…', { dim: true })
