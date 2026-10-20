@@ -548,8 +548,10 @@ async function gate($: EngineInterface, isStart = false): Promise<boolean> {
   beater = null
   handbackTimer?.cancel()
   handbackTimer = null
-  // (a handback whose timer was just cancelled would stay lit)
+  // (a handback whose timer was just cancelled would stay lit; an old session's running rows would hand back falsely)
   void update($, handback, () => null).catch(() => {})
+  written.delete('agents')
+  void update($, agents, () => []).catch(() => {})
   if (!isActive) {
     if (written.delete('status')) $.ui.status(undefined)
     return false
@@ -1216,7 +1218,9 @@ export const register: Register = on => {
 
     // Back to the lead: at work while a helper's handback comes in, its figures once the shared numbers have them.
     const backBox = (w: number) => {
-      const isKnown = !!back && !!lastHandback && lastHandback.text.startsWith(`${back.type} `) && Math.abs(lastHandback.at - back.at) < 60_000
+      // (the shared numbers have it once an end of that helper's type comes in no earlier than a little before it:
+      // the whole family's events, so an earlier run of the same helper must not pass for this one)
+      const isKnown = !!back && !!lastHandback && lastHandback.text.startsWith(`${back.type} `) && lastHandback.at >= back.at - 10_000
       return frame(
         'back',
         w,

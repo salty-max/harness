@@ -116,11 +116,12 @@ pane itself redraws only when a number moved. It moves when work does:
   boxes alone while one runs (the lines to the idle ones stay dark), and
   back from a helper's box to the lead once it is done, for six seconds
   (`HANDBACK_MS`: a helper of this session seen running, then not, and a
-  `$.clock.after` that turns it off); never back while they still run.
-  A dot on the desktop, the line's heavy strokes in the terminal; the
-  planner's arrow while an Opus helper runs. Only the lines that are on
-  make up the pulse's cycle. On the desktop each line's pulse starts at the wall clock's
-  phase of its cycle, so a redraw doesn't make it jump;
+  `$.clock.after` that turns it off); never back before one is done, back
+  and out at once when one is done and others still run. A dot on the
+  desktop, the line's heavy strokes in the terminal; the planner's arrow
+  while an Opus helper runs. Only the lines that are on make up the
+  pulse's cycle. On the desktop each line's pulse starts at the wall
+  clock's phase of its cycle, so a redraw doesn't make it jump;
 - a box at work wears a running border: the main session's while its turn
   runs, the gates' while work flows through them (the turn, or a helper),
   a helper's while it runs, the planner's while an Opus helper does, the

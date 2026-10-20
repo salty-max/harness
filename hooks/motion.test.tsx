@@ -172,6 +172,48 @@ test('the pulse goes out to the running helpers alone, back to the lead once one
   await ui.unmount()
 })
 
+test('in the terminal too: the cells lit out are the running box\'s way alone, the way back lit by a handback alone', async ($, on) => {
+  let agents: Agent[] = [{ id: 'a1', type: 'data-scout', description: 'A question about the data', status: 'running' }]
+  const helpers = [
+    { name: 'data-scout', model: 'sonnet', description: 'Answers a data question.' },
+    { name: 'prose-reader', model: 'sonnet', description: 'Reads text cold.' },
+    { name: 'Explore', model: 'haiku', description: 'Searches.' },
+  ]
+  const { clock } = world(on, { snapshot: () => ({ ...snap(), helpers }), agents: () => agents, surface: 'terminal' })
+  await $.session.start({ cwd: FAMILY, surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'refresh' })
+  await clock.advance(1100)
+  // A flow line's motion props, as the hooks module hands them to motion.tsx.
+  const flowOf = async (key: string) => {
+    const find = (n: unknown): unknown => {
+      if (!n || typeof n !== 'object') return undefined
+      if (Array.isArray(n)) return n.map(find).find(Boolean)
+      const node = n as { type?: string; props?: { key?: string; props?: unknown }; children?: unknown[] }
+      if (node.type === 'Client' && node.props?.key === key) return node.props.props
+      return find(node.children)
+    }
+    return find(await ui.drawn()) as { text: string; path: number[][]; on: boolean }
+  }
+  const arrows = await flowOf('arrows')
+  const boxes = [...arrows.text].flatMap((ch, x) => (ch === '▼' ? [x] : []))
+  const fan = await flowOf('fan-out')
+  const stem = fan.text.indexOf('┴') === -1 ? fan.text.indexOf('┼') : fan.text.indexOf('┴')
+  // Three boxes; the pulse down to the first (data-scout, running) alone, out along its side of the stem alone.
+  expect(boxes).toHaveLength(3)
+  expect([arrows.on, arrows.path.flat()]).toEqual([true, [boxes[0]]])
+  expect(fan.on && fan.path.flat().every(x => x >= boxes[0]! && x <= stem)).toBe(true)
+  expect([(await flowOf('merge')).on, (await flowOf('to-back')).on]).toEqual([false, false])
+  // Done: back from its box, nothing out; six seconds on, nothing at all.
+  agents = [{ ...agents[0]!, status: 'completed' }]
+  await clock.advance(1100)
+  const merge = await flowOf('merge')
+  expect([merge.on, merge.path.flat().every(x => x >= boxes[0]! && x <= stem), (await flowOf('to-back')).on, (await flowOf('fan-out')).on]).toEqual([true, true, true, false])
+  await clock.advance(6_500)
+  expect([(await flowOf('merge')).on, (await flowOf('to-back')).on]).toEqual([false, false])
+  await ui.unmount()
+})
+
 test('figures and bars roll up to their value as they first show', async ($, on) => {
   world(on)
   const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'desktop', ...PANE })
