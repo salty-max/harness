@@ -22,7 +22,8 @@ cleanup() {
   rm -f $test_file
   (( had_tsconfig )) || rm -f $here/tsconfig.json
 }
-trap cleanup EXIT INT TERM HUP
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT TERM HUP
 {
   print -r -- "import { expect, mock, test } from 'claude-code/testing'"
   print -r -- "const SNAP = $(cat $snap)"
