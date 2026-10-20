@@ -223,8 +223,8 @@ test("the desktop's layout traps: a centred box's lines on a full-width layer, r
     return test(n as Node) ? (n as Node) : find((n as Node).children, test)
   }
   const tree = await ui.drawn()
-  const box = find(tree, n => n.props?.key === 'helper-prose-reader' && n.props?.borderStyle !== undefined)
-  const layer = box?.children?.[0] as Node | undefined
+  const box = find(tree, n => n.props?.key === 'helper-prose-reader')
+  const layer = find(box, n => n.props?.alignItems === 'center' && n.props?.width === '100%')
   // The page sizes a centred column to its widest line: the layer has the box's width, its lines are its own children.
   expect(layer?.props).toMatchObject({ alignItems: 'center', width: '100%' })
   expect((layer?.children?.[0] as Node | undefined)?.type).toBe('Text')
@@ -243,17 +243,22 @@ describe('a running box', () => {
     expect(l.right[0]).toBe(l.top[1])
     // A wide box: its top takes most of the lap.
     expect(l.top[1] - l.top[0]).toBeGreaterThan(l.right[1] - l.right[0])
-    const top = edgeSvg('top', { cells: 50, lines: 4, color: '#b4b0e8', nowMs: 2500 })
+    const top = edgeSvg('top', { cells: 50, lines: 4, color: '#b4b0e8', nowMs: 2500, isRunning: true })
     expect(top).toContain('<path d="M1 8A7 7 0 0 1 8 1')
     expect(top).toContain(`begin="-${2500 % l.ms}ms"`)
     expect(top).toContain('attributeName="stroke-opacity"')
-    // A side's comet is no longer than half the side.
-    const side = edgeSvg('left', { cells: 50, lines: 2, color: '#b4b0e8', nowMs: 0 })
+    // At rest the same edge stands still; the main session's is dashed.
+    const still = edgeSvg('top', { cells: 50, lines: 4, color: '#b4b0e8', nowMs: 2500, isRunning: false, isDashed: true })
+    expect(still).not.toContain('<animate')
+    expect(still).toContain('stroke-dasharray')
+    // A side's comet is no longer than half the side; its own height a pixel, the row's taken.
+    const side = edgeSvg('left', { cells: 50, lines: 2, color: '#b4b0e8', nowMs: 0, isRunning: true })
     expect(side).toContain('height="45"')
+    expect(side).toContain('width="2" height="1"')
   })
 })
 
-test('on the desktop a box at work has four vector edges, at rest its own border', async ($, on) => {
+test('on the desktop a box has one vector frame at rest and at work, the comet only at work', async ($, on) => {
   world(on)
   await $.session.start({ cwd: FAMILY, surface: 'desktop', isInteractive: true })
   const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'desktop', ...PANE })
@@ -267,13 +272,20 @@ test('on the desktop a box at work has four vector edges, at rest its own border
     }
     return find(await ui.drawn())
   }
-  expect((await boxOf('session'))?.props?.borderStyle).toBe('dashed')
+  // The top edge: the same frame either way, so the box keeps its size.
+  const topOf = async () => {
+    const box = await boxOf('session')
+    expect(box?.props?.borderStyle).toBeUndefined()
+    const top = box?.children?.[0] as { type?: string; props?: { source?: string } } | undefined
+    expect(top?.type).toBe('Svg')
+    return top?.props?.source ?? ''
+  }
+  expect(await topOf()).toContain('stroke-dasharray')
+  expect(await topOf()).not.toContain('repeatCount')
   await $.turn.start({ text: 'hi', turnId: 't1' })
-  const working = await boxOf('session')
-  expect(working?.props?.borderStyle).toBeUndefined()
-  expect((working?.children?.[0] as Node | undefined)?.type).toBe('Svg')
+  expect(await topOf()).toContain('repeatCount="indefinite"')
   await $.turn.complete({ answer: 'ok', durationMs: 5, isAborted: false, turnId: 't1', reason: 'answer' })
-  expect((await boxOf('session'))?.props?.borderStyle).toBe('dashed')
+  expect(await topOf()).not.toContain('repeatCount')
   await ui.unmount()
 })
 

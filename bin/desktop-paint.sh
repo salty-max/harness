@@ -5,7 +5,8 @@
 # turns them into HTML by the desktop renderer's own rules; headless Chrome
 # screenshots each. Output: .cache/paint/desktop-<columns>.png (and .html).
 #
-#   zsh bin/desktop-paint.sh
+#   zsh bin/desktop-paint.sh            mid-turn, a helper running
+#   HARNESS_PAINT_IDLE=1 zsh bin/desktop-paint.sh   at rest (output desktop-idle-<columns>.*)
 set -e
 here=${0:A:h:h}
 out=$here/.cache/paint
@@ -13,6 +14,9 @@ chrome="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 [[ -x $chrome ]] || { print "no Chrome at $chrome: nothing to screenshot with"; exit 1 }
 mkdir -p $out
 snap=${HARNESS_SNAPSHOT:-$HOME/.cache/harness-view/snapshot.json}
+idle=${HARNESS_PAINT_IDLE:-0}
+name=desktop
+(( idle )) && name=desktop-idle
 # The dump runs as a test of the mod's own (zz-*.test.tsx is git-ignored); a
 # test run lays a tsconfig.json beside the mod, taken away only if it wasn't there.
 test_file=$here/hooks/zz-desktop-paint.test.tsx
@@ -27,6 +31,7 @@ trap 'cleanup; exit 130' INT TERM HUP
 {
   print -r -- "import { expect, mock, test } from 'claude-code/testing'"
   print -r -- "const SNAP = $(cat $snap)"
+  print -r -- "const IDLE = $idle === 1"
   cat <<'TS'
 test('desktop paint dump', async ($, on) => {
   mock.env(on, { HOME: '/Users/someone' })
@@ -38,7 +43,7 @@ test('desktop paint dump', async ($, on) => {
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.panes', () => ({ value: [{ id: 'harness', title: 'Harness', isShown: true, isFocused: false, isPlaced: true }] }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
-  on('agent.list', () => ({ value: [{ id: 'a1', type: 'data-scout', description: 'A question about the data', status: 'running' }] }))
+  on('agent.list', () => ({ value: IDLE ? [] : [{ id: 'a1', type: 'data-scout', description: 'A question about the data', status: 'running' }] }))
   // The session's own facts, so the boxes take the model's colour.
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
   on('session.usage', () => ({ value: { context: { tokens: 403_000, window: 1_000_000, percent: 40 }, cost: { usd: 14.72 }, rateLimits: [{ kind: 'five_hour', percentUsed: 28 }] } }))
@@ -46,7 +51,7 @@ test('desktop paint dump', async ($, on) => {
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   await $.session.start({ cwd: '/Users/someone/code/wow-addons', surface: 'desktop', isInteractive: true })
-  await $.turn.start({ text: 'hi', turnId: 't1' })
+  if (!IDLE) await $.turn.start({ text: 'hi', turnId: 't1' })
   await clock.advance(1100)
   const out: Record<string, unknown> = {}
   for (const W of [110, 80, 48]) {
@@ -74,7 +79,7 @@ TS
 perl -0ne 'print $1 if /PAINT-JSON-BEGIN(.*?)PAINT-JSON-END/s' $out/dump.log > $out/dump.json
 [[ -s $out/dump.json ]] || { print "no dump: see $out/dump.log"; exit 1 }
 for w in 110 80 48; do
-  bun $here/bin/desktop-paint.ts $out/dump.json $out/desktop-$w.html $w > /dev/null
-  $chrome --headless=new --disable-gpu --hide-scrollbars --force-device-scale-factor=2 --window-size=$((w * 9 + 120)),2600 --virtual-time-budget=1200 --screenshot=$out/desktop-$w.png file://$out/desktop-$w.html 2> /dev/null
+  bun $here/bin/desktop-paint.ts $out/dump.json $out/$name-$w.html $w > /dev/null
+  $chrome --headless=new --disable-gpu --hide-scrollbars --force-device-scale-factor=2 --window-size=$((w * 9 + 120)),2600 --virtual-time-budget=1200 --screenshot=$out/$name-$w.png file://$out/$name-$w.html 2> /dev/null
 done
-print "painted: $out/desktop-{110,80,48}.png"
+print "painted: $out/$name-{110,80,48}.png"

@@ -111,7 +111,7 @@ function html(n: any, clients: Record<string, any>, grid: Set<any> = new Set()):
   if (n.type === 'Box') {
     const g = gridSet(n)
     const row = (p.flexDirection === undefined || String(p.flexDirection).startsWith('row')) && p.alignItems === undefined
-    return `<div style="${boxStyle(p)}"${row ? ' data-engine-row' : ''}>${(n.children ?? []).map((c: any) => html(c, clients, g)).join('')}</div>`
+    return `<div style="${boxStyle(p)}"${row ? ' data-engine-row' : ''}${typeof p.key === 'string' ? ` data-key="${esc(p.key)}"` : ''}>${(n.children ?? []).map((c: any) => html(c, clients, g)).join('')}</div>`
   }
   if (n.type === 'Text') {
     const text = plain(n)

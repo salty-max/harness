@@ -117,13 +117,15 @@ export function lineSvg(l: LineSvg): string {
   )
 }
 
-// --- a running box's border -------------------------------------------------
+// --- a box's border -----------------------------------------------------------
 //
-// The page draws a Box's border in CSS, which nothing here can move. A box at
-// work trades it for four images: a top and a bottom strip with the rounded
-// corners (cut to the box's width as the bars are), and two side strips the
-// row they sit in stretches to its height. A comet laps them, top, right,
-// bottom, left, on the wall clock's phase like the lines' pulse.
+// The page draws a Box's border in CSS, which nothing here can move (nor dash).
+// On the desktop every box's border is four images instead: a top and a
+// bottom strip with the rounded corners (cut to the box's width as the bars
+// are), and two side strips the row they sit in stretches to its height. At
+// rest they stand still; at work they breathe while a comet laps them, top,
+// right, bottom, left, on the wall clock's phase like the lines' pulse. One
+// frame at rest and at work, so a box never changes size as work starts.
 
 /** The strips' height (the corners' radius) and the sides' width, CSS pixels. */
 export const EDGE_PX = 8
@@ -136,17 +138,21 @@ const LAP_PX_PER_S = 640
 // The edge breathes while the box works: brighter and fainter, this long a breath.
 const BREATH_MS = 1600
 
-export type RunningBorder = {
+export type BoxEdges = {
   /** The box's width in cells and its height in lines, about: the lap's proportions. */
   cells: number
   lines: number
   color: string
   /** Where the wall clock is, in milliseconds. */
   nowMs: number
+  /** At work: the edges breathe and the comet runs. */
+  isRunning: boolean
+  /** The main session's boxes, dashed as in the mock-up. */
+  isDashed?: boolean
 }
 
 /** The lap's length and each side's share of it, from the box's size. */
-export function lap(b: RunningBorder): { ms: number; top: [number, number]; right: [number, number]; bottom: [number, number]; left: [number, number] } {
+export function lap(b: BoxEdges): { ms: number; top: [number, number]; right: [number, number]; bottom: [number, number]; left: [number, number] } {
   const w = Math.max(1, b.cells) * CELL_PX
   const h = Math.max(1, b.lines) * LINE_PX + 2 * EDGE_PX
   const p = 2 * (w + h)
@@ -160,8 +166,8 @@ export function lap(b: RunningBorder): { ms: number; top: [number, number]; righ
   }
 }
 
-/** One of a running box's four edges, the comet crossing it at its share of the lap. */
-export function edgeSvg(side: 'top' | 'right' | 'bottom' | 'left', b: RunningBorder): string {
+/** One of a box's four edges; at work, the comet crossing it at its share of the lap. */
+export function edgeSvg(side: 'top' | 'right' | 'bottom' | 'left', b: BoxEdges): string {
   const l = lap(b)
   const [from, to] = l[side]
   const t0 = r(Math.min(0.997, Math.max(0.001, from)))
@@ -171,7 +177,8 @@ export function edgeSvg(side: 'top' | 'right' | 'bottom' | 'left', b: RunningBor
   const seen = `<animate attributeName="opacity" values="0;1;0" keyTimes="0;${t0};${t1}" calcMode="discrete" ${timing}/>`
   const run = (attr: string, a: number, z: number) => `<animate attributeName="${attr}" values="${a};${a};${z};${z}" keyTimes="0;${t0};${t1};1" ${timing}/>`
   const breath = `<animate attributeName="stroke-opacity" values=".3;.9;.3" dur="${BREATH_MS}ms" begin="-${Math.round(b.nowMs % BREATH_MS)}ms" repeatCount="indefinite"/>`
-  const edge = `stroke="${c}" stroke-opacity=".5" stroke-width="1.5" fill="none" vector-effect="non-scaling-stroke"`
+  const edge = `stroke="${c}" stroke-opacity="${b.isRunning ? '.5' : '1'}" stroke-width="1.2" fill="none" vector-effect="non-scaling-stroke"${b.isDashed ? ' stroke-dasharray="5 4"' : ''}`
+  const moving = (x: string) => (b.isRunning ? x : '')
   // The comet's tail fades behind it: the gradient runs from its tail (x1, y1) to its head (x2, y2).
   const grad = (x1: number, y1: number, x2: number, y2: number) =>
     `<defs><linearGradient id="g" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"><stop offset="0" stop-color="${c}" stop-opacity="0"/><stop offset="1" stop-color="${c}"/></linearGradient></defs>`
@@ -192,7 +199,7 @@ export function edgeSvg(side: 'top' | 'right' | 'bottom' | 'left', b: RunningBor
     return (
       `<svg xmlns="http://www.w3.org/2000/svg" width="${w * 20}" height="${e}" viewBox="0 0 ${w} ${e}" preserveAspectRatio="none">` +
       (isTop ? grad(0, 0, 1, 0) : grad(1, 0, 0, 0)) +
-      `<path d="${path}" ${edge}>${breath}</path>${glow}</svg>`
+      `<path d="${path}" ${edge}>${moving(breath)}</path>${moving(glow)}</svg>`
     )
   }
   // A side: drawn on a 100-high strip the row stretches to the box's height.
@@ -203,8 +210,9 @@ export function edgeSvg(side: 'top' | 'right' | 'bottom' | 'left', b: RunningBor
   const [a, z] = isRight ? [-k, 100] : [100, -k]
   const comet = `<g opacity="0">${seen}<rect x="0" y="${a}" width="${SIDE_PX}" height="${k}" fill="url(#g)">${run('y', a, z)}</rect></g>`
   return (
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${SIDE_PX}" height="100" viewBox="0 0 ${SIDE_PX} 100" preserveAspectRatio="none">` +
+    // Its own height a pixel: the row it sits in gives it its height, never the other way.
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${SIDE_PX}" height="1" viewBox="0 0 ${SIDE_PX} 100" preserveAspectRatio="none">` +
     (isRight ? grad(0, 0, 0, 1) : grad(0, 1, 0, 0)) +
-    `<line x1="${SIDE_PX / 2}" y1="0" x2="${SIDE_PX / 2}" y2="100" ${edge}>${breath}</line>${comet}</svg>`
+    `<line x1="${SIDE_PX / 2}" y1="0" x2="${SIDE_PX / 2}" y2="100" ${edge}>${moving(breath)}</line>${moving(comet)}</svg>`
   )
 }

@@ -697,15 +697,16 @@ export const register: Register = on => {
     // --- the parts ---------------------------------------------------------
     // A box of the diagram: its border in its colour (dashed for the main
     // session's, as in the mock-up), a column of padding each side.
-    // A box at work (`running`, its height in lines about): on the desktop its
-    // border is four vector edges a comet laps, in the terminal it pulses with
-    // the beat. At rest, the page's or the terminal's own border.
+    // A box. On the desktop its border is four vector edges, at rest as at work
+    // (one frame, so it keeps its size as work starts), a comet lapping them
+    // while it works (`running`, its height in lines about). In the terminal
+    // the terminal's own border, pulsing with the beat while it works.
     const frame = (key: string, w: number, color: string, children: RenderChildren, opts: { dashed?: boolean; middle?: boolean; running?: { lines: number } } = {}) => {
-      if (opts.running && Svg) {
-        const edge = { cells: w, lines: opts.running.lines, color, nowMs: now }
+      if (Svg) {
+        const edge = { cells: w, lines: opts.running?.lines ?? 6, color, nowMs: now, isRunning: opts.running !== undefined, isDashed: opts.dashed }
         return (
           <Box key={key} flexDirection="column" width={w} flexShrink={0}>
-            <Svg source={edgeSvg('top', edge)} alt="a box at work, its top edge" height={EDGE_PX} />
+            <Svg source={edgeSvg('top', edge)} alt="a box's top edge" height={EDGE_PX} />
             {/* Stretched, not centred: the sides take the row's height (a row with no alignItems centres an image). */}
             <Box alignItems="stretch" flexGrow={1}>
               <Svg source={edgeSvg('left', edge)} alt="its left edge" width={SIDE_PX} />

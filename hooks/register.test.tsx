@@ -249,8 +249,8 @@ test('the pane draws the board, the checks and the day on every surface', async 
         ],
       ])
       await has('opus:reviewer')
-      // The main session's boxes dashed, as in the mock-up.
-      expect(JSON.stringify(await ui.drawn())).toContain('"borderStyle":"dashed"')
+      // The main session's boxes dashed, as in the mock-up: the terminal's border, the desktop's vector edges.
+      expect(JSON.stringify(await ui.drawn())).toContain(surface === 'terminal' ? '"borderStyle":"dashed"' : 'stroke-dasharray')
       await ui.unmount()
     }
   }
