@@ -9,10 +9,20 @@
 set -e
 here=${0:A:h:h}
 out=$here/.cache/paint
+chrome="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+[[ -x $chrome ]] || { print "no Chrome at $chrome: nothing to screenshot with"; exit 1 }
 mkdir -p $out
 snap=${HARNESS_SNAPSHOT:-$HOME/.cache/harness-view/snapshot.json}
+# The dump runs as a test of the mod's own (zz-*.test.tsx is git-ignored); a
+# test run lays a tsconfig.json beside the mod, taken away only if it wasn't there.
 test_file=$here/hooks/zz-desktop-paint.test.tsx
-trap 'rm -f $test_file $here/tsconfig.json' EXIT
+had_tsconfig=0
+[[ -e $here/tsconfig.json ]] && had_tsconfig=1
+cleanup() {
+  rm -f $test_file
+  (( had_tsconfig )) || rm -f $here/tsconfig.json
+}
+trap cleanup EXIT INT TERM HUP
 {
   print -r -- "import { expect, mock, test } from 'claude-code/testing'"
   print -r -- "const SNAP = $(cat $snap)"
@@ -58,9 +68,8 @@ TS
 (cd $here && claude plugin test . > $out/dump.log 2>&1) || true
 perl -0ne 'print $1 if /PAINT-JSON-BEGIN(.*?)PAINT-JSON-END/s' $out/dump.log > $out/dump.json
 [[ -s $out/dump.json ]] || { print "no dump: see $out/dump.log"; exit 1 }
-chrome="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 for w in 110 80 48; do
   bun $here/bin/desktop-paint.ts $out/dump.json $out/desktop-$w.html $w > /dev/null
-  [[ -x $chrome ]] && $chrome --headless=new --disable-gpu --hide-scrollbars --force-device-scale-factor=2 --window-size=$((w * 9 + 120)),2600 --virtual-time-budget=1200 --screenshot=$out/desktop-$w.png file://$out/desktop-$w.html 2> /dev/null
+  $chrome --headless=new --disable-gpu --hide-scrollbars --force-device-scale-factor=2 --window-size=$((w * 9 + 120)),2600 --virtual-time-budget=1200 --screenshot=$out/desktop-$w.png file://$out/desktop-$w.html 2> /dev/null
 done
 print "painted: $out/desktop-{110,80,48}.png"

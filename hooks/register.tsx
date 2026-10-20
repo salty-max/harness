@@ -583,10 +583,11 @@ export const register: Register = on => {
     // Every table names every element, a surface's missing ones drawing nothing: chosen by the surface.
     // The editor and the phone draw no Client: their moving parts stand still.
     const Client = (e.surface === 'terminal' || e.surface === 'desktop') && 'Client' in table ? table.Client : undefined
-    // The desktop, the editor and the phone draw an Svg: the bars and the diagram's lines are vector there.
-    const Svg = e.surface !== 'terminal' && 'Svg' in table ? table.Svg : undefined
+    // The desktop draws an Svg: the bars and the diagram's lines are vector there. Its renderer
+    // is the one read (README, "The desktop's paint"): the editor's and the phone's are not, they keep characters.
+    const Svg = e.surface === 'desktop' && 'Svg' in table ? table.Svg : undefined
     // A row between stacked boxes: the desktop's vertical unit is half a line.
-    const gapY = Svg ? 2 : GAP_Y
+    const gapY = e.surface === 'desktop' ? 2 : GAP_Y
     const [snap, error, facts, rows, work] = await Promise.all([read($, snapshot), read($, snapshotError), read($, session), read($, agents), read($, turn), read($, tick)])
     const now = await $.clock.now()
     const W = Math.max(32, e.props.bodyColumns)
@@ -633,7 +634,7 @@ export const register: Register = on => {
           )
         case 'fresh':
           return (
-            <Text key={key} color={p.color}>
+            <Text key={key} color={p.settled ?? p.color}>
               {p.mark ?? ' '}
             </Text>
           )
@@ -1340,7 +1341,7 @@ export const register: Register = on => {
                 const age = Math.max(0, now - ev.at)
                 return (
                   <Box key={`event-${i}-${ev.at}`}>
-                    {cell(markW, motion(eventKey(ev, i), { kind: 'fresh', age, color: age < FRESH_MS ? toneColor(ev.tone, ev.text) : PALETTE.ok, mark: i === 0 ? '›' : ' ' }))}
+                    {cell(markW, motion(eventKey(ev, i), { kind: 'fresh', age, color: toneColor(ev.tone, ev.text), settled: PALETTE.ok, mark: i === 0 ? '›' : ' ' }))}
                     {cell(timeW, line(clockTime(ev.at), { bold: i === 0, dim: i !== 0 }))}
                     {cell(sourceW, line(sourceLabel(ev), { color: sourceColor(ev) }))}
                     <Box flexGrow={1} flexShrink={1} minWidth={0}>

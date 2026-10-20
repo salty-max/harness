@@ -47,7 +47,7 @@ export type MotionProps =
    * `mark`. `age` is read as the instance first draws: a redraw's later age
    * would count the time since twice.
    */
-  | { kind: 'fresh'; age: number; color: string; mark?: string }
+  | { kind: 'fresh'; age: number; color: string; settled?: string; mark?: string }
   /** How long since `at` (ms since the epoch), counted here each second: `changed 4s ago`. */
   | { kind: 'ago'; at: number; label?: string }
 
@@ -187,7 +187,7 @@ function draw(p: MotionProps, run: Run, frame: number, Text: Elements['Text'], B
           ●
         </Text>
       ) : (
-        <Text color={p.color}>{p.mark ?? ' '}</Text>
+        <Text color={p.settled ?? p.color}>{p.mark ?? ' '}</Text>
       )
       break
     }

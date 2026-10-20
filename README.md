@@ -80,7 +80,11 @@ except where a line of the diagram joins them.
 (about twelve frames a second, an instance drawn again only when it looks
 different). On the desktop, the bars and the diagram's lines are vector
 (`hooks/vector.ts`, an `Svg` the page draws as an image, SMIL for the
-motion); in the terminal they are characters the motion module lights. The
+motion: Chromium runs it in an image, where the engine's `SvgProps` promises
+it only in an `isInteractive` frame, seen with headless Chrome at several
+moments of `--virtual-time-budget`); in the terminal, the editor and the
+phone they are characters the motion module lights (only the desktop's
+renderer was read). The
 pane itself redraws only when a number moved. It moves when work does:
 
 - a pulse runs down the diagram's lines while the main session's turn runs
