@@ -68,9 +68,9 @@ holds the gates, the part of the harness that runs in code.
   ready-to-push cards first, then blocked ones, then running, done cards
   only from today. Each card's repositories (`wow-data+yonder`), its status
   in its colour (waiting on you amber, running cyan, blocked red, done
-  green); a blocked card says the repository it waits for (the one it
-  shares with its holder, whose card is on the board too), or "free now"
-  once the holder stops running. The header counts what waits on you,
+  green); a blocked card says the repositories it waits for (those of its
+  own another session's running card holds; that card is on the board
+  too), or "free now" once nothing holds them. The header counts what waits on you,
   what runs and what is blocked.
 - **Session log**: today's last 10 events, newest first: the time, the
   source in its colour (a helper as `opus:reviewer`), the repository and

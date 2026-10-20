@@ -1385,13 +1385,14 @@ export const register: Register = on => {
       const [statusW = 5, ageW = 4] = fit([Math.min(15, Math.max(5, ...board.map(c => c.status.length + 1))), 4], inner)
       const busy = board.filter(c => c.status === 'running').length
       const blocked = board.filter(c => c.status === 'blocked').length
-      // A blocked card's holder, by the repository they share (its card is on the board too), before the title so it
-      // is never cut; "free now" once the holder stops running (board.ts's lock: only a running card holds).
+      // What a blocked card waits for: the repositories other sessions' running cards hold of its own (board.ts's
+      // lock: only a running card holds; its holder may drop one, another come to hold one), before the title so
+      // it is never cut; "free now" once nothing holds them.
       const blocker = (c: BoardCard): Run => {
-        const holder = board.find(b => b.id === c.waits)
-        if (!holder || !HOLDS(holder)) return [' · free now', { color: PALETTE.ok, fixed: true }]
-        const shared = reposOf(holder).filter(r => reposOf(c).includes(r))
-        return [` · on ${shared.join('+') || holder.repo}`, { color: PALETTE.fail, fixed: true }]
+        const isOther = (b: BoardCard) => !(c.session && b.session === c.session)
+        const held = [...new Set(board.filter(b => b.id !== c.id && HOLDS(b) && isOther(b)).flatMap(b => reposOf(b).filter(r => reposOf(c).includes(r))))]
+        if (held.length === 0) return [' · free now', { color: PALETTE.ok, fixed: true }]
+        return [` · on ${held.join('+')}`, { color: PALETTE.fail, fixed: true }]
       }
       return frame(
         'board',
