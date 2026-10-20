@@ -38,12 +38,14 @@ holds the gates, the part of the harness that runs in code.
   and when it resets), the ask rules, the subagent model
   (`CLAUDE_CODE_SUBAGENT_MODEL`, else per helper).
 - **Gates**: checks fresh (HEAD stamped), reviews current, cards waiting.
-- **Helpers**, fanned out from the hand-off: running ones first, then the
+- **Helpers**, fanned out from the gates: running ones first, then the
   family's (`.claude/agents/*.md`) and today's, the busiest first (by runs,
   then the latest), the planner's left to it. Each with its model, status,
   its share of today's helper tokens, runs and tokens (or its live context
   and calls).
-- **Back to lead** (dashed): the last helper's handback, tokens and time.
+- **Back to lead** (dashed): the last helper's handback, tokens and time;
+  "handing back" while a helper of this session has just finished and the
+  shared numbers don't have its figures yet.
 - **Today**, **Board**: tokens by model, the board's cards (below).
 - **Repositories**: each family repository's newest check stamp
   (`.git/harness/check-<tree>`, read through `addon-kit/q.ts`) and review.
@@ -110,13 +112,19 @@ still (no `Client` there, and only the desktop's renderer was read). The
 pane itself redraws only when a number moved. It moves when work does:
 
 - a pulse runs down the diagram's lines while the main session's turn runs
-  (session → gates → the hand-off), and on out along the fan-out to the
-  helpers and back to the lead while one runs (a dot on the desktop, the
-  line's heavy strokes in the terminal); the planner's arrow while an Opus
-  helper does. On the desktop each line's pulse starts at the wall clock's
+  (session → gates), on out along the fan-out to the running helpers'
+  boxes alone while one runs (the lines to the idle ones stay dark), and
+  back from a helper's box to the lead once it is done, for six seconds
+  (`HANDBACK_MS`: a helper of this session seen running, then not, and a
+  `$.clock.after` that turns it off); never back while they still run.
+  A dot on the desktop, the line's heavy strokes in the terminal; the
+  planner's arrow while an Opus helper runs. Only the lines that are on
+  make up the pulse's cycle. On the desktop each line's pulse starts at the wall clock's
   phase of its cycle, so a redraw doesn't make it jump;
 - a box at work wears a running border: the main session's while its turn
-  runs, a helper's while it runs, the planner's while an Opus helper does.
+  runs, the gates' while work flows through them (the turn, or a helper),
+  a helper's while it runs, the planner's while an Opus helper does, the
+  lead's while a handback comes in.
   On the desktop every box's border is four vector edges (rounded strips
   top and bottom cut to the box's width, sides the row stretches to its
   height, the main session's dashed), standing still at rest; at work they

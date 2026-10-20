@@ -27,7 +27,8 @@ const PANE = {
 } as const
 
 /** The engine beneath the mod: a family session on the desktop, the pane shown unless told otherwise. */
-function world(on: On, opts: { snapshot?: () => Snapshot; isShown?: boolean; events?: () => number; surface?: 'desktop' | 'terminal' } = {}) {
+type Agent = { id: string; type: string; description: string; status: string }
+function world(on: On, opts: { snapshot?: () => Snapshot; isShown?: boolean; events?: () => number; surface?: 'desktop' | 'terminal'; agents?: () => Agent[] } = {}) {
   const runs: string[][] = []
   mock.env(on, { HOME: '/Users/someone' })
   const clock = mock.clock(on, { now: AT })
@@ -41,7 +42,7 @@ function world(on: On, opts: { snapshot?: () => Snapshot; isShown?: boolean; eve
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.panes', () => ({ value: [{ id: 'harness', title: 'Harness', isShown: opts.isShown ?? true, isFocused: false, isPlaced: true }] }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
-  on('agent.list', () => ({ value: [] }))
+  on('agent.list', () => ({ value: opts.agents?.() ?? [] }))
   on('fs.stat', () => ({ value: { kind: 'file', size: opts.events?.() ?? 1, mtimeMs: opts.events?.() ?? 1, isLink: false } }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
@@ -87,7 +88,8 @@ test('the lines pulse while the turn runs and stand still once it ends (the term
   expect(await lights('to-gates-1')).toBe(false)
   await $.turn.start({ text: 'hi', turnId: 't1' })
   expect(await lights('to-gates-1')).toBe(true)
-  expect(await lights('to-pill')).toBe(true)
+  // The gates' line on to the helpers is theirs: dark with none running.
+  expect(await lights('to-fan')).toBe(false)
   expect(JSON.stringify(await ui.drawn({ in: 'gates-state-spin' }))).toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/)
   // The helpers' part waits for a helper.
   expect(await lights('fan-out')).toBe(false)
@@ -122,6 +124,51 @@ test('on the desktop the lines and bars are vector, the pulse a SMIL animation w
   expect(await svgOf('fan-out')).not.toContain('repeatCount')
   await $.turn.complete({ answer: 'ok', durationMs: 5, isAborted: false, turnId: 't1', reason: 'answer' })
   expect(await svgOf('to-gates-1')).not.toContain('repeatCount')
+  await ui.unmount()
+})
+
+// The Svg under the Box keyed `key` in a drawing (the desktop's vector lines and edges).
+const svgIn = (tree: unknown, key: string): string => {
+  const find = (n: unknown): unknown => {
+    if (!n || typeof n !== 'object') return undefined
+    if (Array.isArray(n)) return n.map(find).find(Boolean)
+    const node = n as { type?: string; props?: { key?: string; source?: string }; children?: unknown[] }
+    if (node.props?.key === key) return (node.children ?? []).find(c => (c as { type?: string }).type === 'Svg')
+    return find(node.children)
+  }
+  return (find(tree) as { props?: { source?: string } } | undefined)?.props?.source ?? ''
+}
+
+test('the pulse goes out to the running helpers alone, back to the lead once one is done, then stands still', async ($, on) => {
+  let agents: Agent[] = [{ id: 'a1', type: 'data-scout', description: 'A question about the data', status: 'running' }]
+  const helpers = [
+    { name: 'data-scout', model: 'sonnet', description: 'Answers a data question.' },
+    { name: 'prose-reader', model: 'sonnet', description: 'Reads text cold.' },
+    { name: 'Explore', model: 'haiku', description: 'Searches.' },
+  ]
+  const { clock } = world(on, { snapshot: () => ({ ...snap(), helpers }), agents: () => agents })
+  await $.session.start({ cwd: FAMILY, surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'refresh' })
+  await clock.advance(1100)
+  const svg = async (key: string) => svgIn(await ui.drawn(), key)
+  // Out: three boxes drawn, the pulse to the running one alone (one dot each on the fan-out and the arrows).
+  const dots = (source: string) => (source.match(/<ellipse[^>]*opacity="0"/g) ?? []).length
+  expect([dots(await svg('fan-out')), dots(await svg('arrows'))]).toEqual([1, 1])
+  // Nothing back to the lead while it runs; the gates at work, their edge breathing.
+  expect(await svg('merge')).not.toContain('repeatCount')
+  expect(await svg('to-back')).not.toContain('repeatCount')
+  expect(await svg('gates')).toContain('repeatCount="indefinite"')
+  // Done: the way back lights up from its box, the way out goes dark.
+  agents = [{ ...agents[0]!, status: 'completed' }]
+  await clock.advance(1100)
+  expect([dots(await svg('merge')), (await svg('to-back')).includes('repeatCount')]).toEqual([1, true])
+  expect(await svg('fan-out')).not.toContain('repeatCount')
+  expect(JSON.stringify(await ui.drawn())).toContain('rx: data-scout · handing back [ ')
+  // A few seconds on, it stands still again.
+  await clock.advance(6_500)
+  expect(await svg('merge')).not.toContain('repeatCount')
+  expect(await svg('gates')).not.toContain('repeatCount')
   await ui.unmount()
 })
 

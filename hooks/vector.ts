@@ -65,6 +65,8 @@ export type LineSvg = {
   cycleMs: number
   /** Where the wall clock is in the cycle, in milliseconds. */
   phaseMs: number
+  /** The cells the pulse goes to (the running helpers' boxes): every end of the line when none are given. */
+  targets?: number[]
 }
 
 /** One line of the diagram, its pulse running while `on`. */
@@ -100,12 +102,12 @@ export function lineSvg(l: LineSvg): string {
     const dot = (moves: string, x: number, y: number) =>
       `<ellipse cx="${x}" cy="${y}" rx="3" ry="3" fill="${esc(paint(l.color))}" opacity="0">${seen}${moves}</ellipse>`
     if (l.how === 'down') {
-      for (const x of cells) parts.push(dot(run('cy', 0, H), cx(x), 0))
+      for (const x of l.targets ? cells.filter(c => l.targets?.includes(c)) : cells) parts.push(dot(run('cy', 0, H), cx(x), 0))
     } else {
       const lo = Math.min(...cells)
       const hi = Math.max(...cells)
       const stem = cx(l.at)
-      for (const end of [lo, hi].filter((x, i, all) => all.indexOf(x) === i && x !== l.at)) {
+      for (const end of (l.targets ?? [lo, hi]).filter((x, i, all) => all.indexOf(x) === i && x !== l.at && cells.includes(x))) {
         parts.push(l.how === 'out' ? dot(run('cx', stem, cx(end)), stem, cy) : dot(run('cx', cx(end), stem), cx(end), cy))
       }
     }

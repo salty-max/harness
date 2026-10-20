@@ -120,6 +120,9 @@ export type AgentRow = {
   steps: AgentSteps | null
 }
 
+/** A helper of this session that just stopped running: its handback, which flows back to the lead a few seconds. */
+export type Handback = { at: number; type: string }
+
 /** The main session's turn: running from its start to its end (or abort). */
 export type TurnState = { isRunning: boolean; at: number | null }
 
@@ -134,6 +137,7 @@ declare module 'claude-code' {
       tick: number
       beat: number
       turn: TurnState
+      handback: Handback | null
     }
   }
 }

@@ -34,6 +34,10 @@ const tick = atom({ plugin: 'harness-view', key: 'tick' } as const, 0)
 const beat = atom({ plugin: 'harness-view', key: 'beat' } as const, 0)
 // The main session's turn: the diagram's lines pulse while it runs.
 const turn = atom({ plugin: 'harness-view', key: 'turn' } as const, { isRunning: false, at: null })
+// A helper of this session just done: the diagram's way back to the lead lights up this long, then goes dark.
+const handback = atom({ plugin: 'harness-view', key: 'handback' } as const, null)
+const HANDBACK_MS = 6_000
+let handbackTimer: { cancel: () => void } | null = null
 
 // --- numbers as the panel says them ---------------------------------------
 
@@ -457,8 +461,8 @@ async function setTurn($: EngineInterface, isRunning: boolean) {
 
 /** The terminal's beat runs while the turn or a helper does, and a terminal draws the pane. */
 async function refreshBeat($: EngineInterface) {
-  const [work, rows, surfaces] = await Promise.all([read($, turn), read($, agents), $.session.surfaces()])
-  const isWanted = isActive && (work.isRunning || rows.some(a => a.status === 'running')) && surfaces.includes('terminal')
+  const [work, rows, back, surfaces] = await Promise.all([read($, turn), read($, agents), read($, handback), $.session.surfaces()])
+  const isWanted = isActive && (work.isRunning || rows.some(a => a.status === 'running') || back !== null) && surfaces.includes('terminal')
   if (isWanted && !beater) beater = $.clock.every(BEAT_MS, () => void update($, beat, n => n + 1).catch(() => {}))
   if (!isWanted && beater) {
     beater.cancel()
@@ -500,7 +504,7 @@ async function refreshSession($: EngineInterface, lastModel?: string, lastEffort
 }
 
 async function refreshAgents($: EngineInterface) {
-  const [list, counted] = await Promise.all([$.agent.list(), read($, steps)])
+  const [list, counted, was] = await Promise.all([$.agent.list(), read($, steps), read($, agents)])
   const rows: AgentRow[] = list.map(a => ({
     id: a.id,
     type: a.type,
@@ -509,6 +513,14 @@ async function refreshAgents($: EngineInterface) {
     steps: counted[a.id] ?? null,
   }))
   if (isChanged('agents', rows)) await update($, agents, () => rows)
+  // A helper that was running and isn't now (done, failed, stopped, gone) hands back to the lead.
+  const back = was.find(a => a.status === 'running' && rows.find(r => r.id === a.id)?.status !== 'running')
+  if (back) {
+    const at = await $.clock.now()
+    await update($, handback, () => ({ at, type: back.type }))
+    handbackTimer?.cancel()
+    handbackTimer = $.clock.after(HANDBACK_MS, () => void update($, handback, () => null).then(() => refreshBeat($)).catch(() => {}))
+  }
   await refreshBeat($)
   await refreshStatus($)
 }
@@ -534,6 +546,10 @@ async function gate($: EngineInterface, isStart = false): Promise<boolean> {
   timers = []
   beater?.cancel()
   beater = null
+  handbackTimer?.cancel()
+  handbackTimer = null
+  // (a handback whose timer was just cancelled would stay lit)
+  void update($, handback, () => null).catch(() => {})
   if (!isActive) {
     if (written.delete('status')) $.ui.status(undefined)
     return false
@@ -661,7 +677,15 @@ export const register: Register = on => {
     const isDim = e.surface === 'terminal' ? (await read($, beat)) % 2 === 1 : false
     // A row between stacked boxes: the desktop's vertical unit is half a line.
     const gapY = e.surface === 'desktop' ? 2 : GAP_Y
-    const [snap, error, facts, rows, work] = await Promise.all([read($, snapshot), read($, snapshotError), read($, session), read($, agents), read($, turn), read($, tick)])
+    const [snap, error, facts, rows, work, back] = await Promise.all([
+      read($, snapshot),
+      read($, snapshotError),
+      read($, session),
+      read($, agents),
+      read($, turn),
+      read($, handback),
+      read($, tick),
+    ])
     const now = await $.clock.now()
     const W = Math.max(32, e.props.bodyColumns)
     const tier = W >= 96 ? 'wide' : W >= 64 ? 'medium' : 'narrow'
@@ -736,6 +760,8 @@ export const register: Register = on => {
     // Work flows down the diagram while the main loop's turn runs or a helper does; out to the helpers while one runs.
     const isDelegating = running.length > 0
     const isWorking = work.isRunning || isDelegating
+    // A helper just handed back: the way back to the lead lights up a few seconds (HANDBACK_MS).
+    const isReturning = back !== null
     // A spinner inside a line's words: `words [ ⠋ ]`.
     const spinning = (key: string, before: string, isOn: boolean, color: string, props: { dim?: boolean; color?: string; bold?: boolean } = {}, after = ' ]') => (
       <Box key={key}>
@@ -1120,6 +1146,7 @@ export const register: Register = on => {
             {runs('refusal-note', [['refusal', { color: PALETTE.gate }], [' → the log', { dim: true }]])}
           </Box>
         </>,
+        { running: isWorking ? { lines: 6 } : undefined },
       )
     }
 
@@ -1184,75 +1211,83 @@ export const register: Register = on => {
           })}
         </Box>
       )
-      return { boxes, xs, count: picks.length }
+      return { boxes, xs, count: picks.length, names: picks.map(p => p.name), isRunning: picks.map(p => p.agent !== undefined) }
     }
 
-    const backBox = (w: number) =>
-      frame(
+    // Back to the lead: at work while a helper's handback comes in, its figures once the shared numbers have them.
+    const backBox = (w: number) => {
+      const isKnown = !!back && !!lastHandback && lastHandback.text.startsWith(`${back.type} `) && Math.abs(lastHandback.at - back.at) < 60_000
+      return frame(
         'back',
         w,
         builderColor,
         <Box flexDirection="column" alignItems="center" width="100%">
           {line(`back to ${builderName} · lead`, { bold: true, color: builderColor })}
-          {lastHandback
-            ? spinning(
-                'back-state',
-                `rx: ${lastHandback.text.split(' ')[0]} · ${tokens(lastHandback.tokens)} tok · ${duration(lastHandback.ms ?? 0)} [ `,
-                isDelegating,
-                builderColor,
-              )
-            : line('rx: no handback today yet', { dim: true })}
+          {back && !isKnown
+            ? spinning('back-state', `rx: ${back.type} · handing back [ `, true, builderColor)
+            : lastHandback
+              ? spinning(
+                  'back-state',
+                  `rx: ${lastHandback.text.split(' ')[0]} · ${tokens(lastHandback.tokens)} tok · ${duration(lastHandback.ms ?? 0)} [ `,
+                  isReturning,
+                  builderColor,
+                )
+              : line('rx: no handback today yet', { dim: true })}
         </Box>,
-        { dashed: true },
+        { dashed: true, running: isReturning ? { lines: 3 } : undefined },
       )
+    }
 
-    // The flow under the main session: the gates, the hand-off, the helpers, back.
+    // The flow under the main session: the gates, the helpers, back to the lead.
     const flow = (w: number, from: number) => {
       const c = Math.floor(w / 2)
       const k = w >= 66 ? 3 : w >= 40 ? 2 : 1
       const fan = helperBoxes(w, k)
-      const pill = `» delegate to helpers · ${helperRuns} runs today · ${tokens(helperTokens)} tok «`
       const backW = Math.min(w, Math.max(30, Math.round(w * 0.62)))
       const ends = fan.xs.length > 0 ? fan.xs : [c]
-      // The pulse's way down, line by line: a pause inside each box it goes
-      // through, the helpers' part only while one runs. Its colour: the main
-      // session's out of it and back, the gates' green, the helpers' blue.
-      const lines: { key: string; text: string; how: 'down' | 'out' | 'in'; at: number; on: boolean; color: string; base?: string; pause: number; isHelpers?: true }[] = [
+      // Out to the running helpers' boxes alone; back from the one that just handed back (every box, when it isn't drawn).
+      const out = fan.xs.filter((_, i) => fan.isRunning[i])
+      const handedBack = back ? fan.xs.filter((_, i) => fan.names[i] === back.type) : []
+      const home = handedBack.length > 0 ? handedBack : ends
+      // The pulse's way, line by line, through the lines that are on: down
+      // to the gates while the turn runs, on out to the helpers while one
+      // runs, back to the lead once one is done (a few seconds), a pause
+      // inside each box it goes through. Each line is drawn whole; the pulse
+      // runs along `pulse` (its targets' part) where it has one. Its colour:
+      // the main session's out of it and back, the gates' green, the helpers' blue.
+      type Flow = { key: string; text: string; pulse?: string; targets?: number[]; how: 'down' | 'out' | 'in'; at: number; on: boolean; color: string; base?: string; pause: number }
+      const lines: Flow[] = [
         { key: 'to-gates-1', text: marks(w, [from], '│'), how: 'down', at: from, on: isWorking, color: builderColor, base: 'inactive', pause: 0 },
         { key: 'to-gates-2', text: marks(w, [from], '●'), how: 'down', at: from, on: isWorking, color: builderColor, base: builderColor, pause: 3 },
-        { key: 'to-pill', text: marks(w, [c], '│'), how: 'down', at: c, on: isWorking, color: PALETTE.gate, base: 'inactive', pause: 2 },
-        { key: 'fan-out', text: branch(w, c, ends), how: 'out', at: c, on: isDelegating, color: PALETTE.haiku, base: 'inactive', pause: 0, isHelpers: true },
-        { key: 'arrows', text: marks(w, fan.xs, '▼'), how: 'down', at: c, on: isDelegating, color: PALETTE.haiku, base: PALETTE.haiku, pause: 4, isHelpers: true },
-        { key: 'merge', text: branch(w, c, ends, true), how: 'in', at: c, on: isDelegating, color: builderColor, base: 'inactive', pause: 0, isHelpers: true },
-        { key: 'to-back', text: marks(w, [c], '●'), how: 'down', at: c, on: isDelegating, color: builderColor, base: 'inactive', pause: 0, isHelpers: true },
+        { key: 'to-fan', text: marks(w, [c], '│'), how: 'down', at: c, on: isDelegating, color: PALETTE.gate, base: 'inactive', pause: 0 },
+        { key: 'fan-out', text: branch(w, c, ends), pulse: branch(w, c, out), targets: out, how: 'out', at: c, on: isDelegating, color: PALETTE.haiku, base: 'inactive', pause: 0 },
+        { key: 'arrows', text: marks(w, fan.xs, '▼'), pulse: marks(w, out, '▼'), targets: out, how: 'down', at: c, on: isDelegating, color: PALETTE.haiku, base: PALETTE.haiku, pause: 4 },
+        { key: 'merge', text: branch(w, c, ends, true), pulse: branch(w, c, home, true), targets: home, how: 'in', at: c, on: isReturning, color: builderColor, base: 'inactive', pause: 0 },
+        { key: 'to-back', text: marks(w, [c], '●'), how: 'down', at: c, on: isReturning, color: builderColor, base: 'inactive', pause: 0 },
       ]
       let step = 0
-      let top = 0
       const drawn = lines.map(l => {
-        const path = pulsePath(l.text, l.at, l.how)
+        const path = pulsePath(l.pulse ?? l.text, l.at, l.how)
         const start = step
-        step += path.length + l.pause
-        if (!l.isHelpers) top = step
+        if (l.on) step += path.length + l.pause
         return { ...l, path, start }
       })
-      // No helper running: the pulse goes round the gates' part alone, a beat a second or so.
-      const cycle = (isDelegating ? step : top) + 6
+      // Nothing but the turn: the pulse goes round the gates' part alone, a beat a second or so.
+      const cycle = step + 6
       // The same way in milliseconds for the desktop's vector lines: a line of marks 160, a fan-out by its reach, a pause a box.
       let ms = 0
-      let topMs = 0
       const timed = drawn.map(l => {
         const dur = l.how === 'down' ? 160 : 90 * Math.max(1, l.path.length) + 80
         const from = ms
-        ms += dur + l.pause * 110
-        if (!l.isHelpers) topMs = ms
+        if (l.on) ms += dur + l.pause * 110
         return { ...l, from, to: from + dur }
       })
-      const cycleMs = (isDelegating ? ms : topMs) + 450
+      const cycleMs = ms + 450
       const pulse = (key: string) => {
         const l = timed.find(d => d.key === key)
         if (!l) return null
         if (Svg) {
-          const source = lineSvg({ text: l.text, how: l.how, at: l.at, color: l.color, base: l.base ?? l.color, on: l.on, from: l.from, to: l.to, cycleMs, phaseMs: now % cycleMs })
+          const source = lineSvg({ text: l.text, how: l.how, at: l.at, color: l.color, base: l.base ?? l.color, on: l.on, from: l.from, to: l.to, cycleMs, phaseMs: now % cycleMs, targets: l.targets })
           return (
             <Box key={key} width={w} flexShrink={0}>
               <Svg source={source} alt="a line of the diagram" height={LINE_PX} />
@@ -1266,12 +1301,7 @@ export const register: Register = on => {
           {pulse('to-gates-1')}
           {pulse('to-gates-2')}
           {gatesBox(w)}
-          {pulse('to-pill')}
-          <Box width={w} justifyContent="center">
-            <Box borderStyle="single" borderColor="inactive" paddingX={1} flexShrink={1}>
-              {line(pill, { color: PALETTE.haiku })}
-            </Box>
-          </Box>
+          {pulse('to-fan')}
           {pulse('fan-out')}
           {pulse('arrows')}
           {fan.boxes}
