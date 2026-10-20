@@ -16,6 +16,7 @@ import {
   modelColor,
   modelName,
   PALETTE,
+  resetIn,
   sourceColor,
   sourceLabel,
   statusLine,
@@ -189,6 +190,13 @@ describe('numbers', () => {
     expect(eventFigure({ at: 0, source: 'ask', tone: 'ok', repo: '', text: 'git push allowed' })).toBe('allowed')
   })
 
+  test("a limit's reset reads in days past a day", async () => {
+    expect(resetIn(12 * 60_000)).toBe('12m')
+    expect(resetIn((2 * 60 + 10) * 60_000)).toBe('2h 10m')
+    expect(resetIn((3 * 24 * 60 + 2 * 60 + 5) * 60_000)).toBe('3d 2h')
+    expect(resetIn(-5)).toBe('0m')
+  })
+
   test('a check says whether a push of HEAD passes and what changed since', async () => {
     const at = 1_000_000
     const now = at + 12 * 60_000
@@ -306,7 +314,7 @@ test("the plan's limits are meters, the planner's moments say who, how often and
       await has('◇ before a plan')
       if (bodyColumns >= 96) {
         // Who each moment calls, and its last word: the newest verdict, or why the architect stays off.
-        await has(' reviewer')
+        await has('reviewer')
         await has('no findings')
         await has('off in an opus session')
         await has('their time')

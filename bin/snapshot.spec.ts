@@ -273,10 +273,13 @@ describe('events in the transcripts', () => {
     eventRow(call('m3', 'Agent', { subagent_type: 'architect', description: 'The same test failing again' }), from, to, s)
     eventRow(call('m4', 'Agent', { subagent_type: 'architect', description: 'Sign off the whole change' }), from, to, s)
     eventRow(call('m5', 'Agent', { subagent_type: 'Explore', description: 'Find the plan' }), from, to, s)
+    // Whole words: a design is a plan, an error log's word in a longer one is not an error.
+    eventRow(call('m6', 'Agent', { subagent_type: 'architect', description: 'Design the moment counter' }), from, to, s)
+    eventRow(call('m7', 'Agent', { subagent_type: 'architect', description: 'Assign the terror of the abandoned path' }), from, to, s)
     // A line read again counts nothing more.
     eventRow(call('m1', 'Agent', { subagent_type: 'reviewer', description: 'Review the riddles' }), from, to, s)
     const at = Date.parse(noon)
-    expect(s.moments).toEqual({ push: { runs: 1, lastAt: at }, plan: { runs: 1, lastAt: at }, error: { runs: 1, lastAt: at }, done: { runs: 1, lastAt: at } })
+    expect(s.moments).toEqual({ push: { runs: 1, lastAt: at }, plan: { runs: 3, lastAt: at }, error: { runs: 1, lastAt: at }, done: { runs: 1, lastAt: at } })
   })
 
   test('a push the user allowed or refused, never one a rule let through, nor another command', () => {

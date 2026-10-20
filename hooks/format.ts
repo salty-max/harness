@@ -43,7 +43,8 @@ export type Moment = 'plan' | 'error' | 'push' | 'done'
 export function momentOf(type: string, description: string): Moment | null {
   if (type === 'reviewer') return 'push'
   if (type !== 'architect') return null
-  if (/error|fail|again|twice|deadlock/i.test(description)) return 'error'
-  if (/done|finish|sign/i.test(description)) return 'done'
+  // Whole words: an architect asked to "design" something is planning, not signing off.
+  if (/\b(errors?|fail\w*|again|twice|deadlock\w*)\b/i.test(description)) return 'error'
+  if (/\b(done|finish\w*|sign(s|ed|ing)?[- ]?off)\b/i.test(description)) return 'done'
   return 'plan'
 }

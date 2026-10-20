@@ -51,6 +51,14 @@ export function duration(ms: number): string {
   return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`
 }
 
+/** How long until a limit resets: `3d 2h`, `2h 10m`, `12m`. */
+export function resetIn(ms: number): string {
+  const m = Math.max(0, Math.round(ms / 60_000))
+  if (m < 60) return `${m}m`
+  if (m < 24 * 60) return `${Math.floor(m / 60)}h ${m % 60}m`
+  return `${Math.floor(m / 1440)}d ${Math.floor((m % 1440) / 60)}h`
+}
+
 const total = (d: ModelDay) => d.input + d.cacheRead + d.cacheWrite + d.output
 
 // --- colours ----------------------------------------------------------------
@@ -887,9 +895,10 @@ export const register: Register = on => {
       const verdicts = repos.filter(r => r.review?.verdict).sort((a, b) => (b.review?.at ?? 0) - (a.review?.at ?? 0))
       const newest = verdicts[0]
       const labelW = Math.min(19, inner - 8)
-      const whoW = !isTall && inner >= 44 ? 10 : 0
+      // Who it calls: beside the bar, tall (the title keeps its whole line), a column of its own when wide enough.
+      const whoW = isTall || inner >= 44 ? 10 : 0
       const countW = 4
-      const barW = Math.max(3, inner - (isTall ? 0 : labelW + whoW) - countW - 1)
+      const barW = Math.max(3, inner - (isTall ? 0 : labelW) - whoW - countW - 1)
       const row = (m: (typeof MOMENTS)[number]) => {
         const today = moments[m.key]
         const n = today?.runs ?? 0
@@ -899,6 +908,7 @@ export const register: Register = on => {
         const label = line(title, { bold: true, inverse: isLit, color: isLit || n > 0 ? PALETTE.opus : undefined })
         const meterOf = (
           <Box key={`moment-${m.key}-meter`} flexGrow={1}>
+            {whoW > 0 ? cell(whoW, line(m.who, { dim: true })) : null}
             {barOf(`moment-${m.key}-bar`, n, Math.max(calls, 1), barW, PALETTE.opus)}
             {flush(countW + 1, motion(`moment-${m.key}-count`, { kind: 'count', value: n, unit: 'int', color, bold: n > 0 }))}
           </Box>
@@ -907,7 +917,6 @@ export const register: Register = on => {
           return (
             <Box key={`moment-${m.key}`}>
               {cell(labelW, label)}
-              {whoW > 0 ? cell(whoW, line(m.who, { dim: true })) : null}
               {meterOf}
             </Box>
           )
@@ -926,10 +935,7 @@ export const register: Register = on => {
             : line(today ? `last ${clockTime(today.lastAt).slice(0, 5)}` : m.who === 'architect' && isOpusBuilding ? 'off in an opus session' : 'not today', { dim: true })
         return (
           <Box key={`moment-${m.key}`} flexDirection="column">
-            <Box justifyContent="space-between">
-              {label}
-              <Box flexShrink={0}>{line(` ${m.who}`, { dim: true })}</Box>
-            </Box>
+            {label}
             {meterOf}
             {word}
           </Box>
@@ -1023,7 +1029,7 @@ export const register: Register = on => {
       const settings = facts?.settings
       const limitColor = (pct: number) => (pct >= 95 ? PALETTE.fail : pct >= 80 ? PALETTE.wait : PALETTE.ok)
       const limitName = (kind: string) => ({ five_hour: 'five hour', seven_day: 'seven day', spend_limit: 'spend' })[kind] ?? kind.replace(/_/g, ' ')
-      const resets = worst?.resetsAt ? ` · ${duration(Math.max(0, worst.resetsAt - now)).replace(/ 0s$/, '')}` : ''
+      const resets = worst?.resetsAt ? ` · ${resetIn(worst.resetsAt - now)}` : ''
       const labelW = 10
       const figureW = 5
       const barW = Math.max(3, inner - labelW - figureW)
