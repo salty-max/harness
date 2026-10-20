@@ -134,3 +134,24 @@ claude plugin test .
 ```bash
 claude plugin validate .
 ```
+
+## Seeing the paint
+
+The tests hold the tree to each surface's elements, never the paint. Two
+ways to look before calling a visual change done (the desktop app itself
+can't be captured from a session):
+
+- Claude Code's own terminal renderer: from `~/code/wow-addons`, run
+  `claude --no-chrome --plugin-dir <this folder> /harness` in a terminal
+  tab and read the screen. It is text only, the inline pane shows its top,
+  and it reloads on edits. It caught what the next way can't: a Box placed
+  at `top={-1}` inside a bordered Box isn't drawn.
+- The whole pane in colour: print `await ui.drawn()` from a throwaway
+  `*.test.tsx` that mounts the Pane with a real snapshot, paint the tree
+  with upstream Ink in a scratch folder, and screenshot it with headless
+  Chrome. Upstream Ink ignores `top`/`left` and the `dashed` style (map it
+  to a custom border).
+
+Fixed columns are `flexShrink={0}` with widths from `fit()`: `flexShrink`
+on them breaks alignment as soon as a row's last text is long. A fragment
+holds no array or `null` in this API: wrap a `.map` in a column Box.
