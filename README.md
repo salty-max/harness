@@ -75,22 +75,29 @@ columns, two from 64, one below; every column truncates rather than wraps.
 Boxes side by side stand two columns apart, stacked ones a row apart,
 except where a line of the diagram joins them.
 
-**Motion** (`hooks/motion.tsx`, a `Client` surface module drawn on the
-drawing thread, about twelve frames a second; the pane itself redraws only
-when a number moved). It moves when work does:
+**Motion.** Spinners, figures, a new line's blink and the live beat are
+`hooks/motion.tsx`, a `Client` surface module drawn on the drawing thread
+(about twelve frames a second, an instance drawn again only when it looks
+different). On the desktop, the bars and the diagram's lines are vector
+(`hooks/vector.ts`, an `Svg` the page draws as an image, SMIL for the
+motion); in the terminal they are characters the motion module lights. The
+pane itself redraws only when a number moved. It moves when work does:
 
-- a pulse runs down the diagram's lines in their heavy strokes while the
-  main session's turn runs (session → gates → the hand-off), and on out
-  along the fan-out to the helpers and back to the lead while one runs; the
-  planner's arrow while an Opus helper does;
+- a pulse runs down the diagram's lines while the main session's turn runs
+  (session → gates → the hand-off), and on out along the fan-out to the
+  helpers and back to the lead while one runs (a dot on the desktop, the
+  line's heavy strokes in the terminal); the planner's arrow while an Opus
+  helper does. On the desktop each line's pulse starts at the wall clock's
+  phase of its cycle, so a redraw doesn't make it jump;
 - the spinners (braille) turn while what they stand for works: the gates
   and the session in a turn, a helper while it runs, the planner while an
   Opus helper runs;
 - bars and figures (Today, the context, the gates' meters, the helpers'
   shares, the planner's runs and tokens) roll to a new value in half a
   second, and up from nothing as the pane opens;
-- a new log line blinks its mark and stands out in bold for six seconds;
-- the live beat in the log's header pulses always.
+- a new log line blinks its mark for six seconds;
+- the live beat in the log's header pulses always, and the header counts
+  the seconds since the numbers last changed.
 
 Idle, everything else stands still. The editor and the phone draw no
 `Client`: the same parts stand still there.
@@ -98,8 +105,8 @@ Idle, everything else stands still. The editor and the phone draw no
 What the pane can't draw: no pixels (bars and meters are block
 characters, an eighth of a cell at best), no charts or trends, no
 background of its own (the mock-up's navy is the app's background here),
-connectors only as text between boxes, no smooth motion (a frame is a
-cell's change, twelve a second). The desktop's paint of borders
+connectors only as text between boxes in the terminal, no smooth motion
+there (a frame is a cell's change, twelve a second). The desktop's paint of borders
 (dashed among them), colours and the `Client` regions is the desktop page's
 own and was checked in tests only: the terminal's was seen (a `claude
 --plugin-dir` session, and the whole pane painted with Ink, the motion's
@@ -142,7 +149,8 @@ the event log and the board's folder: a line there (a check, a review, a
 card, a hook's refusal) reads every number anew at once (`--fresh`, the
 repositories' rows too: a stamp or a verdict rewritten in place moves no
 mark), so it shows within a second of its tool writing it. Refresh does the
-same.
+same. A read that changed nothing but its own time draws nothing again; the
+ages (12m, 3h) are drawn again every half minute while the pane is shown.
 The session's own facts come from `$` every second, at each model call and
 at the turn's start and end.
 
@@ -174,10 +182,17 @@ claude plugin validate .
 
 ## Seeing the paint
 
-The tests hold the tree to each surface's elements, never the paint. Two
+The tests hold the tree to each surface's elements, never the paint. Three
 ways to look before calling a visual change done (the desktop app itself
 can't be captured from a session):
 
+- The desktop's paint: `zsh bin/desktop-paint.sh` mounts the pane on the
+  desktop surface (this machine's last snapshot, mid-turn, a helper
+  running), turns the trees into HTML by the desktop renderer's own rules
+  (`bin/desktop-paint.ts`) and screenshots 110, 80 and 48 columns with
+  headless Chrome into `.cache/paint/`. Its design tokens (padding, radius,
+  fonts) are guesses; the layout is the page's. Look at it after any change
+  to the drawing: the desktop was broken where the terminal was fine.
 - Claude Code's own terminal renderer: from `~/code/wow-addons`, run
   `claude --no-chrome --plugin-dir <this folder> /harness` in a terminal
   tab and read the screen. It is text only, the inline pane shows its top,
@@ -192,3 +207,22 @@ can't be captured from a session):
 Fixed columns are `flexShrink={0}` with widths from `fit()`: `flexShrink`
 on them breaks alignment as soon as a row's last text is long. A fragment
 holds no array or `null` in this API: wrap a `.map` in a column Box.
+
+**The desktop's paint** (its renderer read from the page's cached bundle,
+20 October 2026). Box is a flex `div`, Text a `span`:
+
+- widths are `ch` of the page's proportional font; vertical margins, padding
+  and gaps are half a line each (a `Client`'s inside: a whole line); a
+  bordered Box adds the design system's padding;
+- a Text with `wrap="truncate-end"` is an ellipsed inline-block, any other a
+  wrapping span, even inside a cut one: the pane's `Text` cuts by default,
+  and styled runs are texts side by side (`runs()`), never nested (a run
+  inside a text sits off the baseline);
+- a shrinking Box needs `minWidth={0}`, or its text won't let it shrink;
+- a centred column takes its widest line's width, uncut: a centred box's
+  lines sit on a `width="100%"` layer, and `<>` won't do, the engine makes
+  a fragment a column Box of its own;
+- block characters are wider than a cell (bars overflow): bars and lines
+  are `Svg` there, an image the page cuts to its cell;
+- every surface's element table names every element (the missing ones draw
+  nothing): `Client` and `Svg` are chosen by `e.surface`.

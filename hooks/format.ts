@@ -12,6 +12,14 @@ export function tokens(n: number | null | undefined): string {
   return `${(n / 1e9).toFixed(1)}G`
 }
 
+export function ago(at: number, now: number): string {
+  const s = Math.max(0, Math.round((now - at) / 1000))
+  if (s < 60) return `${s}s`
+  if (s < 3600) return `${Math.round(s / 60)}m`
+  if (s < 86400) return `${Math.round(s / 3600)}h`
+  return `${Math.round(s / 86400)}d`
+}
+
 const EIGHTHS = ['', '▏', '▎', '▍', '▌', '▋', '▊', '▉']
 
 /** A bar of block characters in eighths of a cell; a value above zero shows at least a sliver. */

@@ -122,6 +122,7 @@ declare module 'claude-code' {
       session: SessionFacts | null
       agents: AgentRow[]
       steps: Record<string, AgentSteps>
+      tick: number
       turn: TurnState
     }
   }

@@ -2,10 +2,11 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
 import type { AgentRow, AgentSteps, BoardCard, CheckStamp, HarnessEvent, ModelDay, RepoRow, SessionFacts, Snapshot } from '../types'
-import { bar, FRESH_MS, tokens } from './format'
+import { ago, bar, FRESH_MS, tokens } from './format'
 import type { MotionProps } from './motion'
+import { BAR_PX, barSvg, LINE_PX, lineSvg } from './vector'
 
-export { bar, tokens }
+export { ago, bar, tokens }
 
 const PANE = 'harness'
 const TITLE = 'Harness'
@@ -17,6 +18,7 @@ const SNAPSHOT_MS = 30_000
 const WATCH_MS = 1_000
 const SESSION_MS = 1_000
 const LOG_LINES = 10
+const AGES_MS = 30_000
 // The gaps between the boxes: a row between stacked ones, two columns beside.
 const GAP_Y = 1
 const GAP_X = 2
@@ -26,6 +28,8 @@ const snapshotError = atom({ plugin: 'harness-view', key: 'snapshotError' } as c
 const session = atom({ plugin: 'harness-view', key: 'session' } as const, null)
 const agents = atom({ plugin: 'harness-view', key: 'agents' } as const, [])
 const steps = atom({ plugin: 'harness-view', key: 'steps' } as const, {})
+// Bumped every half minute while the pane is shown: the ages (12m, 3h) drawn again.
+const tick = atom({ plugin: 'harness-view', key: 'tick' } as const, 0)
 // The main session's turn: the diagram's lines pulse while it runs.
 const turn = atom({ plugin: 'harness-view', key: 'turn' } as const, { isRunning: false, at: null })
 
@@ -35,14 +39,6 @@ const turn = atom({ plugin: 'harness-view', key: 'turn' } as const, { isRunning:
 export function modelName(model: string): string {
   const m = /^claude-([a-z]+)-(\d+)-(\d+)/.exec(model)
   return m ? `${m[1]} ${m[2]}.${m[3]}` : model.replace(/^claude-/, '')
-}
-
-export function ago(at: number, now: number): string {
-  const s = Math.max(0, Math.round((now - at) / 1000))
-  if (s < 60) return `${s}s`
-  if (s < 3600) return `${Math.round(s / 60)}m`
-  if (s < 86400) return `${Math.round(s / 3600)}h`
-  return `${Math.round(s / 86400)}d`
 }
 
 /** How long a helper ran: `42s`, `8m 24s`, `1h 3m`. */
@@ -295,6 +291,8 @@ let isActive = false
 let isShown = false
 let slowAt = 0
 let watched = ''
+// Each vector bar's last value, so its next drawing slides from it.
+const barsShown = new Map<string, number>()
 let timers: { cancel: () => void }[] = []
 const written = new Map<string, string>()
 
@@ -348,7 +346,8 @@ async function refreshSnapshot($: EngineInterface, isFresh = false) {
     // A headless run (claude -p) never draws: no snapshot until a surface attaches.
     if ((await $.session.surfaces()).length === 0) return
     const snap = await runSnapshot($, isFresh)
-    if (isChanged('snapshot', snap)) await update($, snapshot, () => snap)
+    // A read that changed nothing but its own time draws nothing again (the motion would restart on the desktop).
+    if (isChanged('snapshot', { ...snap, at: 0 })) await update($, snapshot, () => snap)
     if (isChanged('snapshotError', null)) await update($, snapshotError, () => null)
   } catch (error) {
     const text = error instanceof Error ? error.message.slice(0, 200) : String(error)
@@ -471,6 +470,9 @@ async function gate($: EngineInterface, isStart = false): Promise<boolean> {
   timers = [
     $.clock.every(LIVE_MS, () => void pace($).catch(() => {})),
     $.clock.every(WATCH_MS, () => void watch($).catch(() => {})),
+    $.clock.every(AGES_MS, () => {
+      if (isShown) void update($, tick, n => n + 1).catch(() => {})
+    }),
     $.clock.every(SESSION_MS, () => {
       void refreshSession($).catch(() => {})
       void refreshAgents($).catch(() => {})
@@ -574,10 +576,18 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const table = $.ui.resolve(e)
-    const { Box, Text, Button } = table
+    const { Box, Button } = table
+    // Every text cut at its end, never wrapped, its styled runs too: the
+    // desktop draws a Text with no wrap as wrapping text, inside a cut one as well.
+    const Text = (props: Parameters<typeof table.Text>[0]) => table.Text({ wrap: 'truncate-end', ...props })
+    // Every table names every element, a surface's missing ones drawing nothing: chosen by the surface.
     // The editor and the phone draw no Client: their moving parts stand still.
-    const Client = 'Client' in table ? table.Client : undefined
-    const [snap, error, facts, rows, work] = await Promise.all([read($, snapshot), read($, snapshotError), read($, session), read($, agents), read($, turn)])
+    const Client = (e.surface === 'terminal' || e.surface === 'desktop') && 'Client' in table ? table.Client : undefined
+    // The desktop, the editor and the phone draw an Svg: the bars and the diagram's lines are vector there.
+    const Svg = e.surface !== 'terminal' && 'Svg' in table ? table.Svg : undefined
+    // A row between stacked boxes: the desktop's vertical unit is half a line.
+    const gapY = Svg ? 2 : GAP_Y
+    const [snap, error, facts, rows, work] = await Promise.all([read($, snapshot), read($, snapshotError), read($, session), read($, agents), read($, turn), read($, tick)])
     const now = await $.clock.now()
     const W = Math.max(32, e.props.bodyColumns)
     const tier = W >= 96 ? 'wide' : W >= 64 ? 'medium' : 'narrow'
@@ -627,9 +637,27 @@ export const register: Register = on => {
               {p.mark ?? ' '}
             </Text>
           )
+        case 'ago':
+          return (
+            <Text key={key} dimColor>
+              {`${p.label ?? ''}${ago(p.at, now)} ago`}
+            </Text>
+          )
       }
     }
     const motion = (key: string, p: MotionProps) => (Client ? <Client key={key} module="./motion.tsx" props={p} /> : still(key, p))
+    // A bar: vector where the surface draws an Svg (block characters overflow a desktop cell), else rolling characters.
+    const barOf = (key: string, value: number, max: number, width: number, color: string) => {
+      if (!Svg) return motion(key, { kind: 'bar', value, max, width, rest: '▒', color })
+      const share = max > 0 ? Math.min(1, Math.max(0, value / max)) : 0
+      const from = barsShown.get(key) ?? 0
+      barsShown.set(key, share)
+      return (
+        <Box key={key} width={width} flexShrink={0} alignItems="center">
+          <Svg source={barSvg(share, from, color)} alt={`${Math.round(share * 100)}%`} height={BAR_PX} />
+        </Box>
+      )
+    }
     const running = rows.filter(a => a.status === 'running')
     // Work flows down the diagram while the main loop's turn runs or a helper does; out to the helpers while one runs.
     const isDelegating = running.length > 0
@@ -646,24 +674,52 @@ export const register: Register = on => {
     // --- the parts ---------------------------------------------------------
     // A box of the diagram: its border in its colour (dashed for the main
     // session's, as in the mock-up), a column of padding each side.
-    const frame = (key: string, w: number, color: string, children: RenderChildren, opts: { dashed?: boolean; centred?: boolean } = {}) => (
+    const frame = (key: string, w: number, color: string, children: RenderChildren, opts: { dashed?: boolean; middle?: boolean } = {}) => (
       <Box
         key={key}
         flexDirection="column"
         width={w}
         flexShrink={0}
         paddingX={1}
+        justifyContent={opts.middle ? 'center' : 'flex-start'}
         borderStyle={opts.dashed ? 'dashed' : 'single'}
         borderColor={color}
-        alignItems={opts.centred ? 'center' : 'stretch'}
       >
         {children}
       </Box>
     )
+    // A centred box's lines, on a layer as wide as the box: the desktop sizes a
+    // centred column to its widest line, uncut. Not a fragment: the engine
+    // makes one a column Box of its own, which the centring would size so.
+    // (Used in place of <> by the session's, the helpers' and the lead's boxes.)
     const line = (text: string, props: { color?: string; bold?: boolean; dim?: boolean; inverse?: boolean } = {}) => (
       <Text color={props.color} bold={props.bold} dimColor={props.dim} inverse={props.inverse} wrap="truncate-end">
         {text}
       </Text>
+    )
+    // A line of styled runs as texts side by side: on the desktop a run inside
+    // a text is a box of its own, off the line's baseline. A `fixed` run keeps
+    // its width, the others are cut first.
+    type Run = [text: string, style: { color?: string; bold?: boolean; dim?: boolean; inverse?: boolean; fixed?: boolean }]
+    const runs = (key: string, parts: (Run | null)[]) => (
+      <Box key={key} minWidth={0}>
+        {parts
+          .filter((part): part is Run => part !== null)
+          .map(([text, st], i) => {
+            const t = (
+              <Text key={`${key}-${i}`} color={st.color} bold={st.bold} dimColor={st.dim} inverse={st.inverse}>
+                {text}
+              </Text>
+            )
+            return st.fixed ? (
+              <Box key={`${key}-${i}-fixed`} flexShrink={0}>
+                {t}
+              </Box>
+            ) : (
+              t
+            )
+          })}
+      </Box>
     )
     const cell = (w: number, child: RenderChildren, isRight = false) => (
       <Box width={w} flexShrink={0} justifyContent={isRight ? 'flex-end' : 'flex-start'}>
@@ -688,7 +744,7 @@ export const register: Register = on => {
     const meter = (key: string, label: string, labelW: number, value: number, max: number, barW: number, figure: string, color: string, figureW: number) => (
       <Box key={key}>
         {cell(labelW, line(label, { bold: true }))}
-        {cell(barW, motion(`${key}-bar`, { kind: 'bar', value, max, width: barW, rest: '▒', color }))}
+        {barOf(`${key}-bar`, value, max, barW, color)}
         {cell(figureW + 1, line(figure, { color, bold: true }), true)}
       </Box>
     )
@@ -739,28 +795,19 @@ export const register: Register = on => {
     const isShort = W < 64
     const header = (
       <Box key="header" flexDirection="column" width={W} alignItems="center">
-        <Text wrap="truncate-end">
-          <Text bold>{isShort ? 'HARNESS' : 'WOW-ADDONS HARNESS'}</Text>
-          <Text dimColor> · </Text>
-          <Text color={PALETTE.opus} bold>
-            {modelName(opusModel).toUpperCase()} PLANS
-          </Text>
-          <Text dimColor> · </Text>
-          <Text color={builderColor} bold>
-            {builderName.toUpperCase()} BUILDS
-          </Text>
-        </Text>
-        <Text wrap="truncate-end">
-          {legend.map(([color, label], i) => (
-            <Text key={`legend-${i}`}>
-              {i > 0 ? '  ' : ''}
-              <Text color={color}>■</Text>
-              <Text dimColor> {isShort ? label.split(' ')[0] : label}</Text>
-            </Text>
-          ))}
-        </Text>
+        {runs('title', [
+          [isShort ? 'HARNESS' : 'WOW-ADDONS HARNESS', { bold: true }],
+          [' · ', { dim: true }],
+          [`${modelName(opusModel).toUpperCase()} PLANS`, { color: PALETTE.opus, bold: true }],
+          [' · ', { dim: true }],
+          [`${builderName.toUpperCase()} BUILDS`, { color: builderColor, bold: true }],
+        ])}
+        {runs(
+          'legend',
+          legend.flatMap(([color, label], i): (Run | null)[] => [i > 0 ? ['  ', {}] : null, ['■', { color }], [` ${isShort ? label.split(' ')[0] : label}`, { dim: true }]]),
+        )}
         <Box justifyContent="space-between" width={W}>
-          <Text dimColor>{snap ? `read ${ago(snap.at, now)} ago` : 'reading…'}</Text>
+          {snap ? motion('updated', { kind: 'ago', at: snap.at, label: 'changed ' }) : <Text dimColor>reading…</Text>}
           <Button key="refresh" label="Refresh" onPress={() => void refreshSnapshot($, true)} />
         </Box>
       </Box>
@@ -774,12 +821,7 @@ export const register: Register = on => {
         <Box key={key} flexDirection="column" marginTop={isTall ? 1 : 0}>
           {line(`◇ ${title}`, { bold: true, inverse: isActive, color: isActive ? PALETTE.opus : undefined })}
           {isTall
-            ? lines.map((text, i) => (
-                <Text key={`${key}-${i}`} wrap="truncate-end">
-                  <Text dimColor>│ </Text>
-                  {text}
-                </Text>
-              ))
+            ? lines.map((text, i) => runs(`${key}-${i}`, [['│ ', { dim: true, fixed: true }], [text, {}]]))
             : null}
         </Box>
       )
@@ -825,34 +867,31 @@ export const register: Register = on => {
         'session',
         w,
         builderColor,
-        <>
+        <Box flexDirection="column" alignItems="center" width="100%">
           {line(`${builderName} · main session`, { bold: true, color: builderColor })}
           <Box key="context">
             <Text dimColor>context </Text>
-            {motion('context-bar', { kind: 'bar', value: facts?.contextTokens ?? 0, max: facts?.window ?? 0, width: ctxW, rest: '▒', color: builderColor })}
+            {barOf('context-bar', facts?.contextTokens ?? 0, facts?.window ?? 0, ctxW, builderColor)}
             <Text> </Text>
             {facts ? motion('context-tokens', { kind: 'count', value: facts.contextTokens ?? 0, bold: true }) : <Text bold>…</Text>}
             <Text bold wrap="truncate-end">
               {facts ? ` / ${tokens(facts.window)}` : ''}
             </Text>
           </Box>
-          <Text wrap="truncate-end">
-            <Text dimColor>effort </Text>
-            <Text color={builderColor}>{'■'.repeat(effortLevel)}</Text>
-            <Text dimColor>{'■'.repeat(5 - effortLevel)}</Text>
-            <Text bold color={builderColor}>
-              {' '}
-              {effort ? effort.toUpperCase() : 'DEFAULT'}
-            </Text>
-            {facts?.costUsd != null ? <Text dimColor> · ${facts.costUsd.toFixed(2)}</Text> : null}
-          </Text>
+          {runs('effort', [
+            ['effort ', { dim: true }],
+            ['■'.repeat(effortLevel), { color: builderColor }],
+            ['■'.repeat(5 - effortLevel), { dim: true }],
+            [` ${effort ? effort.toUpperCase() : 'DEFAULT'}`, { bold: true, color: builderColor }],
+            facts?.costUsd != null ? [` · $${facts.costUsd.toFixed(2)}`, { dim: true }] : null,
+          ])}
           {running.length > 0
             ? spinning('session-state', `[ ${running.map(a => a.type).join(', ')} running `, true, PALETTE.wait, { color: PALETTE.wait })
             : work.isRunning
               ? spinning('session-state', '[ working ', true, builderColor, { color: builderColor })
               : line(`[ ${helperRuns} helper runs today · ${tokens(helperTokens)} tok ]`, { dim: true })}
-        </>,
-        { dashed: true, centred: true },
+        </Box>,
+        { dashed: true, middle: true },
       )
     }
 
@@ -904,14 +943,8 @@ export const register: Register = on => {
           {meter('reviews', 'reviews', labelW, reviewed, repos.length, barW, `${reviewed}/${repos.length} current`, PALETTE.gate, figureW)}
           {meter('board', 'board', labelW, waiting, Math.max(board.length, 1), barW, `${waiting} waiting`, waiting > 0 ? PALETTE.wait : PALETTE.gate, figureW)}
           <Box justifyContent="space-between">
-            <Text wrap="truncate-end">
-              <Text color={PALETTE.gate}>stamp</Text>
-              <Text dimColor> → push passes</Text>
-            </Text>
-            <Text wrap="truncate-end">
-              <Text color={PALETTE.gate}>refusal</Text>
-              <Text dimColor> → the log</Text>
-            </Text>
+            {runs('stamp-note', [['stamp', { color: PALETTE.gate }], [' → push passes', { dim: true }]])}
+            {runs('refusal-note', [['refusal', { color: PALETTE.gate }], [' → the log', { dim: true }]])}
           </Box>
         </>,
       )
@@ -956,11 +989,11 @@ export const register: Register = on => {
                   `helper-${p.name}`,
                   bw,
                   p.agent ? PALETTE.opus : color,
-                  <>
+                  <Box flexDirection="column" alignItems="center" width="100%">
                     {line(p.name, { bold: true })}
                     {p.agent ? spinning(`helper-${p.name}-state`, `${model} [ running `, true, color, { color }) : line(`${model} [ IDLE ]`, { color })}
                     <Box key={`helper-${p.name}-share`}>
-                      {motion(`helper-${p.name}-bar`, { kind: 'bar', value: share, max: 1, width: Math.max(3, bw - 10), rest: '▒', color })}
+                      {barOf(`helper-${p.name}-bar`, share, 1, Math.max(3, bw - 10), color)}
                       <Text bold> {Math.round(share * 100)}%</Text>
                     </Box>
                     {line(p.description || 'built in', { dim: true })}
@@ -970,8 +1003,7 @@ export const register: Register = on => {
                         : `● ${today?.runs ?? 0} runs · ${tokens(today?.tokens ?? 0)} tok`,
                       { color },
                     )}
-                  </>,
-                  { centred: true },
+                  </Box>,
                 )}
               </Box>
             )
@@ -986,7 +1018,7 @@ export const register: Register = on => {
         'back',
         w,
         builderColor,
-        <>
+        <Box flexDirection="column" alignItems="center" width="100%">
           {line(`back to ${builderName} · lead`, { bold: true, color: builderColor })}
           {lastHandback
             ? spinning(
@@ -996,8 +1028,8 @@ export const register: Register = on => {
                 builderColor,
               )
             : line('rx: no handback today yet', { dim: true })}
-        </>,
-        { dashed: true, centred: true },
+        </Box>,
+        { dashed: true },
       )
 
     // The flow under the main session: the gates, the hand-off, the helpers, back.
@@ -1031,9 +1063,28 @@ export const register: Register = on => {
       })
       // No helper running: the pulse goes round the gates' part alone, a beat a second or so.
       const cycle = (isDelegating ? step : top) + 6
+      // The same way in milliseconds for the desktop's vector lines: a line of marks 160, a fan-out by its reach, a pause a box.
+      let ms = 0
+      let topMs = 0
+      const timed = drawn.map(l => {
+        const dur = l.how === 'down' ? 160 : 90 * Math.max(1, l.path.length) + 80
+        const from = ms
+        ms += dur + l.pause * 110
+        if (!l.isHelpers) topMs = ms
+        return { ...l, from, to: from + dur }
+      })
+      const cycleMs = (isDelegating ? ms : topMs) + 450
       const pulse = (key: string) => {
-        const l = drawn.find(d => d.key === key)
+        const l = timed.find(d => d.key === key)
         if (!l) return null
+        if (Svg) {
+          const source = lineSvg({ text: l.text, how: l.how, at: l.at, color: l.color, base: l.base ?? l.color, on: l.on, from: l.from, to: l.to, cycleMs, phaseMs: now % cycleMs })
+          return (
+            <Box key={key} width={w} flexShrink={0}>
+              <Svg source={source} alt="a line of the diagram" height={LINE_PX} />
+            </Box>
+          )
+        }
         return motion(key, { kind: 'flow', text: l.text, path: l.path, start: l.start, cycle, on: l.on, color: l.color, base: l.base })
       }
       return (
@@ -1070,10 +1121,14 @@ export const register: Register = on => {
         <Box key="diagram" width={W} marginTop={1}>
           {planner(L)}
           <Box width={3} flexShrink={0} flexDirection="column" paddingTop={2}>
-            {motion('to-planner', { kind: 'flow', text: '◂┄┄', path: pulsePath('◂┄┄', 2, 'out'), start: 0, cycle: 8, on: !!runningOpus, color: PALETTE.opus, base: PALETTE.opus })}
+            {Svg ? (
+              <Svg source={lineSvg({ text: '◂┄┄', how: 'out', at: 2, color: PALETTE.opus, base: PALETTE.opus, on: !!runningOpus, from: 0, to: 420, cycleMs: 900, phaseMs: now % 900 })} alt="to the planner" height={LINE_PX} />
+            ) : (
+              motion('to-planner', { kind: 'flow', text: '◂┄┄', path: pulsePath('◂┄┄', 2, 'out'), start: 0, cycle: 8, on: !!runningOpus, color: PALETTE.opus, base: PALETTE.opus })
+            )}
           </Box>
           <Box width={A} flexShrink={0} flexDirection="column">
-            <Box width={A} alignItems="flex-start">
+            <Box width={A} alignItems="stretch">
               {sessionBox(Sw)}
               <Box width={4} flexShrink={0} paddingTop={2}>
                 <Text dimColor>─▸ </Text>
@@ -1093,7 +1148,7 @@ export const register: Register = on => {
             {planner(W - Rc - GAP_X)}
             <Box marginLeft={GAP_X}>{configBox(Rc)}</Box>
           </Box>
-          <Box width={W} justifyContent="center" marginTop={GAP_Y}>
+          <Box width={W} justifyContent="center" marginTop={gapY}>
             {sessionBox(Sw)}
           </Box>
           {flow(W, Math.floor(W / 2))}
@@ -1103,7 +1158,7 @@ export const register: Register = on => {
       // The flow's first line meets the session box: the gaps above it only.
       diagram = (
         <Box key="diagram" flexDirection="column" width={W} marginTop={1}>
-          <Box flexDirection="column" width={W} gap={GAP_Y}>
+          <Box flexDirection="column" width={W} gap={gapY}>
             {planner(W)}
             {configBox(W)}
             {sessionBox(W)}
@@ -1141,7 +1196,7 @@ export const register: Register = on => {
               return (
                 <Box key={`model-${d.model}`}>
                   {cell(modelW, line(modelName(d.model), { color }))}
-                  {cell(barW, motion(`model-${d.model}-bar`, { kind: 'bar', value: total(d), max: top, width: barW, rest: '▒', color }))}
+                  {barOf(`model-${d.model}-bar`, total(d), top, barW, color)}
                   {cell(figureW + 1, motion(`model-${d.model}-tokens`, { kind: 'count', value: total(d), bold: true, color }), true)}
                 </Box>
               )
@@ -1173,9 +1228,10 @@ export const register: Register = on => {
                     {cell(statusW, line(c.status || '?', { color: cardColor(c.status) }))}
                     {cell(
                       Math.max(1, inner - statusW - ageW),
-                      <Text wrap="truncate-end">
-                        <Text bold>{c.repo}</Text> {c.title}
-                      </Text>,
+                      runs(`card-${c.id}-title`, [
+                        [c.repo, { bold: true, fixed: true }],
+                        [` ${c.title}`, {}],
+                      ]),
                     )}
                     {cell(ageW, line(Number.isNaN(at) ? '?' : ago(at, now), { dim: true }), true)}
                   </Box>
@@ -1199,7 +1255,7 @@ export const register: Register = on => {
           <Box key={`repo-${r.name}`} width={colW}>
             {cell(nameW, line(r.name, { bold: true }))}
             {cell(markW, line(mark.text, { color: mark.color }))}
-            <Box flexGrow={1} flexShrink={1}>
+            <Box flexGrow={1} flexShrink={1} minWidth={0}>
               {r.review
                 ? line(`${verdict ?? 'packet'} ${r.review.sha.slice(0, 7)}${r.review.isCurrent ? '' : ' older'}`, { color: verdict ? verdictColor(verdict) : 'inactive' })
                 : line('no review', { dim: true })}
@@ -1234,13 +1290,13 @@ export const register: Register = on => {
     const todayW = Math.floor((W - GAP_X) * 0.42)
     const ledger =
       tier === 'narrow' || W < 80 ? (
-        <Box key="ledger" flexDirection="column" width={W} marginTop={1} gap={GAP_Y}>
+        <Box key="ledger" flexDirection="column" width={W} marginTop={gapY} gap={gapY}>
           {todayBox(W)}
           {boardBox(W)}
           {reposBox(W)}
         </Box>
       ) : (
-        <Box key="ledger" flexDirection="column" width={W} marginTop={1} gap={GAP_Y}>
+        <Box key="ledger" flexDirection="column" width={W} marginTop={gapY} gap={gapY}>
           <Box width={W}>
             {todayBox(todayW)}
             <Box marginLeft={GAP_X}>{boardBox(W - GAP_X - todayW)}</Box>
@@ -1282,14 +1338,13 @@ export const register: Register = on => {
             : shown.map((ev, i) => {
                 // A new line blinks its mark and stands out until it settles.
                 const age = Math.max(0, now - ev.at)
-                const isNew = age < FRESH_MS
                 return (
                   <Box key={`event-${i}-${ev.at}`}>
-                    {cell(markW, motion(eventKey(ev, i), { kind: 'fresh', age, color: isNew ? toneColor(ev.tone, ev.text) : PALETTE.ok, mark: i === 0 ? '›' : ' ' }))}
-                    {cell(timeW, line(clockTime(ev.at), { bold: i === 0 || isNew, dim: i !== 0 && !isNew }))}
-                    {cell(sourceW, line(sourceLabel(ev), { color: sourceColor(ev), bold: isNew }))}
-                    <Box flexGrow={1} flexShrink={1}>
-                      {line(`${ev.repo ? `${ev.repo} ` : ''}${eventText(ev)}`, { bold: isNew })}
+                    {cell(markW, motion(eventKey(ev, i), { kind: 'fresh', age, color: age < FRESH_MS ? toneColor(ev.tone, ev.text) : PALETTE.ok, mark: i === 0 ? '›' : ' ' }))}
+                    {cell(timeW, line(clockTime(ev.at), { bold: i === 0, dim: i !== 0 }))}
+                    {cell(sourceW, line(sourceLabel(ev), { color: sourceColor(ev) }))}
+                    <Box flexGrow={1} flexShrink={1} minWidth={0}>
+                      {line(`${ev.repo ? `${ev.repo} ` : ''}${eventText(ev)}`, {})}
                     </Box>
                     {cell(figureW, line(eventFigure(ev), { color: toneColor(ev.tone, ev.text) }), true)}
                   </Box>
@@ -1299,30 +1354,33 @@ export const register: Register = on => {
       </>,
     )
 
-    const statusPair = (key: string, label: string, value: string, color: string) => (
-      <Text key={key}>
-        <Text dimColor>{label} [ </Text>
-        <Text color={color} bold>
-          {value}
-        </Text>
-        <Text dimColor> ] </Text>
-      </Text>
-    )
+    const statusPair = (label: string, value: string, color: string): Run[] => [
+      [`${label} [ `, { dim: true }],
+      [value, { color, bold: true }],
+      [' ] ', { dim: true }],
+    ]
     const footer = (
       <Box key="footer" flexDirection="column" width={W} marginTop={1}>
-        <Text wrap="truncate-end">
-          <Text color={PALETTE.ok}>~/code/wow-addons $ </Text>
-          <Text dimColor>claude --model </Text>
-          <Text color={builderColor}>{facts?.settings.model ?? family(builder)}</Text>
-          <Text inverse> </Text>
-        </Text>
-        <Text wrap="truncate-end">
-          {statusPair('helpers', 'helpers', `${running.length}/${Math.max(helpers.length, running.length)} active`, running.length > 0 ? PALETTE.wait : PALETTE.haiku)}
-          {statusPair('opus', family(opusModel), `${opusRuns} runs`, PALETTE.opus)}
-          {statusPair('gates', 'gates', `${fresh}/${repos.length}`, fresh === repos.length ? PALETTE.ok : PALETTE.wait)}
-          {statusPair('board', 'board', `${waiting} waiting`, waiting > 0 ? PALETTE.wait : PALETTE.ok)}
-          {statusPair('today', 'today', tokens(dayTotal), PALETTE.plain)}
-        </Text>
+        {runs('prompt', [
+          ['~/code/wow-addons $ ', { color: PALETTE.ok }],
+          ['claude --model ', { dim: true }],
+          [facts?.settings.model ?? family(builder), { color: builderColor }],
+          [' ', { inverse: true }],
+        ])}
+        {/* Each pair whole, the ones that don't fit on the next line: cut, five pairs read as nothing. */}
+        <Box key="status-bar" flexWrap="wrap" width={W}>
+          {[
+            statusPair('helpers', `${running.length}/${Math.max(helpers.length, running.length)} active`, running.length > 0 ? PALETTE.wait : PALETTE.haiku),
+            statusPair(family(opusModel), `${opusRuns} runs`, PALETTE.opus),
+            statusPair('gates', `${fresh}/${repos.length}`, fresh === repos.length ? PALETTE.ok : PALETTE.wait),
+            statusPair('board', `${waiting} waiting`, waiting > 0 ? PALETTE.wait : PALETTE.ok),
+            statusPair('today', tokens(dayTotal), PALETTE.plain),
+          ].map((pair, i) => (
+            <Box key={`status-${i}`} flexShrink={0}>
+              {runs(`status-${i}-runs`, pair)}
+            </Box>
+          ))}
+        </Box>
       </Box>
     )
 
@@ -1336,7 +1394,7 @@ export const register: Register = on => {
         ) : null}
         {diagram}
         {ledger}
-        <Box marginTop={GAP_Y} flexDirection="column">
+        <Box marginTop={gapY} flexDirection="column">
           {log}
         </Box>
         {footer}

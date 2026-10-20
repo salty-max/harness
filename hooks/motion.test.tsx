@@ -5,6 +5,7 @@ import type { HarnessEvent, Snapshot } from '../types'
 import { FRESH_MS, tokens } from './format'
 import { FRAME_MS, lit } from './motion'
 import { pulsePath } from './register'
+import { barSvg, lineSvg } from './vector'
 
 const AT = 1_760_940_000_000
 const FAMILY = '/Users/someone/code/wow-addons'
@@ -70,10 +71,10 @@ describe('the pulse', () => {
   })
 })
 
-test('the lines pulse while the turn runs and stand still once it ends', async ($, on) => {
+test('the lines pulse while the turn runs and stand still once it ends (the terminal: characters)', async ($, on) => {
   world(on)
   await $.session.start({ cwd: FAMILY, surface: 'desktop', isInteractive: true })
-  const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'desktop', ...PANE })
+  const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'terminal', ...PANE })
   await ui.press({ key: 'refresh' })
   // Lit within a round of the cycle: the heavy stroke, bold.
   const lights = async (key: string) => {
@@ -93,6 +94,34 @@ test('the lines pulse while the turn runs and stand still once it ends', async (
   await $.turn.complete({ answer: 'ok', durationMs: 5, isAborted: false, turnId: 't1', reason: 'answer' })
   expect(await lights('to-gates-1')).toBe(false)
   expect(JSON.stringify(await ui.drawn({ in: 'gates-state-spin' }))).toContain('"-"')
+  await ui.unmount()
+})
+
+test('on the desktop the lines and bars are vector, the pulse a SMIL animation while the turn runs', async ($, on) => {
+  world(on)
+  await $.session.start({ cwd: FAMILY, surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'refresh' })
+  // The Svg under the Box keyed `key`.
+  const svgOf = async (key: string): Promise<string> => {
+    const find = (n: unknown): unknown => {
+      if (!n || typeof n !== 'object') return undefined
+      if (Array.isArray(n)) return n.map(find).find(Boolean)
+      const node = n as { type?: string; props?: { key?: string; source?: string }; children?: unknown[] }
+      if (node.props?.key === key) return (node.children ?? []).find(c => (c as { type?: string }).type === 'Svg')
+      return find(node.children)
+    }
+    return ((find(await ui.drawn()) as { props?: { source?: string } } | undefined)?.props?.source) ?? ''
+  }
+  expect(await svgOf('to-gates-1')).toContain('<line')
+  expect(await svgOf('to-gates-1')).not.toContain('repeatCount')
+  // The day's bar slides up as the pane opens.
+  expect(await svgOf('model-claude-opus-5-5-bar')).toContain('attributeName="width"')
+  await $.turn.start({ text: 'hi', turnId: 't1' })
+  expect(await svgOf('to-gates-1')).toContain('repeatCount="indefinite"')
+  expect(await svgOf('fan-out')).not.toContain('repeatCount')
+  await $.turn.complete({ answer: 'ok', durationMs: 5, isAborted: false, turnId: 't1', reason: 'answer' })
+  expect(await svgOf('to-gates-1')).not.toContain('repeatCount')
   await ui.unmount()
 })
 
@@ -158,3 +187,50 @@ for (const [where, isShown, most] of [
     expect(isShown ? runs.length >= 5 : runs.length <= most).toBe(true)
   })
 }
+
+describe('the vector parts', () => {
+  test('a bar fills its share and slides from its last value', async () => {
+    expect(barSvg(0.5, 0.5, '#74e49c')).toContain('<rect width="500" height="10" fill="#74e49c">')
+    expect(barSvg(0.5, 0.5, '#74e49c')).not.toContain('<animate')
+    expect(barSvg(0.75, 0.25, '#74e49c')).toContain('from="250" to="750"')
+    // Named colours are the page's variables: a fixed grey in an image.
+    expect(barSvg(1, 1, 'inactive')).toContain('fill="#7d7c78"')
+  })
+
+  test("a line draws each character's strokes, a cell a column of the image", async () => {
+    const down = lineSvg({ text: '  │  ', how: 'down', at: 2, color: '#fff', base: 'inactive', on: false, from: 0, to: 100, cycleMs: 1000, phaseMs: 0 })
+    expect(down).toContain('viewBox="0 0 50 20"')
+    expect(down).toContain('x1="25" y1="0" x2="25" y2="10"')
+    expect(down).not.toContain('<animate')
+    const out = lineSvg({ text: '┌─┼─┐', how: 'out', at: 2, color: '#fff', base: 'inactive', on: true, from: 200, to: 400, cycleMs: 1000, phaseMs: 250 })
+    // Two dots out from the stem, each to its end, on the wall clock's phase.
+    expect(out.match(/<ellipse/g)?.length).toBe(2)
+    expect(out).toContain('values="25;25;5;5"')
+    expect(out).toContain('values="25;25;45;45"')
+    expect(out).toContain('begin="-250ms"')
+    expect(out).toContain('keyTimes="0;0.2;0.4;1"')
+  })
+})
+
+test("the desktop's layout traps: a centred box's lines on a full-width layer, rows of runs that can shrink", async ($, on) => {
+  world(on, { snapshot: () => ({ ...snap(), helpers: [{ name: 'prose-reader', model: 'sonnet', description: 'Reads player-facing text in one language cold and flags rule breaks.' }] }) })
+  const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'refresh' })
+  type Node = { type?: string; props?: Record<string, unknown>; children?: unknown[] }
+  const find = (n: unknown, test: (n: Node) => boolean): Node | undefined => {
+    if (!n || typeof n !== 'object') return undefined
+    if (Array.isArray(n)) return n.map(c => find(c, test)).find(Boolean)
+    return test(n as Node) ? (n as Node) : find((n as Node).children, test)
+  }
+  const tree = await ui.drawn()
+  const box = find(tree, n => n.props?.key === 'helper-prose-reader' && n.props?.borderStyle !== undefined)
+  const layer = box?.children?.[0] as Node | undefined
+  // The page sizes a centred column to its widest line: the layer has the box's width, its lines are its own children.
+  expect(layer?.props).toMatchObject({ alignItems: 'center', width: '100%' })
+  expect((layer?.children?.[0] as Node | undefined)?.type).toBe('Text')
+  expect(box?.props?.alignItems).toBeUndefined()
+  // Every text is cut, never wrapped.
+  expect(find(tree, n => n.type === 'Text' && n.props?.wrap !== 'truncate-end' && n.props?.wrap !== 'wrap')).toBeUndefined()
+  expect(find(tree, n => n.props?.key === 'card-title' || n.props?.key === 'title')?.props?.minWidth).toBe(0)
+  await ui.unmount()
+})

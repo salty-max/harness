@@ -10,7 +10,7 @@
 
 import type { ClientModule, ClientSurface, RenderElement } from 'claude-code'
 
-import { bar, FRESH_MS, tokens } from './format'
+import { ago, bar, FRESH_MS, tokens } from './format'
 
 /** One frame: 80 ms, about twelve a second. */
 export const FRAME_MS = 80
@@ -48,6 +48,8 @@ export type MotionProps =
    * would count the time since twice.
    */
   | { kind: 'fresh'; age: number; color: string; mark?: string }
+  /** How long since `at` (ms since the epoch), counted here each second: `changed 4s ago`. */
+  | { kind: 'ago'; at: number; label?: string }
 
 type Run = {
   frame: number
@@ -59,6 +61,8 @@ type Run = {
   born: number
   /** The frame a new log line's blink ends at, fixed as the instance first draws. */
   until: number
+  /** What it drew last, so a frame that changes nothing draws nothing. */
+  look: string
 }
 
 const runs = new WeakMap<object, Run>()
@@ -79,6 +83,7 @@ function isMoving(r: Run, frame: number): boolean {
     case 'flow':
       return p.on
     case 'live':
+    case 'ago':
       return true
     case 'bar':
     case 'count':
@@ -97,35 +102,10 @@ export function lit(p: Extract<MotionProps, { kind: 'flow' }>, frame: number): {
   return { head: new Set(p.path[k] ?? []), trail: new Set(p.path[k - 1] ?? []) }
 }
 
-const Motion: ClientModule<MotionProps, number> = (p, s: ClientSurface<number>) => {
-  const { Text } = s.elements
-  let r = runs.get(s)
-  const now = Math.max(r?.frame ?? 0, wall())
-  if (!r) {
-    // A figure or a bar rolls up from nothing as it first shows.
-    const until = now + (p.kind === 'fresh' ? Math.ceil((FRESH_MS - p.age) / FRAME_MS) : 0)
-    r = { frame: now, cancel: null, props: p, from: 0, to: 0, t0: now, born: now, until }
-    runs.set(s, r)
-  }
-  r.props = p
-  if ((p.kind === 'bar' || p.kind === 'count') && p.value !== r.to) {
-    r.from = rolled(r, now)
-    r.to = p.value
-    r.t0 = now
-  }
-  const run = r
-  if (!run.cancel && isMoving(run, now)) {
-    run.cancel = s.every(FRAME_MS, () => {
-      run.frame = Math.max(run.frame + 1, wall())
-      if (!isMoving(run, run.frame)) {
-        run.cancel?.()
-        run.cancel = null
-      }
-      s.setState(run.frame)
-    })
-  }
-  const frame = Math.max(run.frame, now)
+type Elements = ClientSurface<number>['elements']
 
+/** What the instance shows at `frame`. */
+function draw(p: MotionProps, run: Run, frame: number, Text: Elements['Text'], Box: Elements['Box']): RenderElement {
   let drawn: RenderElement
   switch (p.kind) {
     case 'spin':
@@ -138,13 +118,14 @@ const Motion: ClientModule<MotionProps, number> = (p, s: ClientSurface<number>) 
     case 'live': {
       // A beat: bright for most of a second and a bit, then dim.
       const isUp = frame % 15 < 10
+      // Side by side, not nested: on the desktop a run inside a text sits off its baseline.
       drawn = (
-        <Text>
+        <Box>
           <Text color={p.color} bold={isUp} dimColor={!isUp}>
             ●
           </Text>
-          {p.label ? <Text dimColor> {p.label}</Text> : ''}
-        </Text>
+          <Text dimColor>{p.label ? ` ${p.label}` : ''}</Text>
+        </Box>
       )
       break
     }
@@ -210,7 +191,44 @@ const Motion: ClientModule<MotionProps, number> = (p, s: ClientSurface<number>) 
       )
       break
     }
+    case 'ago':
+      drawn = <Text dimColor>{`${p.label ?? ''}${ago(p.at, Date.now())} ago`}</Text>
+      break
   }
+  return drawn
+}
+
+const Motion: ClientModule<MotionProps, number> = (p, s: ClientSurface<number>) => {
+  // Cut, never wrapped, its runs too (the desktop wraps a Text with no wrap).
+  const Text = (props: Parameters<Elements['Text']>[0]) => s.elements.Text({ wrap: 'truncate-end', ...props })
+  let r = runs.get(s)
+  const now = Math.max(r?.frame ?? 0, wall())
+  if (!r) {
+    // A figure or a bar rolls up from nothing as it first shows.
+    const until = now + (p.kind === 'fresh' ? Math.ceil((FRESH_MS - p.age) / FRAME_MS) : 0)
+    r = { frame: now, cancel: null, props: p, from: 0, to: 0, t0: now, born: now, until, look: '' }
+    runs.set(s, r)
+  }
+  r.props = p
+  if ((p.kind === 'bar' || p.kind === 'count') && p.value !== r.to) {
+    r.from = rolled(r, now)
+    r.to = p.value
+    r.t0 = now
+  }
+  const run = r
+  if (!run.cancel && isMoving(run, now)) {
+    run.cancel = s.every(FRAME_MS, () => {
+      run.frame = Math.max(run.frame + 1, wall())
+      if (!isMoving(run, run.frame)) {
+        run.cancel?.()
+        run.cancel = null
+      }
+      // Drawn again only when this frame looks other than the last: a beat or a clock changes a few times a second.
+      if (JSON.stringify(draw(run.props, run, run.frame, Text, s.elements.Box)) !== run.look) s.setState(run.frame)
+    })
+  }
+  const drawn = draw(p, run, Math.max(run.frame, now), Text, s.elements.Box)
+  run.look = JSON.stringify(drawn)
   return drawn
 }
 
