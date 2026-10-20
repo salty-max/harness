@@ -72,17 +72,38 @@ holds the gates, the part of the harness that runs in code.
 
 The layout follows the pane's width: the mock-up's three columns from 96
 columns, two from 64, one below; every column truncates rather than wraps.
-The spinners turn once a second while a helper runs, and stand still
-otherwise.
+Boxes side by side stand two columns apart, stacked ones a row apart,
+except where a line of the diagram joins them.
+
+**Motion** (`hooks/motion.tsx`, a `Client` surface module drawn on the
+drawing thread, about twelve frames a second; the pane itself redraws only
+when a number moved). It moves when work does:
+
+- a pulse runs down the diagram's lines in their heavy strokes while the
+  main session's turn runs (session → gates → the hand-off), and on out
+  along the fan-out to the helpers and back to the lead while one runs; the
+  planner's arrow while an Opus helper does;
+- the spinners (braille) turn while what they stand for works: the gates
+  and the session in a turn, a helper while it runs, the planner while an
+  Opus helper runs;
+- bars and figures (Today, the context, the gates' meters, the helpers'
+  shares, the planner's runs and tokens) roll to a new value in half a
+  second, and up from nothing as the pane opens;
+- a new log line blinks its mark and stands out in bold for six seconds;
+- the live beat in the log's header pulses always.
+
+Idle, everything else stands still. The editor and the phone draw no
+`Client`: the same parts stand still there.
 
 What the pane can't draw: no pixels (bars and meters are block
 characters, an eighth of a cell at best), no charts or trends, no
 background of its own (the mock-up's navy is the app's background here),
-connectors only as text between boxes. The desktop's paint of borders
-(dashed among them) and colours is the desktop page's own and was checked
-in tests only: the terminal's was seen (a `claude --plugin-dir` session,
-and the whole pane painted with Ink), the desktop app can't be captured
-from here. A prompt shows in the log once answered. Helpers, prompts and
+connectors only as text between boxes, no smooth motion (a frame is a
+cell's change, twelve a second). The desktop's paint of borders
+(dashed among them), colours and the `Client` regions is the desktop page's
+own and was checked in tests only: the terminal's was seen (a `claude
+--plugin-dir` session, and the whole pane painted with Ink, the motion's
+regions mid-pulse included), the desktop app can't be captured from here. A prompt shows in the log once answered. Helpers, prompts and
 their day totals are today's only.
 
 The status line under the prompt (`$.ui.status`) says what claude-hud does
@@ -113,14 +134,24 @@ ln -sfn ~/code/wow-addons/addon-kit/harness-view ~/.claude/skills/harness-view
 ## How it works
 
 `bin/snapshot.ts` (Bun) reads the shared numbers and the events and prints one JSON object.
-The mod runs it every 30 seconds through `$.process.run` (Refresh reads
-anew; otherwise a snapshot under 15 seconds old is shared by every open
-session through `~/.cache/harness-view/snapshot.json`) and reads the
-session's own facts from `$` every 5 seconds and after each model call.
-Transcripts are read incrementally: offsets, seen ids, the Bash calls
-waiting for an answer and the day's events in
-`~/.cache/harness-view/usage-<day>.json` (a cache of an older version is
-read again whole).
+The mod runs it through `$.process.run` every 2 seconds while the pane is
+shown (`$.ui.panes()`: open and in front), every 30 seconds otherwise for
+the status line; a snapshot under 2 seconds old is shared by every open
+session through `~/.cache/harness-view/snapshot.json`. Each second it stats
+the event log and the board's folder: a line there (a check, a review, a
+card, a hook's refusal) reads anew at once (`--now`), so it shows within a
+second of its tool writing it. Refresh reads every number anew (`--fresh`).
+The session's own facts come from `$` every second, at each model call and
+at the turn's start and end.
+
+Most of a read's time is the repositories (git, the stamps: 0.85 s for
+eleven). Their rows are kept in `~/.cache/harness-view/repos.json` and read
+again only when one moved (HEAD, its log, the index, `.git/harness`, q's
+log, a packet) or after 20 seconds, for edits in a working tree: a read
+with nothing moved takes 0.04 s. Transcripts are read incrementally:
+offsets, seen ids, the Bash calls waiting for an answer and the day's
+events in `~/.cache/harness-view/usage-<day>.json` (a cache of an older
+version is read again whole).
 
 ## Checks
 

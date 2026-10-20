@@ -2,30 +2,34 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
 import type { AgentRow, AgentSteps, BoardCard, CheckStamp, HarnessEvent, ModelDay, RepoRow, SessionFacts, Snapshot } from '../types'
+import { bar, FRESH_MS, tokens } from './format'
+import type { MotionProps } from './motion'
+
+export { bar, tokens }
 
 const PANE = 'harness'
 const TITLE = 'Harness'
+// The shared numbers: this often while the pane is shown, at the slow pace
+// (the status line's) while it is closed or behind another tab.
+const LIVE_MS = 2_000
 const SNAPSHOT_MS = 30_000
-const SESSION_MS = 5_000
+// The event log and the board looked at (a stat each): a line there reads anew at once.
+const WATCH_MS = 1_000
+const SESSION_MS = 1_000
 const LOG_LINES = 10
+// The gaps between the boxes: a row between stacked ones, two columns beside.
+const GAP_Y = 1
+const GAP_X = 2
 
 const snapshot = atom({ plugin: 'harness-view', key: 'snapshot' } as const, null)
 const snapshotError = atom({ plugin: 'harness-view', key: 'snapshotError' } as const, null)
 const session = atom({ plugin: 'harness-view', key: 'session' } as const, null)
 const agents = atom({ plugin: 'harness-view', key: 'agents' } as const, [])
 const steps = atom({ plugin: 'harness-view', key: 'steps' } as const, {})
-// Turned once a second while a helper runs: the spinners' redraw.
-const tick = atom({ plugin: 'harness-view', key: 'tick' } as const, 0)
+// The main session's turn: the diagram's lines pulse while it runs.
+const turn = atom({ plugin: 'harness-view', key: 'turn' } as const, { isRunning: false, at: null })
 
 // --- numbers as the panel says them ---------------------------------------
-
-export function tokens(n: number | null | undefined): string {
-  if (n === null || n === undefined) return '?'
-  if (n < 1000) return String(n)
-  if (n < 1e6) return `${(n / 1e3).toFixed(n < 1e4 ? 1 : 0)}k`
-  if (n < 1e9) return `${(n / 1e6).toFixed(n < 1e7 ? 1 : 0)}M`
-  return `${(n / 1e9).toFixed(1)}G`
-}
 
 /** `claude-opus-5-5` is `opus 5.5`, `claude-haiku-4-5-20251001` is `haiku 4.5`. */
 export function modelName(model: string): string {
@@ -47,18 +51,6 @@ export function duration(ms: number): string {
   if (s < 60) return `${s}s`
   if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`
   return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`
-}
-
-const EIGHTHS = ['', '▏', '▎', '▍', '▌', '▋', '▊', '▉']
-
-/** A bar of block characters in eighths of a cell; a value above zero shows at least a sliver. */
-export function bar(value: number, max: number, width: number, rest = '░'): { filled: string; empty: string } {
-  if (max <= 0 || width <= 0) return { filled: '', empty: rest.repeat(Math.max(0, width)) }
-  const share = Math.min(1, Math.max(0, value / max))
-  const eighths = Math.max(value > 0 ? 1 : 0, Math.round(share * width * 8))
-  const part = EIGHTHS[eighths % 8] ?? ''
-  const full = Math.floor(eighths / 8)
-  return { filled: '█'.repeat(full) + part, empty: rest.repeat(width - full - (part ? 1 : 0)) }
 }
 
 const total = (d: ModelDay) => d.input + d.cacheRead + d.cacheWrite + d.output
@@ -207,11 +199,6 @@ export function fit(widths: number[], room: number, min = 8): number[] {
 
 // --- the diagram's lines ------------------------------------------------------
 
-const SPINNER = ['-', '\\', '|', '/']
-
-/** The spinner's frame at `now`: it turns while the pane redraws, once a second while a helper runs. */
-export const spin = (now: number) => SPINNER[Math.floor(now / 1000) % SPINNER.length] ?? '-'
-
 /** `text` centred in `width` cells (cut when longer). */
 export function centre(text: string, width: number): string {
   if (text.length >= width) return text.slice(0, Math.max(0, width))
@@ -258,6 +245,21 @@ export function branch(width: number, from: number, xs: number[], isMerge = fals
 /** Box centres of `n` boxes of `w` cells, `gap` apart. */
 export const centres = (n: number, w: number, gap: number) => Array.from({ length: n }, (_, i) => i * (w + gap) + Math.floor(w / 2))
 
+/**
+ * The steps a pulse takes along one line of the diagram (motion.tsx lights
+ * one a frame): a row of marks all at once (`down`); out from the stem at
+ * `from` to both ends of a fan-out (`out`); in from the ends to the stem on a
+ * merge (`in`), `speed` cells a step along the line.
+ */
+export function pulsePath(text: string, from: number, how: 'down' | 'out' | 'in', speed = 3): number[][] {
+  const cells = [...text].flatMap((ch, x) => (ch === ' ' ? [] : [x]))
+  if (cells.length === 0) return []
+  if (how === 'down') return [cells]
+  const reach = Math.max(...cells.map(x => Math.abs(x - from)))
+  const out = Array.from({ length: Math.floor(reach / speed) + 1 }, (_, j) => cells.filter(x => Math.floor(Math.abs(x - from) / speed) === j))
+  return how === 'out' ? out : out.reverse()
+}
+
 const WAITING = (c: BoardCard) => c.status.startsWith('waiting') || c.status === 'ready-to-push'
 
 /** The one status line: what claude-hud does not already say. */
@@ -285,13 +287,23 @@ export function statusLine(snap: Snapshot | null, running: number): string {
 
 // --- reading -----------------------------------------------------------------
 
+/**
+ * How a snapshot is read: `shared`, a snapshot another session read in the
+ * last two seconds; `now`, read anew (the repositories again only where one
+ * moved); `fresh`, every number anew (Refresh).
+ */
+export type ReadMode = 'shared' | 'now' | 'fresh'
+const STRENGTH: Record<ReadMode, number> = { shared: 0, now: 1, fresh: 2 }
+
 // The module's own: a reload starts them over.
 let bun: string | null = null
 let isReading = false
-let isFreshWanted = false
+let wanted: ReadMode | null = null
 let isActive = false
+let isShown = false
+let slowAt = 0
+let watched = ''
 let timers: { cancel: () => void }[] = []
-let ticker: { cancel: () => void } | null = null
 const written = new Map<string, string>()
 
 /** Whether `value` differs from what was last written under `key`, so the panel redraws only when a number moved. */
@@ -313,14 +325,14 @@ async function isFamilySession($: EngineInterface): Promise<boolean> {
   return project === root || project.startsWith(`${root}/`)
 }
 
-async function runSnapshot($: EngineInterface, isFresh: boolean): Promise<Snapshot> {
+async function runSnapshot($: EngineInterface, mode: ReadMode): Promise<Snapshot> {
   const { home, root } = await familyRoot($)
   const script = `${$.plugin.root}/bin/snapshot.ts`
   const candidates = bun ? [bun] : ['bun', `${home}/.volta/bin/bun`, `${home}/.bun/bin/bun`, '/opt/homebrew/bin/bun']
   let lastError = 'bun not found'
   for (const candidate of candidates) {
     try {
-      const argv = [candidate, script, '--root', root, ...(isFresh ? ['--fresh'] : [])]
+      const argv = [candidate, script, '--root', root, ...(mode === 'shared' ? [] : [`--${mode}`])]
       const ran = await $.process.run(argv, { timeoutMs: 60_000 })
       bun = candidate
       if (ran.exitCode !== 0) throw new Error(ran.stderr.trim().split('\n').slice(-1)[0] || `exit ${ran.exitCode}`)
@@ -333,17 +345,17 @@ async function runSnapshot($: EngineInterface, isFresh: boolean): Promise<Snapsh
   throw new Error(lastError)
 }
 
-async function refreshSnapshot($: EngineInterface, isFresh = false) {
-  // A Refresh pressed during a timed read runs once that read is done.
+async function refreshSnapshot($: EngineInterface, mode: ReadMode = 'shared') {
+  // A read asked for during another (a Refresh, a line in the log) runs once that one is done.
   if (isReading) {
-    isFreshWanted ||= isFresh
+    if (mode !== 'shared' && (wanted === null || STRENGTH[mode] > STRENGTH[wanted])) wanted = mode
     return
   }
   isReading = true
   try {
     // A headless run (claude -p) never draws: no snapshot until a surface attaches.
     if ((await $.session.surfaces()).length === 0) return
-    const snap = await runSnapshot($, isFresh)
+    const snap = await runSnapshot($, mode)
     if (isChanged('snapshot', snap)) await update($, snapshot, () => snap)
     if (isChanged('snapshotError', null)) await update($, snapshotError, () => null)
   } catch (error) {
@@ -353,10 +365,48 @@ async function refreshSnapshot($: EngineInterface, isFresh = false) {
     isReading = false
   }
   await refreshStatus($)
-  if (isFreshWanted) {
-    isFreshWanted = false
-    await refreshSnapshot($, true)
+  if (wanted !== null) {
+    const next = wanted
+    wanted = null
+    await refreshSnapshot($, next)
   }
+}
+
+/** Whether the pane is drawn in front: the live pace's condition. */
+async function refreshShown($: EngineInterface): Promise<boolean> {
+  const panes = await $.ui.panes().catch(() => [])
+  isShown = panes.some(p => p.id === PANE && p.isShown && p.isPlaced)
+  return isShown
+}
+
+/** The shared numbers at the live pace while the pane is shown, at the slow one while it is not. */
+async function pace($: EngineInterface) {
+  const now = await $.clock.now()
+  if (!(await refreshShown($)) && now - slowAt < SNAPSHOT_MS) return
+  slowAt = now
+  await refreshSnapshot($)
+}
+
+/**
+ * The event log (every check, review, card and hook refusal appends to it)
+ * and the board's folder, a stat each: a change reads anew at once, so the
+ * pane shows a line within a second of its tool writing it.
+ */
+async function watch($: EngineInterface) {
+  if (!isShown) return
+  const [{ root }, events] = await Promise.all([familyRoot($), $.env.get('HARNESS_EVENTS')])
+  if (events === 'off') return
+  const paths = [events || `${root}/.cache/harness/events.log`, `${root}/board`]
+  const seen = (await Promise.all(paths.map(path => $.fs.stat(path).then(s => `${s.size}:${s.mtimeMs}`, () => '-')))).join('|')
+  if (seen === watched) return
+  const isFirst = watched === ''
+  watched = seen
+  if (!isFirst) await refreshSnapshot($, 'now')
+}
+
+async function setTurn($: EngineInterface, isRunning: boolean) {
+  const at = isRunning ? await $.clock.now() : null
+  if (isChanged('turn', isRunning)) await update($, turn, () => ({ isRunning, at }))
 }
 
 async function refreshSession($: EngineInterface, lastModel?: string, lastEffort?: string) {
@@ -399,13 +449,6 @@ async function refreshAgents($: EngineInterface) {
     steps: counted[a.id] ?? null,
   }))
   if (isChanged('agents', rows)) await update($, agents, () => rows)
-  // The spinners turn while a helper runs, and stop with the last one.
-  const isRunning = rows.some(a => a.status === 'running')
-  if (isRunning && !ticker) ticker = $.clock.every(1000, () => void update($, tick, n => n + 1).catch(() => {}))
-  if (!isRunning && ticker) {
-    ticker.cancel()
-    ticker = null
-  }
   await refreshStatus($)
 }
 
@@ -428,14 +471,13 @@ async function gate($: EngineInterface, isStart = false): Promise<boolean> {
   isActive = isFamily
   for (const timer of timers) timer.cancel()
   timers = []
-  ticker?.cancel()
-  ticker = null
   if (!isActive) {
     if (written.delete('status')) $.ui.status(undefined)
     return false
   }
   timers = [
-    $.clock.every(SNAPSHOT_MS, () => void refreshSnapshot($).catch(() => {})),
+    $.clock.every(LIVE_MS, () => void pace($).catch(() => {})),
+    $.clock.every(WATCH_MS, () => void watch($).catch(() => {})),
     $.clock.every(SESSION_MS, () => {
       void refreshSession($).catch(() => {})
       void refreshAgents($).catch(() => {})
@@ -448,7 +490,10 @@ async function gate($: EngineInterface, isStart = false): Promise<boolean> {
   void refreshSnapshot($).catch(() => {})
   void refreshSession($).catch(() => {})
   void refreshAgents($).catch(() => {})
-  void $.ui.open({ id: PANE, title: TITLE }).catch(() => {})
+  void $.ui
+    .open({ id: PANE, title: TITLE })
+    .then(() => refreshShown($))
+    .catch(() => {})
   return true
 }
 
@@ -467,7 +512,7 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'harness' }, async $ => {
-    void refreshSnapshot($, true).catch(() => {})
+    void refreshSnapshot($, 'fresh').catch(() => {})
     try {
       const opened = await $.ui.open({ id: PANE, title: TITLE })
       return { text: opened.isPlaced ? 'Harness panel opened.' : `Harness panel not drawn: ${opened.reason}` }
@@ -518,8 +563,16 @@ export const register: Register = on => {
     return result
   })
 
+  // The main loop's turn: the diagram's lines pulse from its start to its end.
+  on('turn.start', async ($, e, next) => {
+    if (isActive) void setTurn($, true).catch(() => {})
+
+    return next(e)
+  })
+
   on('turn.complete', async ($, e, next) => {
     if (!isActive) return next(e)
+    if (e.agentId === undefined) void setTurn($, false).catch(() => {})
     void refreshSession($).catch(() => {})
     void refreshAgents($).catch(() => {})
 
@@ -527,18 +580,75 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button } = $.ui.resolve(e)
-    const [snap, error, facts, rows] = await Promise.all([
-      read($, snapshot),
-      read($, snapshotError),
-      read($, session),
-      read($, agents),
-      read($, tick),
-    ])
+    const table = $.ui.resolve(e)
+    const { Box, Text, Button } = table
+    // The editor and the phone draw no Client: their moving parts stand still.
+    const Client = 'Client' in table ? table.Client : undefined
+    const [snap, error, facts, rows, work] = await Promise.all([read($, snapshot), read($, snapshotError), read($, session), read($, agents), read($, turn)])
     const now = await $.clock.now()
     const W = Math.max(32, e.props.bodyColumns)
     const tier = W >= 96 ? 'wide' : W >= 64 ? 'medium' : 'narrow'
-    const spinner = spin(now)
+
+    // --- motion ------------------------------------------------------------
+    // A moving part, drawn by motion.tsx on the drawing thread, or the same standing still.
+    const still = (key: string, p: MotionProps) => {
+      switch (p.kind) {
+        case 'spin':
+          return (
+            <Text key={key} color={p.color} dimColor={!p.on}>
+              {p.on ? '⠋' : (p.idle ?? '·')}
+            </Text>
+          )
+        case 'live':
+          return (
+            <Text key={key} color={p.color}>
+              {p.label ? `● ${p.label}` : '●'}
+            </Text>
+          )
+        case 'flow':
+          return (
+            <Text key={key} color={p.base ?? p.color} dimColor={p.base === undefined} wrap="truncate-end">
+              {p.text}
+            </Text>
+          )
+        case 'bar': {
+          const b = bar(p.value, p.max, p.width, p.rest)
+          return (
+            <Text key={key} wrap="truncate-end">
+              <Text color={p.color}>{b.filled}</Text>
+              <Text color={p.color} dimColor>
+                {b.empty}
+              </Text>
+            </Text>
+          )
+        }
+        case 'count':
+          return (
+            <Text key={key} color={p.color} bold={p.bold} dimColor={p.dim}>
+              {p.unit === 'int' ? String(Math.round(p.value)) : tokens(p.value)}
+            </Text>
+          )
+        case 'fresh':
+          return (
+            <Text key={key} color={p.color}>
+              {p.mark ?? ' '}
+            </Text>
+          )
+      }
+    }
+    const motion = (key: string, p: MotionProps) => (Client ? <Client key={key} module="./motion.tsx" props={p} /> : still(key, p))
+    const running = rows.filter(a => a.status === 'running')
+    // Work flows down the diagram while the main loop's turn runs or a helper does; out to the helpers while one runs.
+    const isDelegating = running.length > 0
+    const isWorking = work.isRunning || isDelegating
+    // A spinner inside a line's words: `words [ ⠋ ]`.
+    const spinning = (key: string, before: string, isOn: boolean, color: string, props: { dim?: boolean; color?: string; bold?: boolean } = {}, after = ' ]') => (
+      <Box key={key}>
+        {line(before, props)}
+        {motion(`${key}-spin`, { kind: 'spin', on: isOn, color, idle: '-' })}
+        {line(after, props)}
+      </Box>
+    )
 
     // --- the parts ---------------------------------------------------------
     // A box of the diagram: its border in its colour (dashed for the main
@@ -567,36 +677,27 @@ export const register: Register = on => {
         {child}
       </Box>
     )
-    // A label, its value right-aligned in its colour: the mock-up's `calls  2 / 3`.
-    const pair = (key: string, label: string, value: string, color: string) => (
+    // A label, its value right-aligned in its colour: the mock-up's `calls  2 / 3`; a value may be a rolling figure.
+    const pair = (key: string, label: string, value: RenderChildren, color: string) => (
       <Box key={key} justifyContent="space-between">
         <Text dimColor wrap="truncate-end">
           {label}
         </Text>
-        <Text color={color} wrap="truncate-end">
-          {value}
-        </Text>
+        {typeof value === 'string' ? (
+          <Text color={color} wrap="truncate-end">
+            {value}
+          </Text>
+        ) : (
+          value
+        )}
       </Box>
     )
-    const meter = (key: string, label: string, labelW: number, value: number, max: number, barW: number, figure: string, color: string, figureW: number) => {
-      const b = bar(value, max, barW, '▒')
-      return (
-        <Box key={key}>
-          {cell(labelW, line(label, { bold: true }))}
-          <Text wrap="truncate-end">
-            <Text color={color}>{b.filled}</Text>
-            <Text color={color} dimColor>
-              {b.empty}
-            </Text>
-          </Text>
-          {cell(figureW + 1, line(figure, { color, bold: true }), true)}
-        </Box>
-      )
-    }
-    const connector = (key: string, w: number, xs: number[], ch: string, color = 'inactive') => (
-      <Text key={key} color={color} wrap="truncate-end">
-        {marks(w, xs, ch)}
-      </Text>
+    const meter = (key: string, label: string, labelW: number, value: number, max: number, barW: number, figure: string, color: string, figureW: number) => (
+      <Box key={key}>
+        {cell(labelW, line(label, { bold: true }))}
+        {cell(barW, motion(`${key}-bar`, { kind: 'bar', value, max, width: barW, rest: '▒', color }))}
+        {cell(figureW + 1, line(figure, { color, bold: true }), true)}
+      </Box>
     )
 
     // --- the numbers ---------------------------------------------------------
@@ -609,7 +710,6 @@ export const register: Register = on => {
     const builder = facts ? (facts.lastModel ?? facts.model) : null
     const builderName = builder ? modelName(builder) : 'main'
     const builderColor = modelColor(builder)
-    const running = rows.filter(a => a.status === 'running')
     const opusDefs = helpers.filter(h => family(h.model) === 'opus')
     const opusModel = Object.entries(day).find(([name]) => opusDefs.some(d => d.name === name))?.[1].model ?? opusDefs[0]?.model ?? 'opus'
     const opusRuns = opusDefs.reduce((n, d) => n + (day[d.name]?.runs ?? 0), 0)
@@ -668,7 +768,7 @@ export const register: Register = on => {
         </Text>
         <Box justifyContent="space-between" width={W}>
           <Text dimColor>{snap ? `read ${ago(snap.at, now)} ago` : 'reading…'}</Text>
-          <Button key="refresh" label="Refresh" onPress={() => void refreshSnapshot($, true)} />
+          <Button key="refresh" label="Refresh" onPress={() => void refreshSnapshot($, 'fresh')} />
         </Box>
       </Box>
     )
@@ -698,7 +798,7 @@ export const register: Register = on => {
         <>
           <Box flexDirection="column" alignItems="center">
             {line(modelName(opusModel).toUpperCase(), { bold: true, color: PALETTE.opus })}
-            {line(`planner · ${runningOpus ? 'working' : 'on call'} [ ${runningOpus ? spinner : '-'} ]`, { dim: !runningOpus })}
+            {spinning('planner-state', `planner · ${runningOpus ? 'working' : 'on call'} [ `, !!runningOpus, PALETTE.opus, { dim: !runningOpus })}
             {line(`[ ${opusDefs.map(d => d.name).join(' · ') || 'no opus helper'} ]`, { inverse: true, color: PALETTE.opus })}
           </Box>
           <Box flexDirection="column">
@@ -714,8 +814,8 @@ export const register: Register = on => {
           </Box>
           <Box flexGrow={isTall ? 1 : 0} />
           <Box flexDirection="column" marginTop={1}>
-            {pair('runs', 'runs today', String(opusRuns), PALETTE.opus)}
-            {pair('tok', 'opus tokens', tokens(opusTokens), PALETTE.opus)}
+            {pair('runs', 'runs today', motion('opus-runs', { kind: 'count', value: opusRuns, unit: 'int', color: PALETTE.opus }), PALETTE.opus)}
+            {pair('tok', 'opus tokens', motion('opus-tokens', { kind: 'count', value: opusTokens, color: PALETTE.opus }), PALETTE.opus)}
             {pair('ctx', 'context', facts ? `${tokens(facts.contextTokens)} · ${Math.round(facts.percent ?? 0)}%` : '…', PALETTE.ok)}
           </Box>
         </>,
@@ -725,7 +825,7 @@ export const register: Register = on => {
     // --- the main session and its config ---------------------------------------
     const sessionBox = (w: number) => {
       const inner = w - 4
-      const ctx = bar(facts?.contextTokens ?? 0, facts?.window ?? 0, Math.max(6, Math.min(16, inner - 22)), '▒')
+      const ctxW = Math.max(6, Math.min(16, inner - 22))
       const effort = facts?.settings.effort ?? null
       const effortLevel = effort ? Math.max(1, ['low', 'medium', 'high', 'xhigh', 'max'].indexOf(effort) + 1) : 0
       return frame(
@@ -734,14 +834,15 @@ export const register: Register = on => {
         builderColor,
         <>
           {line(`${builderName} · main session`, { bold: true, color: builderColor })}
-          <Text wrap="truncate-end">
+          <Box key="context">
             <Text dimColor>context </Text>
-            <Text color={builderColor}>{ctx.filled}</Text>
-            <Text color={builderColor} dimColor>
-              {ctx.empty}
+            {motion('context-bar', { kind: 'bar', value: facts?.contextTokens ?? 0, max: facts?.window ?? 0, width: ctxW, rest: '▒', color: builderColor })}
+            <Text> </Text>
+            {facts ? motion('context-tokens', { kind: 'count', value: facts.contextTokens ?? 0, bold: true }) : <Text bold>…</Text>}
+            <Text bold wrap="truncate-end">
+              {facts ? ` / ${tokens(facts.window)}` : ''}
             </Text>
-            <Text bold> {facts ? `${tokens(facts.contextTokens)} / ${tokens(facts.window)}` : '…'}</Text>
-          </Text>
+          </Box>
           <Text wrap="truncate-end">
             <Text dimColor>effort </Text>
             <Text color={builderColor}>{'■'.repeat(effortLevel)}</Text>
@@ -752,10 +853,11 @@ export const register: Register = on => {
             </Text>
             {facts?.costUsd != null ? <Text dimColor> · ${facts.costUsd.toFixed(2)}</Text> : null}
           </Text>
-          {line(
-            running.length > 0 ? `[ ${running.map(a => a.type).join(', ')} running ${spinner} ]` : `[ ${helperRuns} helper runs today · ${tokens(helperTokens)} tok ]`,
-            { dim: running.length === 0, color: running.length > 0 ? PALETTE.wait : undefined },
-          )}
+          {running.length > 0
+            ? spinning('session-state', `[ ${running.map(a => a.type).join(', ')} running `, true, PALETTE.wait, { color: PALETTE.wait })
+            : work.isRunning
+              ? spinning('session-state', '[ working ', true, builderColor, { color: builderColor })
+              : line(`[ ${helperRuns} helper runs today · ${tokens(helperTokens)} tok ]`, { dim: true })}
         </>,
         { dashed: true, centred: true },
       )
@@ -798,13 +900,12 @@ export const register: Register = on => {
         PALETTE.gate,
         <>
           <Box justifyContent="space-between">
-            {line(inner >= 48 ? `GATES · q · hooks · review [ ${spinner} ]` : `GATES [ ${spinner} ]`, { bold: true, color: PALETTE.gate })}
-            <Text wrap="truncate-end">
+            {spinning('gates-state', inner >= 48 ? 'GATES · q · hooks · review [ ' : 'GATES [ ', isWorking, PALETTE.gate, { bold: true, color: PALETTE.gate })}
+            <Box key="stamps">
               <Text dimColor>stamps </Text>
-              <Text bold>
-                {fresh}/{repos.length}
-              </Text>
-            </Text>
+              {motion('stamps', { kind: 'count', value: fresh, unit: 'int', bold: true })}
+              <Text bold>/{repos.length}</Text>
+            </Box>
           </Box>
           {meter('checks', 'checks', labelW, fresh, repos.length, barW, `${fresh}/${repos.length} fresh`, PALETTE.gate, figureW)}
           {meter('reviews', 'reviews', labelW, reviewed, repos.length, barW, `${reviewed}/${repos.length} current`, PALETTE.gate, figureW)}
@@ -825,7 +926,7 @@ export const register: Register = on => {
 
     // --- the helpers: running ones first, then the family's -------------------
     const helperBoxes = (w: number, k: number) => {
-      const gap = 2
+      const gap = GAP_X
       const bw = Math.floor((w - gap * (k - 1)) / k)
       const seen = new Set<string>()
       const picks: { name: string; model: string | null; description: string; agent?: AgentRow }[] = []
@@ -855,7 +956,7 @@ export const register: Register = on => {
             const color = modelColor(p.model)
             const today = day[p.name]
             const share = helperTokens > 0 ? (today?.tokens ?? 0) / helperTokens : 0
-            const b = bar(share, 1, Math.max(3, bw - 10), '▒')
+            const model = p.model ? modelName(p.model) : 'model ?'
             return (
               <Box key={`helper-${p.name}`} marginLeft={i > 0 ? gap : 0}>
                 {frame(
@@ -864,14 +965,11 @@ export const register: Register = on => {
                   p.agent ? PALETTE.opus : color,
                   <>
                     {line(p.name, { bold: true })}
-                    {line(`${p.model ? modelName(p.model) : 'model ?'} [ ${p.agent ? `running ${spinner}` : 'IDLE'} ]`, { color })}
-                    <Text wrap="truncate-end">
-                      <Text color={color}>{b.filled}</Text>
-                      <Text color={color} dimColor>
-                        {b.empty}
-                      </Text>
+                    {p.agent ? spinning(`helper-${p.name}-state`, `${model} [ running `, true, color, { color }) : line(`${model} [ IDLE ]`, { color })}
+                    <Box key={`helper-${p.name}-share`}>
+                      {motion(`helper-${p.name}-bar`, { kind: 'bar', value: share, max: 1, width: Math.max(3, bw - 10), rest: '▒', color })}
                       <Text bold> {Math.round(share * 100)}%</Text>
-                    </Text>
+                    </Box>
                     {line(p.description || 'built in', { dim: true })}
                     {line(
                       p.agent?.steps
@@ -897,12 +995,14 @@ export const register: Register = on => {
         builderColor,
         <>
           {line(`back to ${builderName} · lead`, { bold: true, color: builderColor })}
-          {line(
-            lastHandback
-              ? `rx: ${lastHandback.text.split(' ')[0]} · ${tokens(lastHandback.tokens)} tok · ${duration(lastHandback.ms ?? 0)} [ ${running.length > 0 ? spinner : '-'} ]`
-              : 'rx: no handback today yet',
-            { dim: !lastHandback },
-          )}
+          {lastHandback
+            ? spinning(
+                'back-state',
+                `rx: ${lastHandback.text.split(' ')[0]} · ${tokens(lastHandback.tokens)} tok · ${duration(lastHandback.ms ?? 0)} [ `,
+                isDelegating,
+                builderColor,
+              )
+            : line('rx: no handback today yet', { dim: true })}
         </>,
         { dashed: true, centred: true },
       )
@@ -914,26 +1014,51 @@ export const register: Register = on => {
       const fan = helperBoxes(w, k)
       const pill = `» delegate to helpers · ${helperRuns} runs today · ${tokens(helperTokens)} tok «`
       const backW = Math.min(w, Math.max(30, Math.round(w * 0.62)))
+      const ends = fan.xs.length > 0 ? fan.xs : [c]
+      // The pulse's way down, line by line: a pause inside each box it goes
+      // through, the helpers' part only while one runs. Its colour: the main
+      // session's out of it and back, the gates' green, the helpers' blue.
+      const lines: { key: string; text: string; how: 'down' | 'out' | 'in'; at: number; on: boolean; color: string; base?: string; pause: number; isHelpers?: true }[] = [
+        { key: 'to-gates-1', text: marks(w, [from], '│'), how: 'down', at: from, on: isWorking, color: builderColor, base: 'inactive', pause: 0 },
+        { key: 'to-gates-2', text: marks(w, [from], '●'), how: 'down', at: from, on: isWorking, color: builderColor, base: builderColor, pause: 3 },
+        { key: 'to-pill', text: marks(w, [c], '│'), how: 'down', at: c, on: isWorking, color: PALETTE.gate, base: 'inactive', pause: 2 },
+        { key: 'fan-out', text: branch(w, c, ends), how: 'out', at: c, on: isDelegating, color: PALETTE.haiku, base: 'inactive', pause: 0, isHelpers: true },
+        { key: 'arrows', text: marks(w, fan.xs, '▼'), how: 'down', at: c, on: isDelegating, color: PALETTE.haiku, base: PALETTE.haiku, pause: 4, isHelpers: true },
+        { key: 'merge', text: branch(w, c, ends, true), how: 'in', at: c, on: isDelegating, color: builderColor, base: 'inactive', pause: 0, isHelpers: true },
+        { key: 'to-back', text: marks(w, [c], '●'), how: 'down', at: c, on: isDelegating, color: builderColor, base: 'inactive', pause: 0, isHelpers: true },
+      ]
+      let step = 0
+      let top = 0
+      const drawn = lines.map(l => {
+        const path = pulsePath(l.text, l.at, l.how)
+        const start = step
+        step += path.length + l.pause
+        if (!l.isHelpers) top = step
+        return { ...l, path, start }
+      })
+      // No helper running: the pulse goes round the gates' part alone, a beat a second or so.
+      const cycle = (isDelegating ? step : top) + 6
+      const pulse = (key: string) => {
+        const l = drawn.find(d => d.key === key)
+        if (!l) return null
+        return motion(key, { kind: 'flow', text: l.text, path: l.path, start: l.start, cycle, on: l.on, color: l.color, base: l.base })
+      }
       return (
         <Box key="flow" flexDirection="column" width={w}>
-          {connector('to-gates-1', w, [from], '│')}
-          {connector('to-gates-2', w, [from], '●', builderColor)}
+          {pulse('to-gates-1')}
+          {pulse('to-gates-2')}
           {gatesBox(w)}
-          {connector('to-pill', w, [c], '│')}
+          {pulse('to-pill')}
           <Box width={w} justifyContent="center">
             <Box borderStyle="single" borderColor="inactive" paddingX={1} flexShrink={1}>
               {line(pill, { color: PALETTE.haiku })}
             </Box>
           </Box>
-          <Text color="inactive" wrap="truncate-end">
-            {branch(w, c, fan.xs.length > 0 ? fan.xs : [c])}
-          </Text>
-          {connector('arrows', w, fan.xs, '▼', PALETTE.haiku)}
+          {pulse('fan-out')}
+          {pulse('arrows')}
           {fan.boxes}
-          <Text color="inactive" wrap="truncate-end">
-            {branch(w, c, fan.xs.length > 0 ? fan.xs : [c], true)}
-          </Text>
-          {connector('to-back', w, [c], '●')}
+          {pulse('merge')}
+          {pulse('to-back')}
           <Box width={w} justifyContent="center">
             {backBox(backW)}
           </Box>
@@ -952,7 +1077,7 @@ export const register: Register = on => {
         <Box key="diagram" width={W} marginTop={1}>
           {planner(L)}
           <Box width={3} flexShrink={0} flexDirection="column" paddingTop={2}>
-            <Text color={PALETTE.opus}>◂┄┄</Text>
+            {motion('to-planner', { kind: 'flow', text: '◂┄┄', path: pulsePath('◂┄┄', 2, 'out'), start: 0, cycle: 8, on: !!runningOpus, color: PALETTE.opus, base: PALETTE.opus })}
           </Box>
           <Box width={A} flexShrink={0} flexDirection="column">
             <Box width={A} alignItems="flex-start">
@@ -972,21 +1097,24 @@ export const register: Register = on => {
       diagram = (
         <Box key="diagram" flexDirection="column" width={W} marginTop={1}>
           <Box width={W}>
-            {planner(W - Rc - 1)}
-            <Box marginLeft={1}>{configBox(Rc)}</Box>
+            {planner(W - Rc - GAP_X)}
+            <Box marginLeft={GAP_X}>{configBox(Rc)}</Box>
           </Box>
-          <Box width={W} justifyContent="center" marginTop={1}>
+          <Box width={W} justifyContent="center" marginTop={GAP_Y}>
             {sessionBox(Sw)}
           </Box>
           {flow(W, Math.floor(W / 2))}
         </Box>
       )
     } else {
+      // The flow's first line meets the session box: the gaps above it only.
       diagram = (
         <Box key="diagram" flexDirection="column" width={W} marginTop={1}>
-          {planner(W)}
-          {configBox(W)}
-          {sessionBox(W)}
+          <Box flexDirection="column" width={W} gap={GAP_Y}>
+            {planner(W)}
+            {configBox(W)}
+            {sessionBox(W)}
+          </Box>
           {flow(W, Math.floor(W / 2))}
         </Box>
       )
@@ -1005,25 +1133,26 @@ export const register: Register = on => {
         <>
           <Box justifyContent="space-between">
             {line('TODAY', { bold: true })}
-            {line(dayTotal > 0 ? `${tokens(dayTotal)} · ${Math.round((cacheRead / dayTotal) * 100)}% cache` : 'no calls yet', { dim: true })}
+            {dayTotal > 0 ? (
+              <Box key="day-total">
+                {motion('day-total', { kind: 'count', value: dayTotal, dim: true })}
+                {line(` · ${Math.round((cacheRead / dayTotal) * 100)}% cache`, { dim: true })}
+              </Box>
+            ) : (
+              line('no calls yet', { dim: true })
+            )}
           </Box>
           <Box flexDirection="column">
-          {models.map(d => {
-            const b = bar(total(d), top, barW, '▒')
-            const color = modelColor(d.model)
-            return (
-              <Box key={`model-${d.model}`}>
-                {cell(modelW, line(modelName(d.model), { color }))}
-                <Text wrap="truncate-end">
-                  <Text color={color}>{b.filled}</Text>
-                  <Text color={color} dimColor>
-                    {b.empty}
-                  </Text>
-                </Text>
-                {cell(figureW + 1, line(tokens(total(d)), { bold: true, color }), true)}
-              </Box>
-            )
-          })}
+            {models.map(d => {
+              const color = modelColor(d.model)
+              return (
+                <Box key={`model-${d.model}`}>
+                  {cell(modelW, line(modelName(d.model), { color }))}
+                  {cell(barW, motion(`model-${d.model}-bar`, { kind: 'bar', value: total(d), max: top, width: barW, rest: '▒', color }))}
+                  {cell(figureW + 1, motion(`model-${d.model}-tokens`, { kind: 'count', value: total(d), bold: true, color }), true)}
+                </Box>
+              )
+            })}
           </Box>
         </>,
       )
@@ -1109,18 +1238,19 @@ export const register: Register = on => {
       )
     }
 
+    const todayW = Math.floor((W - GAP_X) * 0.42)
     const ledger =
       tier === 'narrow' || W < 80 ? (
-        <Box key="ledger" flexDirection="column" width={W} marginTop={1}>
+        <Box key="ledger" flexDirection="column" width={W} marginTop={1} gap={GAP_Y}>
           {todayBox(W)}
           {boardBox(W)}
           {reposBox(W)}
         </Box>
       ) : (
-        <Box key="ledger" flexDirection="column" width={W} marginTop={1}>
+        <Box key="ledger" flexDirection="column" width={W} marginTop={1} gap={GAP_Y}>
           <Box width={W}>
-            {todayBox(Math.floor((W - 1) * 0.42))}
-            <Box marginLeft={1}>{boardBox(W - 1 - Math.floor((W - 1) * 0.42))}</Box>
+            {todayBox(todayW)}
+            <Box marginLeft={GAP_X}>{boardBox(W - GAP_X - todayW)}</Box>
           </Box>
           {reposBox(W)}
         </Box>
@@ -1134,29 +1264,44 @@ export const register: Register = on => {
       logInner,
       14,
     )
+    // A line's mark keeps its instance as newer lines push it down: keyed by the event, not the row.
+    const used = new Set<string>()
+    const eventKey = (ev: HarnessEvent, i: number) => {
+      const key = `fresh-${ev.id ?? `${ev.at}-${ev.source}-${ev.repo}`}`
+      const unique = used.has(key) ? `${key}-${i}` : key
+      used.add(unique)
+      return unique
+    }
     const log = frame(
       'log',
       W,
       'inactive',
       <>
-        <Text wrap="truncate-end">
+        <Box key="log-head">
           <Text bold>session log </Text>
-          <Text dimColor>[ stream: live · {spinner} ]</Text>
-        </Text>
+          <Text dimColor>[ stream: </Text>
+          {motion('live', { kind: 'live', color: PALETTE.ok, label: 'live' })}
+          <Text dimColor> ]</Text>
+        </Box>
         <Box flexDirection="column">
-        {shown.length === 0
-          ? line('nothing yet today', { dim: true })
-          : shown.map((ev, i) => (
-              <Box key={`event-${i}-${ev.at}`}>
-                {cell(markW, line(i === 0 ? '›' : ' ', { color: PALETTE.ok }))}
-                {cell(timeW, line(clockTime(ev.at), { bold: i === 0, dim: i !== 0 }))}
-                {cell(sourceW, line(sourceLabel(ev), { color: sourceColor(ev) }))}
-                <Box flexGrow={1} flexShrink={1}>
-                  {line(`${ev.repo ? `${ev.repo} ` : ''}${eventText(ev)}`, {})}
-                </Box>
-                {cell(figureW, line(eventFigure(ev), { color: toneColor(ev.tone, ev.text) }), true)}
-              </Box>
-            ))}
+          {shown.length === 0
+            ? line('nothing yet today', { dim: true })
+            : shown.map((ev, i) => {
+                // A new line blinks its mark and stands out until it settles.
+                const age = Math.max(0, now - ev.at)
+                const isNew = age < FRESH_MS
+                return (
+                  <Box key={`event-${i}-${ev.at}`}>
+                    {cell(markW, motion(eventKey(ev, i), { kind: 'fresh', age, color: isNew ? toneColor(ev.tone, ev.text) : PALETTE.ok, mark: i === 0 ? '›' : ' ' }))}
+                    {cell(timeW, line(clockTime(ev.at), { bold: i === 0 || isNew, dim: i !== 0 && !isNew }))}
+                    {cell(sourceW, line(sourceLabel(ev), { color: sourceColor(ev), bold: isNew }))}
+                    <Box flexGrow={1} flexShrink={1}>
+                      {line(`${ev.repo ? `${ev.repo} ` : ''}${eventText(ev)}`, { bold: isNew })}
+                    </Box>
+                    {cell(figureW, line(eventFigure(ev), { color: toneColor(ev.tone, ev.text) }), true)}
+                  </Box>
+                )
+              })}
         </Box>
       </>,
     )
@@ -1198,7 +1343,7 @@ export const register: Register = on => {
         ) : null}
         {diagram}
         {ledger}
-        <Box marginTop={1} flexDirection="column">
+        <Box marginTop={GAP_Y} flexDirection="column">
           {log}
         </Box>
         {footer}

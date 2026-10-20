@@ -8,6 +8,7 @@ import {
   agentDefs,
   agentModels,
   askedPart,
+  cachedRepos,
   countLine,
   type EventState,
   eventRow,
@@ -19,6 +20,7 @@ import {
   readEventLog,
   readRepo,
   readTranscripts,
+  repoMarks,
   repoOf,
   summaryOf,
 } from './snapshot'
@@ -390,5 +392,41 @@ describe('repositories', () => {
     const row = readRepo(dir)
     expect(row?.check).toMatchObject({ tree: '0000000', isFresh: false, isWorkFresh: false })
     expect(row?.review).toMatchObject({ sha: 'abc1234', verdict: null, isCurrent: false })
+  })
+
+  test('the rows are read again only when a repository moved: a stamp, a commit', () => {
+    const dir = repo()
+    const root = join(dir, '..')
+    const cache = temp()
+    const first = cachedRepos(root, cache, undefined, false)
+    expect(first.map(r => r.check)).toEqual([null])
+    // Nothing moved: the cached rows, even where a read would differ.
+    const marks = repoMarks(root)
+    expect(repoMarks(root)).toBe(marks)
+    // A stamp moves .git/harness: read again.
+    const tree = git(dir, 'rev-parse', 'HEAD^{tree}')
+    writeFileSync(join(dir, '.git', 'harness', `check-${tree}`), '')
+    expect(repoMarks(root)).not.toBe(marks)
+    expect(cachedRepos(root, cache, undefined, false)[0]?.check).toMatchObject({ isFresh: true })
+    // A commit moves HEAD's log: the stamp is old again.
+    const stamped = repoMarks(root)
+    writeFileSync(join(dir, 'b.txt'), 'b\n')
+    git(dir, 'add', '.')
+    git(dir, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'b')
+    expect(repoMarks(root)).not.toBe(stamped)
+    expect(cachedRepos(root, cache, undefined, false)[0]?.check).toMatchObject({ isFresh: false })
+  })
+
+  test('unmoved, the cached rows stand; fresh reads them anew', () => {
+    const dir = repo()
+    const root = join(dir, '..')
+    const cache = temp()
+    cachedRepos(root, cache, undefined, false)
+    // Rows a read would not give, kept beside the same marks: proof the cache answered.
+    const path = join(cache, 'repos.json')
+    const was = JSON.parse(readFileSync(path, 'utf8'))
+    writeFileSync(path, JSON.stringify({ ...was, repos: [{ ...was.repos[0], head: 'cached' }] }))
+    expect(cachedRepos(root, cache, undefined, false)[0]?.head).toBe('cached')
+    expect(cachedRepos(root, cache, undefined, true)[0]?.head).not.toBe('cached')
   })
 })

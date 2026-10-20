@@ -111,6 +111,9 @@ export type AgentRow = {
   steps: AgentSteps | null
 }
 
+/** The main session's turn: running from its start to its end (or abort). */
+export type TurnState = { isRunning: boolean; at: number | null }
+
 declare module 'claude-code' {
   interface PluginState {
     'harness-view': {
@@ -119,7 +122,7 @@ declare module 'claude-code' {
       session: SessionFacts | null
       agents: AgentRow[]
       steps: Record<string, AgentSteps>
-      tick: number
+      turn: TurnState
     }
   }
 }

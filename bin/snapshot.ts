@@ -7,10 +7,12 @@
 // its own cache.
 //
 //   bun snapshot.ts [--root <family folder>] [--projects <dir>]
-//                   [--cache <dir>] [--day YYYY-MM-DD] [--fresh]
+//                   [--cache <dir>] [--day YYYY-MM-DD] [--now | --fresh]
 //
-// Every open session runs it: a snapshot younger than 15 seconds is printed
-// again from the cache instead of read anew (--fresh reads anew).
+// Every open session runs it: a snapshot younger than two seconds is printed
+// again from the cache instead of read anew (--now reads anew). The
+// repositories' rows (git, the stamps: most of a read's time) are read again
+// only when one of them moved or 20 seconds went by (--fresh reads them anew too).
 
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -141,12 +143,49 @@ export function readRepo(dir: string, kit?: StampKit): RepoRow | null {
   return { name: basename(dir), head: head.slice(0, 7), check, failed: failedCheck(dir, check?.at ?? 0), review }
 }
 
-export function readRepos(root: string, kit?: StampKit): RepoRow[] {
-  return readdirSync(root, { withFileTypes: true })
+const repoDirs = (root: string) =>
+  readdirSync(root, { withFileTypes: true })
     .filter(e => e.isDirectory() && existsSync(join(root, e.name, '.git', 'HEAD')))
-    .map(e => readRepo(join(root, e.name), kit))
+    .map(e => join(root, e.name))
+
+export function readRepos(root: string, kit?: StampKit): RepoRow[] {
+  return repoDirs(root)
+    .map(dir => readRepo(dir, kit))
     .filter((r): r is RepoRow => r !== null)
     .sort((a, b) => a.name.localeCompare(b.name))
+}
+
+/**
+ * What moves when a repository's row would: a commit, a checkout or an add
+ * (HEAD, its log, the index), a stamp or a verdict (`.git/harness`), a check
+ * run (q's log), a packet. A stat each, where the row's own read runs git.
+ */
+export function repoMarks(root: string): string {
+  const parts = ['.git/HEAD', '.git/logs/HEAD', '.git/index', '.git/harness', '.cache/logs/check.log', '.cache/review']
+  return repoDirs(root)
+    .map(dir => `${basename(dir)}:${parts.map(p => (existsSync(join(dir, p)) ? statSync(join(dir, p)).mtimeMs : 0)).join(',')}`)
+    .join('|')
+}
+
+/** How long rows read from unmoved repositories stand: the working trees' edits move nothing above. */
+const REPOS_MS = 20_000
+
+/** The rows again when nothing of the repositories moved since their last read, else read anew. */
+export function cachedRepos(root: string, cacheDir: string, kit: StampKit | undefined, isFresh: boolean): RepoRow[] {
+  const path = join(cacheDir, 'repos.json')
+  const marks = repoMarks(root)
+  if (!isFresh && existsSync(path)) {
+    try {
+      const was = JSON.parse(readFileSync(path, 'utf8')) as { marks: string; at: number; repos: RepoRow[] }
+      if (was.marks === marks && Date.now() - was.at < REPOS_MS) return was.repos
+    } catch {}
+  }
+  const repos = readRepos(root, kit)
+  mkdirSync(cacheDir, { recursive: true })
+  const tmp = `${path}.${process.pid}`
+  writeFileSync(tmp, JSON.stringify({ marks, at: Date.now(), repos }))
+  renameSync(tmp, path)
+  return repos
 }
 
 // --- the task board -------------------------------------------------------
@@ -552,7 +591,8 @@ function arg(name: string): string | undefined {
   return i === -1 ? undefined : process.argv[i + 1]
 }
 
-const SHARED_MS = 15_000
+// The pane reads every two seconds while shown: what one session read is the others' for as long.
+const SHARED_MS = 2_000
 
 if (import.meta.main) {
   const root = arg('root') ?? process.env.WOW_ADDONS_ROOT ?? join(homedir(), 'code', 'wow-addons')
@@ -561,7 +601,9 @@ if (import.meta.main) {
   const day = arg('day') ?? localDay(Date.now())
   const shared = join(cacheDir, 'snapshot.json')
 
-  if (!process.argv.includes('--fresh') && existsSync(shared) && Date.now() - statSync(shared).mtimeMs < SHARED_MS) {
+  const isFresh = process.argv.includes('--fresh')
+  const isNow = isFresh || process.argv.includes('--now')
+  if (!isNow && existsSync(shared) && Date.now() - statSync(shared).mtimeMs < SHARED_MS) {
     process.stdout.write(readFileSync(shared, 'utf8'))
   } else {
     // B's readers when the kit has them, so the panel and the gates agree.
@@ -578,7 +620,7 @@ if (import.meta.main) {
     const log = process.env.HARNESS_EVENTS === 'off' ? [] : readEventLog(process.env.HARNESS_EVENTS || join(root, '.cache', 'harness', 'events.log'), dayBounds(day)[0])
     const snapshot: Snapshot = {
       at: Date.now(),
-      repos: readRepos(root, stamps),
+      repos: cachedRepos(root, cacheDir, stamps, isFresh),
       board: readBoard(join(root, 'board'), day, cards),
       usage: transcripts.usage,
       events: [...log, ...transcripts.events].sort((a, b) => b.at - a.at).slice(0, MAX_EVENTS),
