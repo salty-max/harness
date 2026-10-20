@@ -412,10 +412,6 @@ export function eventRow(row: Row, from: number, to: number, state: EventState) 
   const cwd = row.cwd
   if (!(at >= from && at < to) || (cwd !== state.root && !cwd?.startsWith(`${state.root}/`))) return
   const content = row.message?.content
-  // A background helper's end: the notice its session gets, naming the Agent call.
-  if (row.type === 'user' && typeof content === 'string' && content.includes('<task-notification>')) {
-    for (const [, id] of content.matchAll(/<tool-use-id>([^<]+)<\/tool-use-id>/g)) if (id) delete state.sessions.open[id]
-  }
   const blocks = (Array.isArray(content) ? content : []) as Block[]
   for (const block of blocks) {
     if (row.type === 'assistant' && block?.type === 'tool_use' && typeof block.id === 'string') {
@@ -492,7 +488,6 @@ export function eventRow(row: Row, from: number, to: number, state: EventState) 
 // (an Agent result names its agentType, a prompt's answer its user source or the rejection).
 const isEventLine = (line: string) =>
   /"name":"(?:Agent|Task|Bash)"/.test(line) ||
-  line.includes('<task-notification>') ||
   (line.includes('"tool_use_id"') && (line.includes('"agentType"') || line.includes('"source":"user') || line.includes('User rejected tool use')))
 
 const RESULT_ID = /"tool_use_id":"([^"]+)"/g
@@ -502,6 +497,11 @@ const RESULT_ID = /"tool_use_id":"([^"]+)"/g
  * no prompt answered (a rule let the push through) clears its call unparsed.
  */
 export function scanLine(line: string, from: number, to: number, seen: Set<string>, models: Record<string, ModelDay>, state: EventState) {
+  // A background helper's end: the notice its session gets, naming the Agent call, wherever it lands (a user
+  // row, or a queued_command attachment when it comes mid-turn): read off the line, unparsed.
+  if (line.includes('<task-notification>')) {
+    for (const [, id] of line.matchAll(/<tool-use-id>([\w-]+)<\/tool-use-id>/g)) if (id) delete state.sessions.open[id]
+  }
   const isUsage = line.includes('"type":"assistant"') && line.includes('"usage"')
   const isEvent = isEventLine(line)
   if (!isEvent && line.includes('"tool_result"')) {
@@ -640,6 +640,8 @@ type Registered = {
   sessionId?: string
   cwd?: string
   startedAt?: number
+  /** The process's start, as ps's lstart spells it, in UTC. */
+  procStart?: string
   name?: string
   status?: string
   waitingFor?: string
@@ -649,11 +651,16 @@ type Registered = {
   hostSessionId?: string
 }
 
-/** Each pid's process start (`ps`'s lstart, local time), one call for all; a pid gone has none. */
-export function startsOf(pids: number[]): Map<number, number> {
+/** Each pid's process start (`ps`'s lstart, local time, in the C locale), one call for all; a pid gone has none; null when ps can't run. */
+export function startsOf(pids: number[]): Map<number, number> | null {
   const out = new Map<number, number>()
   if (pids.length === 0) return out
-  const ran = Bun.spawnSync(['/bin/ps', '-o', 'pid=,lstart=', '-p', pids.join(',')])
+  let ran: ReturnType<typeof Bun.spawnSync>
+  try {
+    ran = Bun.spawnSync(['/bin/ps', '-o', 'pid=,lstart=', '-p', pids.join(',')], { env: { ...process.env, LC_ALL: 'C' } })
+  } catch {
+    return null
+  }
   for (const line of ran.stdout.toString().split('\n')) {
     const m = /^\s*(\d+)\s+(.+?)\s*$/.exec(line)
     const at = m ? Date.parse(m[2] ?? '') : Number.NaN
@@ -672,7 +679,7 @@ const OPEN_MAX_MS = 6 * 3600_000
  * waiting on the user first, then busy, then idle. The registry is Claude
  * Code's internal format: undefined when it can't be read at all.
  */
-export function readSessions(dir: string, root: string, day: SessionDay, now = Date.now(), starts: (pids: number[]) => Map<number, number> = startsOf): LiveSession[] | undefined {
+export function readSessions(dir: string, root: string, day: SessionDay, now = Date.now(), starts: (pids: number[]) => Map<number, number> | null = startsOf): LiveSession[] | undefined {
   let names: string[]
   try {
     names = readdirSync(dir).filter(n => /^\d+\.json$/.test(n))
@@ -683,15 +690,26 @@ export function readSessions(dir: string, root: string, day: SessionDay, now = D
   for (const name of names) {
     try {
       const r = JSON.parse(readFileSync(join(dir, name), 'utf8')) as Registered
-      if (r.pid && r.sessionId && r.cwd && (r.cwd === root || r.cwd.startsWith(`${root}/`))) found.push(r)
+      // An internal format: what it holds checked before it is used (a bad pid would sink ps's whole list).
+      const isText = (v: unknown) => v === undefined || typeof v === 'string'
+      const isSound =
+        Number.isInteger(r.pid) && (r.pid as number) > 0 && typeof r.sessionId === 'string' && /^[\w-]+$/.test(r.sessionId) && typeof r.cwd === 'string' &&
+        [r.name, r.status, r.waitingFor, r.entrypoint, r.hostSessionId, r.procStart].every(isText)
+      if (isSound && (r.cwd === root || (r.cwd as string).startsWith(`${root}/`))) found.push(r)
     } catch {}
   }
   const alive = starts(found.map(r => r.pid as number))
+  if (!alive) return undefined
   const rank = (s: string) => (s === 'waiting' ? 0 : s === 'busy' ? 1 : 2)
   return found
     .filter(r => {
       const at = alive.get(r.pid as number)
-      return at !== undefined && (!r.startedAt || at <= r.startedAt + 5_000)
+      if (at === undefined) return false
+      // The same process: its start as the registry wrote it (UTC) is ps's (a pid reused since started later);
+      // with none, a start no later than a minute after the session's.
+      const wrote = r.procStart ? Date.parse(`${r.procStart} UTC`) : Number.NaN
+      if (!Number.isNaN(wrote)) return Math.abs(at - wrote) <= 2_000
+      return !r.startedAt || at <= r.startedAt + 60_000
     })
     .map((r): LiveSession => {
       const id = r.sessionId as string

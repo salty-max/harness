@@ -286,8 +286,12 @@ describe('events in the transcripts', () => {
     eventRow(of(result('h2', { toolUseResult: { status: 'async_launched', agentType: 'reviewer' } })), from, to, s)
     eventRow(of(result('h1', { toolUseResult: { status: 'completed', agentType: 'data-scout' } })), from, to, s)
     expect(Object.keys(s.sessions.open)).toEqual(['h2'])
-    // Its end's notice closes it.
-    eventRow(of({ type: 'user', timestamp: noon, cwd: '/f', message: { content: '<task-notification>\n<task-id>a1</task-id>\n<tool-use-id>h2</tool-use-id>\n<status>completed</status>' } }), from, to, s)
+    // Its end's notice closes it: a user row, or (mid-turn) a queued_command attachment.
+    const notice = (id: string) => `<task-notification>\n<task-id>a1</task-id>\n<tool-use-id>${id}</tool-use-id>\n<status>completed</status>`
+    scanLine(JSON.stringify(of({ type: 'user', timestamp: noon, cwd: '/f', message: { content: notice('h2') } })), from, to, new Set(), {}, s)
+    expect(s.sessions.open).toEqual({})
+    eventRow(of(call('h5', 'Agent', { subagent_type: 'reviewer', run_in_background: true })), from, to, s)
+    scanLine(JSON.stringify(of({ type: 'attachment', timestamp: noon, cwd: '/f', attachment: { type: 'queued_command', prompt: notice('h5'), commandMode: 'task-notification' } })), from, to, new Set(), {}, s)
     expect(s.sessions.open).toEqual({})
     // An interrupted call's result, read no further than its id, closes it too.
     eventRow(of(call('h4', 'Agent', { subagent_type: 'data-scout' })), from, to, s)
@@ -497,6 +501,9 @@ describe('the live sessions', () => {
     write(dir, 16, { name: 'Reused' })
     writeFileSync(join(dir, '17.json'), 'not json')
     writeFileSync(join(dir, '18.abc.key'), '{}')
+    // A malformed one is left out alone: the others still read.
+    writeFileSync(join(dir, '19.json'), JSON.stringify({ pid: '19; rm', sessionId: 's19', cwd: root, name: 'Bad pid' }))
+    writeFileSync(join(dir, '20.json'), JSON.stringify({ pid: 20, sessionId: 's20', cwd: root, name: { not: 'a string' } }))
     const starts = (pids: number[]) => new Map(pids.filter(p => p !== 15).map(p => [p, p === 16 ? 9_000_000 : 999_000] as [number, number]))
     const day = { models: { s11: 'claude-sonnet-5-5' }, open: { t1: { session: 's11', type: 'reviewer', at: 2_500_000 }, t2: { session: 's99', type: 'Explore', at: 2_500_000 } } }
     const live = readSessions(dir, root, day, 3_000_000, starts)
@@ -508,7 +515,14 @@ describe('the live sessions', () => {
     expect(live?.[1]).toMatchObject({ id: 's11', model: 'claude-sonnet-5-5', helpers: [{ type: 'reviewer', at: 2_500_000 }], since: 2_000_000 })
     // A helper open for hours was never seen back: left out.
     expect(readSessions(dir, root, day, 2_500_000 + 7 * 3600_000, starts)?.[1]?.helpers).toEqual([])
-    // No registry: nothing known (undefined), not "no session".
+    // No registry, or no ps: nothing known (undefined), not "no session".
     expect(readSessions(join(dir, 'missing'), root, day, 0, starts)).toBeUndefined()
+    expect(readSessions(dir, root, day, 0, () => null)).toBeUndefined()
+    // The same process by the start the registry wrote (UTC, ps's own spelling): a slow start is kept, a reuse isn't.
+    const dir2 = temp()
+    write(dir2, 31, { name: 'Slow start', startedAt: 1_792_519_640_000, procStart: 'Tue Oct 20 18:06:55 2026' })
+    write(dir2, 32, { name: 'Reused', startedAt: 1_792_519_640_000, procStart: 'Tue Oct 20 18:06:55 2026' })
+    const psStarts = () => new Map<number, number>([[31, 1_792_519_615_000], [32, 1_792_519_900_000]])
+    expect(readSessions(dir2, root, day, 1_792_520_000_000, psStarts)?.map(s => s.name)).toEqual(['Slow start'])
   })
 })

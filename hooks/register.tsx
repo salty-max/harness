@@ -901,8 +901,10 @@ export const register: Register = on => {
     const board = snap?.board ?? []
     const live = snap?.sessions ?? []
     const selfId = facts?.id ?? null
+    // A card's session as board.ts writes it, the session's id (an older card's may be a name, which matches nothing).
+    const isSessionId = (v: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v)
     // A running card whose session is no longer live still holds its repositories (board.ts): said so, for the user to move.
-    const isGone = (c: BoardCard) => c.status === 'running' && !!c.session && !!snap?.sessions && !live.some(x => x.id === c.session)
+    const isGone = (c: BoardCard) => c.status === 'running' && isSessionId(c.session) && !!snap?.sessions && !live.some(x => x.id === c.session)
     const models = snap?.usage.models ?? []
     const builder = facts ? (facts.lastModel ?? facts.model) : null
     const builderName = builder ? modelName(builder) : 'main'

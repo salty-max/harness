@@ -415,7 +415,9 @@ test("the sessions: each live one's status, model, card and an Open that hands t
     ],
     board: [
       { ...SNAPSHOT.board[0]!, session: 'self', status: 'running', title: 'The panel' },
-      { ...SNAPSHOT.board[0]!, id: 'orphan', session: 'dead-one', status: 'running', title: 'Left running' },
+      { ...SNAPSHOT.board[0]!, id: 'orphan', session: '00000000-0000-4000-8000-000000000001', status: 'running', title: 'Left running' },
+      // An older card's session as a name: matches no session, and is never said gone.
+      { ...SNAPSHOT.board[0]!, id: 'named', session: "Harness E: every repository's pass", status: 'running', title: 'Named' },
     ],
   }
   const opened: string[][] = []

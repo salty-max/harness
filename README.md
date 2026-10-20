@@ -77,15 +77,18 @@ holds the gates, the part of the harness that runs in code.
   registry of live sessions, `~/.claude/sessions/<pid>.json` (what its
   agent list and ListAgents read: an internal format, read only, so the
   box says when it can't read it): each file a session's id, folder,
-  title, status and desktop id, kept if its folder is the family's and
-  its process lives (`/bin/ps`, one call: started no later than the
-  session, so a pid reused since is left out). Its model and helpers come
-  from today's transcripts: an Agent call is open until its result (a
-  background one: until the notice of its end), a helper's own calls
-  aside, six hours at most. The Board says "session gone" on a running
-  card whose session isn't live (it still holds its repositories until
-  the user moves it), and the status line counts the other sessions
-  waiting on you.
+  title, status and desktop id, its fields checked before use, kept if
+  its folder is the family's and its process lives (`/bin/ps` in the C
+  locale, one call: the start it prints is the one the registry wrote,
+  `procStart` in UTC, to two seconds, so a pid reused since is left out).
+  Its model and helpers come from today's transcripts: an Agent call is
+  open until its result (a background one: until the notice of its end,
+  a user row or, mid-turn, a `queued_command` attachment), a helper's
+  own calls aside, six hours at most. The Board says "session gone" on a
+  running card whose session (an id, as `board.ts` writes it; an older
+  card's name matches nothing) isn't live: it still holds its
+  repositories until the user moves it. The status line counts the
+  other sessions waiting on you.
 - **Today**: tokens by model from every transcript under
   `~/.claude/projects/**/*.jsonl` (each assistant message once, by its id,
   local day), with the share of cache reads.
