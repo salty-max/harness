@@ -10,6 +10,7 @@ import {
   countLine,
   type EventState,
   eventRow,
+  scanLine,
   failedCheck,
   parseCard,
   parseEventLine,
@@ -239,13 +240,14 @@ describe('events in the transcripts', () => {
     ])
   })
 
-  test('a push the user allowed or refused, never one a rule let through', () => {
+  test('a push the user allowed or refused, never one a rule let through, nor another command', () => {
     const s = state()
     eventRow(call('b1', 'Bash', { command: 'git push -q origin main 2>&1 | tail -3' }), from, to, s)
     eventRow(call('b2', 'Bash', { command: 'git -C wow-data push' }, '/f'), from, to, s)
     eventRow(call('b3', 'Bash', { command: 'git status' }), from, to, s)
     eventRow(call('b4', 'Bash', { command: 'scripts/release.sh NOTES.md' }), from, to, s)
-    expect(Object.keys(s.pending)).toEqual(['b1', 'b2', 'b3', 'b4'])
+    // Only a push or a release waits for its answer.
+    expect(Object.keys(s.pending)).toEqual(['b1', 'b2', 'b4'])
     eventRow(result('b1', { permissionDecision: { decision: 'accept', source: 'user_temporary' } }), from, to, s)
     eventRow(result('b2', { toolUseResult: 'User rejected tool use' }, '/f'), from, to, s)
     eventRow(result('b3', { permissionDecision: { decision: 'accept', source: 'config', reasonType: 'classifier' } }), from, to, s)
@@ -256,6 +258,20 @@ describe('events in the transcripts', () => {
       ['ask', 'fail', 'yonder', 'scripts/release.sh NOTES.md refused'],
     ])
     expect(s.pending).toEqual({})
+  })
+
+  test('a result no prompt answered clears its call without being parsed', () => {
+    const s = state()
+    const seen = new Set<string>()
+    const models: Record<string, ModelDay> = {}
+    const scan = (row: object) => scanLine(JSON.stringify(row), from, to, seen, models, s)
+    scan(call('p1', 'Bash', { command: 'git push origin main' }))
+    scan(call('p2', 'Bash', { command: 'gh release create v1' }))
+    expect(Object.keys(s.pending)).toEqual(['p1', 'p2'])
+    scan(result('p1', { permissionDecision: { decision: 'accept', source: 'config', reasonType: 'rule' } }))
+    scan(result('p2', { permissionDecision: { decision: 'accept', source: 'user_temporary' } }))
+    expect(s.pending).toEqual({})
+    expect(s.events.map(e => e.text)).toEqual(['gh release create v1 allowed'])
   })
 
   test('outside the family folder or the day, nothing', () => {

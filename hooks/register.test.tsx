@@ -2,7 +2,7 @@ import type { RenderSurface } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
 import type { Snapshot } from '../types'
-import { agentTone, bar, checkMark, clockTime, eventText, modelColor, modelName, sourceColor, statusLine, tokens, toneColor, verdictTone } from './register'
+import { agentTone, bar, checkMark, clockTime, eventText, fit, modelColor, modelName, sourceColor, statusLine, tokens, toneColor, verdictTone } from './register'
 
 const SNAPSHOT: Snapshot = {
   at: 1_760_940_000_000,
@@ -98,6 +98,13 @@ describe('numbers', () => {
     expect(bar(0, 100, 3)).toEqual({ filled: '', empty: '░░░' })
     expect(bar(200, 100, 3)).toEqual({ filled: '███', empty: '' })
     expect(bar(5, 0, 2)).toEqual({ filled: '', empty: '░░' })
+  })
+
+  test('columns as asked when they fit, narrower in step when they do not', async () => {
+    expect(fit([2, 12, 11, 10], 68)).toEqual([2, 12, 11, 10])
+    expect(fit([2, 16, 11, 10], 28)).toEqual([1, 8, 5, 5])
+    expect(fit([6, 7, 12], 30, 12)).toEqual([4, 5, 8])
+    expect(fit([10, 15], 4)).toEqual([1, 1])
   })
 
   test('each model its colour, each status its own', async () => {

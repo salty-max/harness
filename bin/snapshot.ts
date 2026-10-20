@@ -301,7 +301,7 @@ export function readEventLog(path: string, from: number, max = MAX_EVENTS): Harn
     .slice(0, max)
 }
 
-/** A Bash call waiting for its result: a prompt the user answers is told by it. */
+/** A push or release waiting for its result: a prompt the user answers is told by it. */
 type PendingCall = { at: number; repo: string; command: string }
 
 /** What the transcript scan keeps between lines: the family folder, the helpers' models, calls and events. */
@@ -312,7 +312,7 @@ export type EventState = {
   events: HarnessEvent[]
 }
 
-// The part of a command a push or release prompt is about.
+// The part of a command a push or release prompt is about (the root's ask rules).
 const ASKED =
   /\bgit\b[^;&|]*?\spush\b[^;&|]*|[\w./-]*release\.sh\b[^;&|]*|\bgh\b[^;&|]*?\b(?:release|pr merge|workflow run)\b[^;&|]*|\bvercel\b[^;&|]*|\bstore\.ts\b[^;&|]*--apply[^;&|]*/
 
@@ -338,8 +338,8 @@ function addEvent(state: EventState, event: HarnessEvent) {
 /**
  * Finds the events in one transcript line of a family session: a helper
  * started (the Agent call) or finished (its result: model, tokens, time),
- * and a Bash call whose prompt the user answered (`permissionDecision` from
- * the user, or a rejection).
+ * and a push or release whose prompt the user answered (`permissionDecision`
+ * from the user, or a rejection; an interrupt reads as one too).
  */
 export function eventRow(row: Row, from: number, to: number, state: EventState) {
   const at = Date.parse(row.timestamp ?? '')
@@ -354,7 +354,7 @@ export function eventRow(row: Row, from: number, to: number, state: EventState) 
         const model = typeof input.model === 'string' ? input.model : state.models[type]
         const description = typeof input.description === 'string' ? `: ${input.description}` : ''
         addEvent(state, { id: `${block.id}:start`, at, source: 'helper', tone: 'info', repo: repoOf(state.root, cwd), text: `${type} started${description}`, ...(model ? { model } : {}) })
-      } else if (block.name === 'Bash' && typeof input.command === 'string') {
+      } else if (block.name === 'Bash' && typeof input.command === 'string' && ASKED.test(input.command)) {
         state.pending[block.id] = { at, repo: repoOf(state.root, cwd, input.command), command: askedPart(input.command) }
       }
     } else if (row.type === 'user' && block?.type === 'tool_result' && typeof block.tool_use_id === 'string') {
@@ -388,15 +388,24 @@ export function eventRow(row: Row, from: number, to: number, state: EventState) 
   }
 }
 
-// A line worth parsing for an event: an Agent or Bash call, or a result that is a helper's or a prompt's answer.
+// A line worth parsing for an event: an Agent or Bash call, or a result that is a helper's or a prompt's answer
+// (an Agent result names its agentType, a prompt's answer its user source or the rejection).
 const isEventLine = (line: string) =>
   /"name":"(?:Agent|Task|Bash)"/.test(line) ||
   (line.includes('"tool_use_id"') && (line.includes('"agentType"') || line.includes('"source":"user') || line.includes('User rejected tool use')))
 
-/** One transcript line into the day's sums and events, parsed once. */
+const RESULT_ID = /"tool_use_id":"([^"]+)"/g
+
+/**
+ * One transcript line into the day's sums and events, parsed once. A result
+ * no prompt answered (a rule let the push through) clears its call unparsed.
+ */
 export function scanLine(line: string, from: number, to: number, seen: Set<string>, models: Record<string, ModelDay>, state: EventState) {
   const isUsage = line.includes('"type":"assistant"') && line.includes('"usage"')
   const isEvent = isEventLine(line)
+  if (!isEvent && line.includes('"tool_result"')) {
+    for (const [, id] of line.matchAll(RESULT_ID)) if (id) delete state.pending[id]
+  }
   if (!isUsage && !isEvent) return
   let row: Row
   try {

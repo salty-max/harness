@@ -163,6 +163,18 @@ export function clockTime(at: number): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
+/**
+ * Fixed columns that leave the last one at least `min` cells of `room`:
+ * as asked when they fit, narrower in step when they don't, so rows stay
+ * aligned at any width.
+ */
+export function fit(widths: number[], room: number, min = 8): number[] {
+  const sum = widths.reduce((a, b) => a + b, 0)
+  const free = Math.max(widths.length, room - min)
+  if (sum <= free) return widths
+  return widths.map(w => Math.max(1, Math.floor((w * free) / sum)))
+}
+
 const WAITING = (c: BoardCard) => c.status.startsWith('waiting') || c.status === 'ready-to-push'
 
 /** The one status line: what claude-hud does not already say. */
@@ -399,20 +411,31 @@ export const register: Register = on => {
         <Box flexDirection="column" width={width} paddingX={1} borderStyle="round" borderColor={SECTION[key]}>
           {body}
         </Box>
-        <Box position="absolute" top={0} left={2}>
-          <Text backgroundColor={SECTION[key]} color="#ffffff" bold>
-            {` ${title} `}
-          </Text>
-          {note ? <Text color={SECTION[key]}>{` ${note} `}</Text> : null}
+        <Box position="absolute" top={0} left={2} width={width - 4}>
+          <Box flexShrink={0}>
+            <Text backgroundColor={SECTION[key]} color="#ffffff" bold>
+              {` ${title} `}
+            </Text>
+          </Box>
+          {note ? (
+            <Text color={SECTION[key]} wrap="truncate-end">
+              {` ${note} `}
+            </Text>
+          ) : null}
         </Box>
       </Box>
     )
+    // A column of a width `fit` gave it; its texts truncate, never wrap.
     const cell = (w: number, child: RenderChildren, isRight = false) => (
       <Box width={w} flexShrink={0} justifyContent={isRight ? 'flex-end' : 'flex-start'}>
         {child}
       </Box>
     )
-    const quiet = (text: string) => <Text dimColor>{text}</Text>
+    const quiet = (text: string) => (
+      <Text dimColor wrap="truncate-end">
+        {text}
+      </Text>
+    )
 
     // The session
     const contextBar = bar(facts?.contextTokens ?? 0, facts?.window ?? 0, Math.max(6, Math.min(24, inner - 26)))
@@ -447,7 +470,10 @@ export const register: Register = on => {
 
     // The subagents: model, status, tokens
     const running = rows.filter(a => a.status === 'running').length
-    const nameWidth = Math.min(16, Math.max(8, ...rows.map(a => a.type.length + 1)))
+    const [glyphW = 2, nameW = 8, agentModelW = 11, statusW = 10] = fit(
+      [2, Math.min(16, Math.max(8, ...rows.map(a => a.type.length + 1))), 11, 10],
+      inner,
+    )
     const agentsBody =
       rows.length === 0 ? (
         quiet('None running.')
@@ -456,15 +482,15 @@ export const register: Register = on => {
           {rows.map(a => (
             <Box key={`agent-${a.id}`} flexDirection="column">
               <Box>
-                {cell(2, <Text color={agentTone(a.status)}>{a.status === 'running' ? '●' : '○'}</Text>)}
+                {cell(glyphW, <Text wrap="truncate-end" color={agentTone(a.status)}>{a.status === 'running' ? '●' : '○'}</Text>)}
                 {cell(
-                  nameWidth,
+                  nameW,
                   <Text bold wrap="truncate-end">
                     {a.type}
                   </Text>,
                 )}
-                {cell(11, <Text color={modelColor(a.steps?.model)}>{a.steps ? modelName(a.steps.model) : '…'}</Text>)}
-                {cell(10, <Text color={agentTone(a.status)}>{a.status}</Text>)}
+                {cell(agentModelW, <Text wrap="truncate-end" color={modelColor(a.steps?.model)}>{a.steps ? modelName(a.steps.model) : '…'}</Text>)}
+                {cell(statusW, <Text wrap="truncate-end" color={agentTone(a.status)}>{a.status}</Text>)}
                 <Text wrap="truncate-end">
                   {a.steps ? (
                     <Text>
@@ -490,7 +516,7 @@ export const register: Register = on => {
     // The repositories: each one's check and review
     const repos = snap?.repos ?? []
     const fresh = repos.filter(r => r.check?.isFresh).length
-    const repoWidth = Math.min(20, Math.max(10, ...repos.map(r => r.name.length + 2)))
+    const [repoW = 10, markW = 15] = fit([Math.min(20, Math.max(10, ...repos.map(r => r.name.length + 2))), 15], inner)
     const reposBody =
       repos.length === 0 ? (
         quiet('Reading…')
@@ -502,18 +528,18 @@ export const register: Register = on => {
             return (
               <Box key={`repo-${r.name}`}>
                 {cell(
-                  repoWidth,
+                  repoW,
                   <Text bold wrap="truncate-end">
                     {r.name}
                   </Text>,
                 )}
                 {cell(
-                  15,
+                  markW,
                   <Text color={mark.tone} wrap="truncate-end">
                     {mark.text}
                   </Text>,
                 )}
-                <Box flexGrow={1}>
+                <Box flexGrow={1} flexShrink={1}>
                   {r.review ? (
                     <Text wrap="truncate-end">
                       <Text color={verdictTone(verdict)}>{verdict ?? 'packet'}</Text>
@@ -538,7 +564,7 @@ export const register: Register = on => {
     const dayTotal = models.reduce((sum, d) => sum + total(d), 0)
     const cacheRead = models.reduce((sum, d) => sum + d.cacheRead, 0)
     const top = models[0] ? total(models[0]) : 0
-    const usageBar = Math.max(6, Math.min(28, inner - 12 - 7 - 11))
+    const [modelW = 12, usageBar = 6, totalW = 7] = fit([12, Math.max(6, Math.min(28, inner - 12 - 7 - 11)), 7], inner)
     const todayBody =
       models.length === 0 ? (
         quiet('No calls today yet.')
@@ -549,16 +575,19 @@ export const register: Register = on => {
             return (
               <Box key={`model-${d.model}`}>
                 {cell(
-                  12,
+                  modelW,
                   <Text color={modelColor(d.model)} wrap="truncate-end">
                     {modelName(d.model)}
                   </Text>,
                 )}
-                <Text>
-                  <Text color={modelColor(d.model)}>{b.filled}</Text>
-                  <Text dimColor>{b.empty}</Text>
-                </Text>
-                {cell(7, <Text bold>{tokens(total(d))}</Text>, true)}
+                {cell(
+                  usageBar,
+                  <Text wrap="truncate-end">
+                    <Text color={modelColor(d.model)}>{b.filled}</Text>
+                    <Text dimColor>{b.empty}</Text>
+                  </Text>,
+                )}
+                {cell(totalW, <Text wrap="truncate-end" bold>{tokens(total(d))}</Text>, true)}
                 <Text dimColor wrap="truncate-end">
                   {' '}
                   {d.calls} calls
@@ -572,8 +601,7 @@ export const register: Register = on => {
     // The board
     const board = snap?.board ?? []
     const waiting = board.filter(WAITING).length
-    const statusWidth = Math.min(15, Math.max(5, ...board.map(c => c.status.length + 1)))
-    const ageWidth = 5
+    const [statusWidth = 5, ageWidth = 5] = fit([Math.min(15, Math.max(5, ...board.map(c => c.status.length + 1))), 5], inner)
     const boardBody =
       board.length === 0 ? (
         quiet('No cards. (board/*.md)')
@@ -584,14 +612,14 @@ export const register: Register = on => {
             return (
               <Box key={`card-${c.id}`} flexDirection="column">
                 <Box>
-                  {cell(statusWidth, <Text color={cardTone(c.status)}>{c.status || '?'}</Text>)}
+                  {cell(statusWidth, <Text wrap="truncate-end" color={cardTone(c.status)}>{c.status || '?'}</Text>)}
                   {cell(
-                    Math.max(8, inner - statusWidth - ageWidth),
+                    Math.max(1, inner - statusWidth - ageWidth),
                     <Text wrap="truncate-end">
                       <Text bold>{c.repo}</Text> {c.title}
                     </Text>,
                   )}
-                  {cell(ageWidth, <Text dimColor>{Number.isNaN(at) ? '?' : ago(at, now)}</Text>, true)}
+                  {cell(ageWidth, <Text wrap="truncate-end" dimColor>{Number.isNaN(at) ? '?' : ago(at, now)}</Text>, true)}
                 </Box>
                 {c.summary ? (
                   <Text dimColor wrap="truncate-end">
@@ -607,8 +635,11 @@ export const register: Register = on => {
 
     // The log: today's events, newest first
     const events = (snap?.events ?? []).slice(0, LOG_LINES)
-    const sourceWidth = Math.min(8, Math.max(5, ...events.map(ev => ev.source.length + 1)))
-    const logRepoWidth = Math.min(12, Math.max(1, ...events.map(ev => (ev.repo ? ev.repo.length + 1 : 0))))
+    const [timeW = 6, sourceWidth = 5, logRepoWidth = 1] = fit(
+      [6, Math.min(8, Math.max(5, ...events.map(ev => ev.source.length + 1))), Math.min(12, Math.max(1, ...events.map(ev => (ev.repo ? ev.repo.length + 1 : 0))))],
+      inner,
+      12,
+    )
     const logBody =
       events.length === 0 ? (
         quiet('Nothing yet today.')
@@ -616,8 +647,8 @@ export const register: Register = on => {
         <Box flexDirection="column">
           {events.map((ev, i) => (
             <Box key={`event-${i}-${ev.at}`}>
-              {cell(6, <Text dimColor>{clockTime(ev.at)}</Text>)}
-              {cell(sourceWidth, <Text color={sourceColor(ev)}>{ev.source}</Text>)}
+              {cell(timeW, <Text wrap="truncate-end" dimColor>{clockTime(ev.at)}</Text>)}
+              {cell(sourceWidth, <Text wrap="truncate-end" color={sourceColor(ev)}>{ev.source}</Text>)}
               {cell(
                 logRepoWidth,
                 <Text bold wrap="truncate-end">
