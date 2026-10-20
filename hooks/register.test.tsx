@@ -337,7 +337,7 @@ const card = (id: string, repo: string, status: string, extra: Partial<Snapshot[
   ...extra,
 })
 
-test('the board says who holds each repository: running and blocked cards hold, waiting ones are pending', async () => {
+test('the board says who holds each repository: running cards hold, blocked and waiting ones are pending', async () => {
   const board = [
     card('riddles', 'yonder', 'running'),
     card('trainers', 'wow-data', 'blocked', { repos: ['wow-data', 'mealbook', 'yonder'], waits: 'riddles' }),
@@ -347,8 +347,8 @@ test('the board says who holds each repository: running and blocked cards hold, 
   ]
   expect([...holds(board)].sort()).toEqual([
     ['lorekeepers-codex', 'pending'],
-    ['mealbook', 'held'],
-    ['wow-data', 'held'],
+    ['mealbook', 'pending'],
+    ['wow-data', 'pending'],
     ['yonder', 'held'],
   ])
   expect(where(board[1]!)).toBe('wow-data +2')
@@ -360,9 +360,11 @@ test("the pane's board shows a blocked card's blocker, free once it is done; the
   const snap: Snapshot = {
     ...SNAPSHOT,
     board: [
-      card('riddles', 'yonder', 'running', { title: 'Three Westfall riddles' }),
-      card('trainers', 'wow-data', 'blocked', { title: 'New-land trainers', repos: ['wow-data', 'yonder'], waits: 'riddles' }),
-      card('german', 'wow-data', 'blocked', { title: 'German pages', waits: 'gone' }),
+      card('riddles', 'wow-data', 'running', { title: 'Three Westfall riddles', repos: ['wow-data', 'yonder'] }),
+      card('trainers', 'mealbook', 'blocked', { title: 'New-land trainers', repos: ['mealbook', 'yonder'], waits: 'riddles' }),
+      card('german', 'lorekeepers-codex', 'blocked', { title: 'German pages', waits: 'gone' }),
+      card('tested', 'keyring', 'waiting-test', { title: 'Keyring fix' }),
+      card('after', 'keyring', 'blocked', { title: 'After the fix', waits: 'tested' }),
     ],
   }
   mock.env(on, { HOME: '/Users/someone' })
@@ -377,15 +379,17 @@ test("the pane's board shows a blocked card's blocker, free once it is done; the
       const at = `${surface} ${bodyColumns}`
       const has = async (text: string | RegExp) => expect([at, text, (await ui.find({ text })) !== undefined]).toEqual([at, text, true])
       await has('wow-data+yonder')
+      // The repository they share, not the holder's own.
       await has(' · on yonder')
-      await has(' · free now')
-      await has(' · 2 blocked')
-      // yonder and wow-data held (the fixture's repositories), the count in the header.
+      // Free once the holder is gone, or stopped (waiting on the user).
+      expect([at, (await ui.findAll({ type: 'Text', text: ' · free now' })).length]).toEqual([at, 2])
+      await has(' · 3 blocked')
+      // yonder and wow-data held by the running card (the fixture's repositories), the count in the header.
       await has('● 2 held · ')
       await ui.unmount()
     }
   }
-  expect(statusLine(snap, 0)).toContain('2 blocked')
+  expect(statusLine(snap, 0)).toContain('3 blocked')
 })
 
 test('a failing snapshot says why in the pane', async ($, on) => {

@@ -57,9 +57,9 @@ holds the gates, the part of the harness that runs in code.
   first line, the `verdict:` prefix dropped; green when clean, amber with
   findings), else the newest packet in `.cache/review/`. A dot before a
   name says who holds it (`addon-kit/board.ts`'s lock): `●` cyan while a
-  running or blocked card names it (a session is at work there), `○`
-  amber while only cards waiting on the user do (their commits go out
-  with its next push); the header counts the held ones.
+  running card names it (a session is at work there), `○` amber while
+  only cards stopped mid-task do (blocked, or waiting on the user: their
+  commits go out with its next push); the header counts the held ones.
 - **Today**: tokens by model from every transcript under
   `~/.claude/projects/**/*.jsonl` (each assistant message once, by its id,
   local day), with the share of cache reads.
@@ -68,9 +68,10 @@ holds the gates, the part of the harness that runs in code.
   ready-to-push cards first, then blocked ones, then running, done cards
   only from today. Each card's repositories (`wow-data+yonder`), its status
   in its colour (waiting on you amber, running cyan, blocked red, done
-  green); a blocked card says the card it waits on, or "free now" once
-  that one is done. The header counts what waits on you, what runs and
-  what is blocked.
+  green); a blocked card says the repository it waits for (the one it
+  shares with its holder, whose card is on the board too), or "free now"
+  once the holder stops running. The header counts what waits on you,
+  what runs and what is blocked.
 - **Session log**: today's last 10 events, newest first: the time, the
   source in its colour (a helper as `opus:reviewer`), the repository and
   what happened, a figure on the right in its status's colour (stamped,

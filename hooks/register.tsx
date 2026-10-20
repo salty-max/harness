@@ -156,8 +156,9 @@ export function cardColor(status: string): string {
   return PALETTE.plain
 }
 
-/** A card holds its repositories while a session is in the middle of it. */
-export const HOLDS = (c: BoardCard) => c.status === 'running' || c.status === 'blocked'
+/** A running card holds its repositories (board.ts's lock); a stopped one, blocked or waiting on the user, only has unpushed work there. */
+export const HOLDS = (c: BoardCard) => c.status === 'running'
+const STOPPED = (c: BoardCard) => WAITING(c) || c.status === 'blocked'
 const reposOf = (c: BoardCard) => c.repos ?? [c.repo]
 
 /** The repositories as the board's row says them: `yonder`, `wow-data+yonder`, past two `wow-data +2` (the Repositories box has the rest). */
@@ -167,14 +168,15 @@ export function where(c: BoardCard): string {
 }
 
 /**
- * Each repository's mark in the Repositories box: `held` while a running or
- * blocked card names it (a session is at work there), `pending` while only
- * cards waiting on the user do (their commits go out with its next push).
+ * Each repository's mark in the Repositories box: `held` while a running
+ * card names it (a session is at work there), `pending` while only cards
+ * stopped mid-task do (blocked, or waiting on the user: their commits go
+ * out with its next push).
  */
 export function holds(board: BoardCard[]): Map<string, 'held' | 'pending'> {
   const out = new Map<string, 'held' | 'pending'>()
   for (const c of board) {
-    const kind = HOLDS(c) ? 'held' : WAITING(c) ? 'pending' : null
+    const kind = HOLDS(c) ? 'held' : STOPPED(c) ? 'pending' : null
     if (!kind) continue
     for (const r of reposOf(c)) if (kind === 'held' || !out.has(r)) out.set(r, kind)
   }
@@ -1383,11 +1385,13 @@ export const register: Register = on => {
       const [statusW = 5, ageW = 4] = fit([Math.min(15, Math.max(5, ...board.map(c => c.status.length + 1))), 4], inner)
       const busy = board.filter(c => c.status === 'running').length
       const blocked = board.filter(c => c.status === 'blocked').length
-      // A blocked card's holder, by its repository (its card is on the board too), before the title so it is never cut;
-      // "free now" once it is done or gone.
+      // A blocked card's holder, by the repository they share (its card is on the board too), before the title so it
+      // is never cut; "free now" once the holder stops running (board.ts's lock: only a running card holds).
       const blocker = (c: BoardCard): Run => {
         const holder = board.find(b => b.id === c.waits)
-        return holder && holder.status !== 'done' ? [` · on ${holder.repo}`, { color: PALETTE.fail, fixed: true }] : [' · free now', { color: PALETTE.ok, fixed: true }]
+        if (!holder || !HOLDS(holder)) return [' · free now', { color: PALETTE.ok, fixed: true }]
+        const shared = reposOf(holder).filter(r => reposOf(c).includes(r))
+        return [` · on ${shared.join('+') || holder.repo}`, { color: PALETTE.fail, fixed: true }]
       }
       return frame(
         'board',
