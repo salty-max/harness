@@ -5,7 +5,7 @@ import type { HarnessEvent, Snapshot } from '../types'
 import { FRESH_MS, tokens } from './format'
 import { FRAME_MS, lit } from './motion'
 import { pulsePath } from './register'
-import { barSvg, lineSvg } from './vector'
+import { barSvg, edgeSvg, lap, lineSvg } from './vector'
 
 const AT = 1_760_940_000_000
 const FAMILY = '/Users/someone/code/wow-addons'
@@ -27,12 +27,12 @@ const PANE = {
 } as const
 
 /** The engine beneath the mod: a family session on the desktop, the pane shown unless told otherwise. */
-function world(on: On, opts: { snapshot?: () => Snapshot; isShown?: boolean; events?: () => number } = {}) {
+function world(on: On, opts: { snapshot?: () => Snapshot; isShown?: boolean; events?: () => number; surface?: 'desktop' | 'terminal' } = {}) {
   const runs: string[][] = []
   mock.env(on, { HOME: '/Users/someone' })
   const clock = mock.clock(on, { now: AT })
   on('session.root', () => ({ value: FAMILY }))
-  on('session.surfaces', () => ({ value: ['desktop'] }))
+  on('session.surfaces', () => ({ value: [opts.surface ?? 'desktop'] }))
   on('process.run', ($, e) => {
     runs.push([...e.argv])
     return { value: { exitCode: 0, stdout: JSON.stringify((opts.snapshot ?? snap)()), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
@@ -232,5 +232,75 @@ test("the desktop's layout traps: a centred box's lines on a full-width layer, r
   // Every text is cut, never wrapped.
   expect(find(tree, n => n.type === 'Text' && n.props?.wrap !== 'truncate-end' && n.props?.wrap !== 'wrap')).toBeUndefined()
   expect(find(tree, n => n.props?.key === 'card-title' || n.props?.key === 'title')?.props?.minWidth).toBe(0)
+  await ui.unmount()
+})
+
+describe('a running box', () => {
+  test("a lap runs top, right, bottom, left, each side its share of the box's size", async () => {
+    const l = lap({ cells: 50, lines: 4, color: '#fff', nowMs: 0 })
+    expect(l.top[0]).toBe(0)
+    expect(Math.abs(l.left[1] - 1) < 1e-9).toBe(true)
+    expect(l.right[0]).toBe(l.top[1])
+    // A wide box: its top takes most of the lap.
+    expect(l.top[1] - l.top[0]).toBeGreaterThan(l.right[1] - l.right[0])
+    const top = edgeSvg('top', { cells: 50, lines: 4, color: '#b4b0e8', nowMs: 2500 })
+    expect(top).toContain('<path d="M1 8A7 7 0 0 1 8 1')
+    expect(top).toContain(`begin="-${2500 % l.ms}ms"`)
+    expect(top).toContain('attributeName="stroke-opacity"')
+    // A side's comet is no longer than half the side.
+    const side = edgeSvg('left', { cells: 50, lines: 2, color: '#b4b0e8', nowMs: 0 })
+    expect(side).toContain('height="45"')
+  })
+})
+
+test('on the desktop a box at work has four vector edges, at rest its own border', async ($, on) => {
+  world(on)
+  await $.session.start({ cwd: FAMILY, surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'refresh' })
+  type Node = { type?: string; props?: Record<string, unknown>; children?: unknown[] }
+  const boxOf = async (key: string): Promise<Node | undefined> => {
+    const find = (n: unknown): Node | undefined => {
+      if (!n || typeof n !== 'object') return undefined
+      if (Array.isArray(n)) return n.map(find).find(Boolean)
+      return (n as Node).props?.key === key ? (n as Node) : find((n as Node).children)
+    }
+    return find(await ui.drawn())
+  }
+  expect((await boxOf('session'))?.props?.borderStyle).toBe('dashed')
+  await $.turn.start({ text: 'hi', turnId: 't1' })
+  const working = await boxOf('session')
+  expect(working?.props?.borderStyle).toBeUndefined()
+  expect((working?.children?.[0] as Node | undefined)?.type).toBe('Svg')
+  await $.turn.complete({ answer: 'ok', durationMs: 5, isAborted: false, turnId: 't1', reason: 'answer' })
+  expect((await boxOf('session'))?.props?.borderStyle).toBe('dashed')
+  await ui.unmount()
+})
+
+test("in the terminal a box at work pulses its border with the beat", async ($, on) => {
+  const { clock } = world(on, { surface: 'terminal' })
+  await $.session.start({ cwd: FAMILY, surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'refresh' })
+  const dimOf = async () => {
+    const find = (n: unknown): unknown => {
+      if (!n || typeof n !== 'object') return undefined
+      if (Array.isArray(n)) return n.map(find).find(v => v !== undefined)
+      const node = n as { props?: Record<string, unknown>; children?: unknown[] }
+      return node.props?.key === 'session' ? (node.props.borderDimColor ?? 'unset') : find(node.children)
+    }
+    return find(await ui.drawn())
+  }
+  expect(await dimOf()).toBe('unset')
+  await $.turn.start({ text: 'hi', turnId: 't1' })
+  const seen = new Set<unknown>()
+  for (let i = 0; i < 4; i++) {
+    await clock.advance(450)
+    seen.add(await dimOf())
+  }
+  // Bright and dim in turn while the turn runs.
+  expect([...seen].sort()).toEqual([false, true])
+  await $.turn.complete({ answer: 'ok', durationMs: 5, isAborted: false, turnId: 't1', reason: 'answer' })
+  expect(await dimOf()).toBe('unset')
   await ui.unmount()
 })

@@ -4,7 +4,7 @@ import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 import type { AgentRow, AgentSteps, BoardCard, CheckStamp, HarnessEvent, ModelDay, RepoRow, SessionFacts, Snapshot } from '../types'
 import { ago, bar, FRESH_MS, tokens } from './format'
 import type { MotionProps } from './motion'
-import { BAR_PX, barSvg, LINE_PX, lineSvg } from './vector'
+import { BAR_PX, barSvg, EDGE_PX, edgeSvg, LINE_PX, lineSvg, SIDE_PX } from './vector'
 
 export { ago, bar, tokens }
 
@@ -30,6 +30,8 @@ const agents = atom({ plugin: 'harness-view', key: 'agents' } as const, [])
 const steps = atom({ plugin: 'harness-view', key: 'steps' } as const, {})
 // Bumped every half minute while the pane is shown: the ages (12m, 3h) drawn again.
 const tick = atom({ plugin: 'harness-view', key: 'tick' } as const, 0)
+// The terminal's beat: a running box's border pulses with it (the desktop's laps a comet, no redraw).
+const beat = atom({ plugin: 'harness-view', key: 'beat' } as const, 0)
 // The main session's turn: the diagram's lines pulse while it runs.
 const turn = atom({ plugin: 'harness-view', key: 'turn' } as const, { isRunning: false, at: null })
 
@@ -294,6 +296,9 @@ let watched = ''
 // Each vector bar's last value, so its next drawing slides from it.
 const barsShown = new Map<string, number>()
 let timers: { cancel: () => void }[] = []
+// Ticks the terminal's beat while something runs and a terminal draws the pane.
+let beater: { cancel: () => void } | null = null
+const BEAT_MS = 450
 const written = new Map<string, string>()
 
 /** Whether `value` differs from what was last written under `key`, so the panel redraws only when a number moved. */
@@ -399,6 +404,18 @@ async function watch($: EngineInterface) {
 async function setTurn($: EngineInterface, isRunning: boolean) {
   const at = isRunning ? await $.clock.now() : null
   if (isChanged('turn', isRunning)) await update($, turn, () => ({ isRunning, at }))
+  await refreshBeat($)
+}
+
+/** The terminal's beat runs while the turn or a helper does, and a terminal draws the pane. */
+async function refreshBeat($: EngineInterface) {
+  const [work, rows, surfaces] = await Promise.all([read($, turn), read($, agents), $.session.surfaces()])
+  const isWanted = isActive && (work.isRunning || rows.some(a => a.status === 'running')) && surfaces.includes('terminal')
+  if (isWanted && !beater) beater = $.clock.every(BEAT_MS, () => void update($, beat, n => n + 1).catch(() => {}))
+  if (!isWanted && beater) {
+    beater.cancel()
+    beater = null
+  }
 }
 
 async function refreshSession($: EngineInterface, lastModel?: string, lastEffort?: string) {
@@ -441,6 +458,7 @@ async function refreshAgents($: EngineInterface) {
     steps: counted[a.id] ?? null,
   }))
   if (isChanged('agents', rows)) await update($, agents, () => rows)
+  await refreshBeat($)
   await refreshStatus($)
 }
 
@@ -463,6 +481,8 @@ async function gate($: EngineInterface, isStart = false): Promise<boolean> {
   isActive = isFamily
   for (const timer of timers) timer.cancel()
   timers = []
+  beater?.cancel()
+  beater = null
   if (!isActive) {
     if (written.delete('status')) $.ui.status(undefined)
     return false
@@ -586,6 +606,8 @@ export const register: Register = on => {
     // The desktop draws an Svg: the bars and the diagram's lines are vector there. Its renderer
     // is the one read (README, "The desktop's paint"): the editor's and the phone's are not, they keep characters.
     const Svg = e.surface === 'desktop' && 'Svg' in table ? table.Svg : undefined
+    // The terminal's border beat: read there alone, so the desktop doesn't redraw with it.
+    const isDim = e.surface === 'terminal' ? (await read($, beat)) % 2 === 1 : false
     // A row between stacked boxes: the desktop's vertical unit is half a line.
     const gapY = e.surface === 'desktop' ? 2 : GAP_Y
     const [snap, error, facts, rows, work] = await Promise.all([read($, snapshot), read($, snapshotError), read($, session), read($, agents), read($, turn), read($, tick)])
@@ -675,20 +697,43 @@ export const register: Register = on => {
     // --- the parts ---------------------------------------------------------
     // A box of the diagram: its border in its colour (dashed for the main
     // session's, as in the mock-up), a column of padding each side.
-    const frame = (key: string, w: number, color: string, children: RenderChildren, opts: { dashed?: boolean; middle?: boolean } = {}) => (
-      <Box
-        key={key}
-        flexDirection="column"
-        width={w}
-        flexShrink={0}
-        paddingX={1}
-        justifyContent={opts.middle ? 'center' : 'flex-start'}
-        borderStyle={opts.dashed ? 'dashed' : 'single'}
-        borderColor={color}
-      >
-        {children}
-      </Box>
-    )
+    // A box at work (`running`, its height in lines about): on the desktop its
+    // border is four vector edges a comet laps, in the terminal it pulses with
+    // the beat. At rest, the page's or the terminal's own border.
+    const frame = (key: string, w: number, color: string, children: RenderChildren, opts: { dashed?: boolean; middle?: boolean; running?: { lines: number } } = {}) => {
+      if (opts.running && Svg) {
+        const edge = { cells: w, lines: opts.running.lines, color, nowMs: now }
+        return (
+          <Box key={key} flexDirection="column" width={w} flexShrink={0}>
+            <Svg source={edgeSvg('top', edge)} alt="a box at work, its top edge" height={EDGE_PX} />
+            {/* Stretched, not centred: the sides take the row's height (a row with no alignItems centres an image). */}
+            <Box alignItems="stretch" flexGrow={1}>
+              <Svg source={edgeSvg('left', edge)} alt="its left edge" width={SIDE_PX} />
+              <Box flexDirection="column" flexGrow={1} minWidth={0} paddingX={1} justifyContent={opts.middle ? 'center' : 'flex-start'}>
+                {children}
+              </Box>
+              <Svg source={edgeSvg('right', edge)} alt="its right edge" width={SIDE_PX} />
+            </Box>
+            <Svg source={edgeSvg('bottom', edge)} alt="its bottom edge" height={EDGE_PX} />
+          </Box>
+        )
+      }
+      return (
+        <Box
+          key={key}
+          flexDirection="column"
+          width={w}
+          flexShrink={0}
+          paddingX={1}
+          justifyContent={opts.middle ? 'center' : 'flex-start'}
+          borderStyle={opts.dashed ? 'dashed' : 'single'}
+          borderColor={color}
+          borderDimColor={opts.running ? isDim : undefined}
+        >
+          {children}
+        </Box>
+      )
+    }
     // A centred box's lines, on a layer as wide as the box: the desktop sizes a
     // centred column to its widest line, uncut. Not a fragment: the engine
     // makes one a column Box of its own, which the centring would size so.
@@ -855,6 +900,7 @@ export const register: Register = on => {
             {pair('ctx', 'context', facts ? `${tokens(facts.contextTokens)} · ${Math.round(facts.percent ?? 0)}%` : '…', PALETTE.ok)}
           </Box>
         </>,
+        { running: runningOpus ? { lines: isTall ? 32 : 9 } : undefined },
       )
     }
 
@@ -892,7 +938,7 @@ export const register: Register = on => {
               ? spinning('session-state', '[ working ', true, builderColor, { color: builderColor })
               : line(`[ ${helperRuns} helper runs today · ${tokens(helperTokens)} tok ]`, { dim: true })}
         </Box>,
-        { dashed: true, middle: true },
+        { dashed: true, middle: true, running: work.isRunning ? { lines: 4 } : undefined },
       )
     }
 
@@ -989,7 +1035,7 @@ export const register: Register = on => {
                 {frame(
                   `helper-${p.name}`,
                   bw,
-                  p.agent ? PALETTE.opus : color,
+                  color,
                   <Box flexDirection="column" alignItems="center" width="100%">
                     {line(p.name, { bold: true })}
                     {p.agent ? spinning(`helper-${p.name}-state`, `${model} [ running `, true, color, { color }) : line(`${model} [ IDLE ]`, { color })}
@@ -1005,6 +1051,7 @@ export const register: Register = on => {
                       { color },
                     )}
                   </Box>,
+                  { running: p.agent ? { lines: 5 } : undefined },
                 )}
               </Box>
             )

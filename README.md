@@ -93,6 +93,15 @@ pane itself redraws only when a number moved. It moves when work does:
   line's heavy strokes in the terminal); the planner's arrow while an Opus
   helper does. On the desktop each line's pulse starts at the wall clock's
   phase of its cycle, so a redraw doesn't make it jump;
+- a box at work wears a running border: the main session's while its turn
+  runs, a helper's while it runs, the planner's while an Opus helper does.
+  On the desktop its CSS border gives way to four vector edges (rounded
+  strips top and bottom cut to the box's width, sides the row stretches to
+  its height) that breathe brighter and fainter while a comet laps them,
+  top, right, bottom, left, on the wall clock's phase; in the terminal the
+  border pulses bright and dim on a beat (every 450 ms, ticked only while
+  something runs and a terminal draws the pane, read by the terminal's
+  drawing alone so the desktop doesn't redraw with it);
 - the spinners (braille) turn while what they stand for works: the gates
   and the session in a turn, a helper while it runs, the planner while an
   Opus helper runs;

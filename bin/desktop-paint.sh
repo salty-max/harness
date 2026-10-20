@@ -39,6 +39,10 @@ test('desktop paint dump', async ($, on) => {
   on('ui.panes', () => ({ value: [{ id: 'harness', title: 'Harness', isShown: true, isFocused: false, isPlaced: true }] }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('agent.list', () => ({ value: [{ id: 'a1', type: 'data-scout', description: 'A question about the data', status: 'running' }] }))
+  // The session's own facts, so the boxes take the model's colour.
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('session.usage', () => ({ value: { context: { tokens: 403_000, window: 1_000_000, percent: 40 }, cost: { usd: 14.72 }, rateLimits: [{ kind: 'five_hour', percentUsed: 28 }] } }))
+  on('settings.read', () => ({ value: { model: 'opus', effortLevel: 'xhigh' } }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   await $.session.start({ cwd: '/Users/someone/code/wow-addons', surface: 'desktop', isInteractive: true })
