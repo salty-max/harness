@@ -141,8 +141,9 @@ export function readRepo(dir: string, kit?: StampKit): RepoRow | null {
     review = { sha, at: packet.at, verdict: null, isCurrent: head.startsWith(sha) || sha.startsWith(head) }
   }
 
-  // What a push would send: the commits its upstream doesn't have yet (none known without one).
-  const ahead = git(dir, ['rev-list', '--count', '@{u}..HEAD'])
+  // What a push would send: the commits its upstream doesn't have yet; a branch
+  // with none yet (never pushed, or detached), those no remote has; no remote, none.
+  const ahead = git(dir, ['rev-list', '--count', '@{u}..HEAD']) ?? (git(dir, ['remote']) ? git(dir, ['rev-list', '--count', 'HEAD', '--not', '--remotes']) : null)
 
   return { name: basename(dir), head: head.slice(0, 7), check, failed: failedCheck(dir, check?.at ?? 0), review, ahead: ahead === null ? null : Number(ahead) }
 }

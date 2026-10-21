@@ -480,9 +480,18 @@ describe('repositories', () => {
     const remote = join(temp(), 'remote.git')
     git(temp(), 'init', '-q', '--bare', remote)
     git(dir, 'remote', 'add', 'origin', remote)
+    // A branch never pushed: all it holds waits, though it has no upstream yet.
+    expect(readRepo(dir)?.ahead).toBe(1)
     const branch = git(dir, 'rev-parse', '--abbrev-ref', 'HEAD')
     git(dir, 'push', '-q', '-u', 'origin', branch)
     expect(readRepo(dir)?.ahead).toBe(0)
+    // A new branch off it, with a commit: that commit, which no remote has.
+    git(dir, 'checkout', '-q', '-b', 'side')
+    writeFileSync(join(dir, 's.txt'), 's\n')
+    git(dir, 'add', '.')
+    git(dir, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 's')
+    expect(readRepo(dir)?.ahead).toBe(1)
+    git(dir, 'checkout', '-q', branch)
     writeFileSync(join(dir, 'b.txt'), 'b\n')
     git(dir, 'add', '.')
     git(dir, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'b')

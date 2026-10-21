@@ -38,7 +38,7 @@ holds the gates, the part of the harness that runs in code.
   and when it resets), the ask rules, the subagent model
   (`CLAUDE_CODE_SUBAGENT_MODEL`, else per helper).
 - **Gates**: what waits to be pushed (the repositories with commits their
-  upstream lacks, `to push 6`): how many of them are stamped (`fresh`,
+  upstream lacks, or no remote has on a branch never pushed, `to push 6`): how many of them are stamped (`fresh`,
   pre-push lets them through) and reviewed (`current`, a verdict on HEAD),
   amber while one isn't, `nothing to push` and `—` when none waits (the
   repositories' box has them all); cards waiting. At work only while a
@@ -248,8 +248,9 @@ at the turn's start and end.
 Most of a read's time is the repositories (git, the stamps: 0.85 s for
 eleven). Their rows are kept in `~/.cache/harness-view/repos.json` and read
 again only when one moved (HEAD, its log, the index, the upstream's log
-on a push or a fetch, `.git/harness`, q's log, a packet) or after 20 seconds, for edits in a working tree: a read
-with nothing moved takes 0.04 s. Transcripts are read incrementally:
+on a push or a fetch, `.git/harness`, q's log, a packet) or after 20
+seconds, for edits in a working tree: a read with nothing moved takes
+0.04 s. Transcripts are read incrementally:
 offsets, seen ids, the Bash calls waiting for an answer and the day's
 events in `~/.cache/harness-view/usage-<day>.json` (a cache of an older
 version is read again whole).
