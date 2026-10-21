@@ -518,8 +518,8 @@ describe('repositories', () => {
     git(dir, 'push', '-q', '-u', 'origin', git(dir, 'rev-parse', '--abbrev-ref', 'HEAD'))
     const one = commit('one')
     const head = commit('two')
-    const verdict = (sha: string, base?: string) =>
-      writeFileSync(join(dir, '.git', 'harness', `review-${sha}`), `verdict: clean\nhead: ${sha}\n${base ? `base: ${base}\ntip: ${sha}\n` : ''}`)
+    const verdict = (sha: string, base?: string, tip = sha) =>
+      writeFileSync(join(dir, '.git', 'harness', `review-${sha}`), `verdict: clean\nhead: ${sha}\n${base ? `base: ${base}\ntip: ${tip}\n` : ''}`)
     // Its reviewer read from the upstream on: both commits a push sends.
     verdict(head, pushed)
     expect(readRepo(dir)?.review).toMatchObject({ isCurrent: true, base: pushed, covers: true })
@@ -532,6 +532,14 @@ describe('repositories', () => {
     // The whole history read (a packet from the first commit): all of it.
     verdict(head, '4b825dc642cb6eb9a060e54bf8d69288fbee4904')
     expect(readRepo(dir)?.review?.covers).toBe(true)
+    // A packet of an earlier push (its tip already there): it read none of what this one sends.
+    verdict(head, pushed, pushed)
+    expect(readRepo(dir)?.review?.covers).toBe(false)
+    // A tip or a base this clone doesn't know: nothing.
+    verdict(head, pushed, 'f'.repeat(40))
+    expect(readRepo(dir)?.review?.covers).toBe(false)
+    verdict(head, 'f'.repeat(40))
+    expect(readRepo(dir)?.review?.covers).toBe(false)
     // A newer verdict file for another commit (a reset since) doesn't hide HEAD's own.
     verdict(head, pushed)
     const other = join(dir, '.git', 'harness', `review-${one}`)

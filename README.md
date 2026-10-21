@@ -41,7 +41,8 @@ holds the gates, the part of the harness that runs in code.
   upstream lacks, or no remote has on a branch never pushed, `to push 6`): how many of them are stamped (`fresh`,
   pre-push lets them through) and reviewed (`current`, a verdict on HEAD
   whose reviewer read all the push sends: its packet's base already on the
-  upstream, the commits after the packet's tip its findings' fixes),
+  upstream and its tip not yet, the commits after the tip its findings'
+  fixes),
   amber while one isn't, `nothing to push` and `—` when none waits (the
   repositories' box has them all); cards waiting. At work only while a
   q.ts run goes on, in any session, the run named where the stamp's note
@@ -70,8 +71,8 @@ holds the gates, the part of the harness that runs in code.
   findings), else the newest packet in `.cache/review/`. Said before it,
   why it doesn't count: `older` (on another commit), and where something
   waits to be pushed, `partial` (its packet's range starts after the
-  upstream: the push sends commits its reviewer didn't read) or `no packet`
-  (no range recorded with it). A dot before a
+  upstream, or ended with an earlier push: the push sends commits its
+  reviewer didn't read) or `no packet` (no range recorded with it). A dot before a
   name says who holds it (`addon-kit/board.ts`'s lock): `●` cyan while a
   running card names it (a session is at work there), `○` amber while
   only cards stopped mid-task do (blocked, or waiting on the user: their

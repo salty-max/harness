@@ -80,9 +80,11 @@ export function failedCheck(dir: string, after: number): RepoRow['failed'] {
 // The tree of no files: a packet's base when its range starts at the first commit.
 const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
 
-/** The base of the range the reviewer read, as review.ts recorded it (none before it did). */
-function reviewBase(path: string): string | null {
-  return /^base:\s*([0-9a-f]{40})\s*$/m.exec(readFileSync(path, 'utf8'))?.[1] ?? null
+/** The range the reviewer read, as review.ts recorded it (none before it did). */
+function reviewRange(path: string): { base: string; tip: string | null } | null {
+  const text = readFileSync(path, 'utf8')
+  const base = /^base:\s*([0-9a-f]{40})\s*$/m.exec(text)?.[1]
+  return base ? { base, tip: /^tip:\s*([0-9a-f]{40})\s*$/m.exec(text)?.[1] ?? null } : null
 }
 
 function firstLine(path: string): string | null {
@@ -146,10 +148,15 @@ export function readRepo(dir: string, kit?: StampKit): RepoRow | null {
   if (verdict) {
     const sha = verdict.name.slice('review-'.length)
     const isCurrent = head.startsWith(sha) || sha.startsWith(head)
-    const base = isCurrent ? reviewBase(join(harness, verdict.name)) : null
-    // It reached all a push sends when its packet's base is already there (the commits after its tip: its findings' fixes).
-    const covers = base !== null && sent !== null && (base === EMPTY_TREE || git(dir, ['rev-list', '--count', base, '--not', ...sent]) === '0')
-    review = { sha, at: verdict.at, verdict: firstLine(join(harness, verdict.name)), isCurrent, base, covers }
+    const read = isCurrent ? reviewRange(join(harness, verdict.name)) : null
+    // It reached all a push sends when its packet's base is already there and
+    // its tip isn't (the commits after the tip: its findings' fixes; a packet
+    // of an earlier push read none of this one).
+    // (a commit this clone doesn't know counts for nothing: no count)
+    const unsent = (sha: string) => (sent ? git(dir, ['rev-list', '--count', sha, '--not', ...sent]) : null)
+    const tipUnsent = read?.tip ? unsent(read.tip) : null
+    const covers = read !== null && (read.base === EMPTY_TREE || unsent(read.base) === '0') && tipUnsent !== null && tipUnsent !== '0'
+    review = { sha, at: verdict.at, verdict: firstLine(join(harness, verdict.name)), isCurrent, base: read?.base ?? null, covers }
   } else if (packet) {
     const sha = packet.name.replace(/\.md$/, '')
     review = { sha, at: packet.at, verdict: null, isCurrent: head.startsWith(sha) || sha.startsWith(head) }
