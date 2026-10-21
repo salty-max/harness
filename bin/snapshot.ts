@@ -77,6 +77,14 @@ export function failedCheck(dir: string, after: number): RepoRow['failed'] {
   return exit === 0 ? null : { at, exit }
 }
 
+// The tree of no files: a packet's base when its range starts at the first commit.
+const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
+
+/** The base of the range the reviewer read, as review.ts recorded it (none before it did). */
+function reviewBase(path: string): string | null {
+  return /^base:\s*([0-9a-f]{40})\s*$/m.exec(readFileSync(path, 'utf8'))?.[1] ?? null
+}
+
 function firstLine(path: string): string | null {
   const line = readFileSync(path, 'utf8')
     .split('\n')
@@ -124,26 +132,28 @@ export function readRepo(dir: string, kit?: StampKit): RepoRow | null {
     }
   }
 
-  // A verdict recorded beside the stamps wins; a packet alone says one was asked.
-  const verdict = newest(harness, 'review-')
+  // What a push would send: the commits its upstream doesn't have yet; a branch
+  // with none yet (never pushed, or detached), those no remote has; no remote, none.
+  const upstreamAhead = git(dir, ['rev-list', '--count', '@{u}..HEAD'])
+  const sent = upstreamAhead !== null ? ['@{u}'] : git(dir, ['remote']) ? ['--remotes'] : null
+  const ahead = upstreamAhead ?? (sent ? git(dir, ['rev-list', '--count', 'HEAD', '--not', ...sent]) : null)
+
+  // HEAD's own verdict, else the newest (an older one); a packet alone says one was asked.
+  const own = `review-${head}`
+  const verdict = existsSync(join(harness, own)) ? { name: own, at: statSync(join(harness, own)).mtimeMs } : newest(harness, 'review-')
   const packet = newest(join(dir, '.cache', 'review'), '')
   let review: RepoRow['review'] = null
   if (verdict) {
     const sha = verdict.name.slice('review-'.length)
-    review = {
-      sha,
-      at: verdict.at,
-      verdict: firstLine(join(harness, verdict.name)),
-      isCurrent: head.startsWith(sha) || sha.startsWith(head),
-    }
+    const isCurrent = head.startsWith(sha) || sha.startsWith(head)
+    const base = isCurrent ? reviewBase(join(harness, verdict.name)) : null
+    // It reached all a push sends when its packet's base is already there (the commits after its tip: its findings' fixes).
+    const covers = base !== null && sent !== null && (base === EMPTY_TREE || git(dir, ['rev-list', '--count', base, '--not', ...sent]) === '0')
+    review = { sha, at: verdict.at, verdict: firstLine(join(harness, verdict.name)), isCurrent, base, covers }
   } else if (packet) {
     const sha = packet.name.replace(/\.md$/, '')
     review = { sha, at: packet.at, verdict: null, isCurrent: head.startsWith(sha) || sha.startsWith(head) }
   }
-
-  // What a push would send: the commits its upstream doesn't have yet; a branch
-  // with none yet (never pushed, or detached), those no remote has; no remote, none.
-  const ahead = git(dir, ['rev-list', '--count', '@{u}..HEAD']) ?? (git(dir, ['remote']) ? git(dir, ['rev-list', '--count', 'HEAD', '--not', '--remotes']) : null)
 
   return { name: basename(dir), head: head.slice(0, 7), check, failed: failedCheck(dir, check?.at ?? 0), review, ahead: ahead === null ? null : Number(ahead) }
 }

@@ -37,7 +37,7 @@ const SNAPSHOT: Snapshot = {
       head: '6b545ad',
       check: null,
       failed: { at: 1_760_939_500_000, exit: 1 },
-      review: { sha: '6b545ad', at: 1_760_930_000_000, verdict: 'no findings', isCurrent: true },
+      review: { sha: '6b545ad', at: 1_760_930_000_000, verdict: 'no findings', isCurrent: true, base: 'a'.repeat(40), covers: true },
       ahead: 1,
     },
   ],
@@ -481,12 +481,12 @@ test("the sessions: each live one's status, model, card and an Open that hands t
 })
 
 test('the gates count what waits to be pushed alone: stamped, reviewed, both', async () => {
-  const row = (name: string, ahead: number | null | undefined, isFresh: boolean, isCurrent: boolean | null) => ({
+  const row = (name: string, ahead: number | null | undefined, isFresh: boolean, isCurrent: boolean | null, covers = true) => ({
     name,
     head: 'f4ab31a',
     check: { tree: 't', at: 0, isFresh, isWorkFresh: isFresh },
     failed: null,
-    review: isCurrent === null ? null : { sha: 'f4ab31a', at: 0, verdict: 'no findings', isCurrent },
+    review: isCurrent === null ? null : { sha: 'f4ab31a', at: 0, verdict: 'no findings', isCurrent, base: 'a'.repeat(40), covers },
     ahead,
   })
   const push = toPush([
@@ -499,8 +499,38 @@ test('the gates count what waits to be pushed alone: stamped, reviewed, both', a
     row('older', undefined, false, null),
   ])
   expect([push.repos.map(r => r.name), push.fresh, push.reviewed, push.ready]).toEqual([['ready', 'unreviewed', 'unchecked'], 2, 2, 1])
-  // A packet alone is no review.
+  // A packet alone is no review; nor is HEAD's verdict on a range short of what the push sends, or one with no range recorded.
   expect(toPush([{ ...row('packet', 1, true, true), review: { sha: 'f4ab31a', at: 0, verdict: null, isCurrent: true } }]).reviewed).toBe(0)
+  expect(toPush([row('partial', 3, true, true, false)]).reviewed).toBe(0)
+  expect(toPush([{ ...row('older format', 1, true, true), review: { sha: 'f4ab31a', at: 0, verdict: 'clean', isCurrent: true } }]).reviewed).toBe(0)
+})
+
+test("the repositories' box says first why a verdict doesn't count: older, partial, no packet", async ($, on) => {
+  const review = (extra: object) => ({ sha: 'f4ab31a', at: SNAPSHOT.at, verdict: 'clean (2 findings fixed in a long verdict that runs past the cell)', isCurrent: true, ...extra })
+  const repo = (name: string, ahead: number, extra: object) => ({ ...SNAPSHOT.repos[0]!, name, ahead, review: review(extra) })
+  const snap: Snapshot = {
+    ...SNAPSHOT,
+    repos: [
+      repo('ready', 1, { base: 'a'.repeat(40), covers: true }),
+      repo('partial', 2, { base: 'a'.repeat(40), covers: false }),
+      repo('unpacked', 1, { base: null, covers: false }),
+      repo('stale', 0, { isCurrent: false }),
+      // Nothing to push: what its review read doesn't matter.
+      repo('pushed', 0, { base: null, covers: false }),
+    ],
+  }
+  mock.env(on, { HOME: '/Users/someone' })
+  mock.clock(on, { now: SNAPSHOT.at })
+  on('process.run', () => ({ value: { exitCode: 0, stdout: JSON.stringify(snap), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('ui.status', () => ({ value: undefined }))
+  on('session.surfaces', () => ({ value: ['desktop'] }))
+  const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'terminal', ...PANE, props: { ...PANE.props, bodyColumns: 110 } })
+  await ui.press({ key: 'refresh' })
+  // Once each (partial, unpacked, stale): the ready row and the one with nothing to push say none.
+  const states = await ui.findAll({ type: 'Text', text: /^(older|partial|no packet) $/ })
+  expect(states.map(t => t.text).sort()).toEqual(['no packet ', 'older ', 'partial '])
+  expect((await ui.findAll({ type: 'Text', text: /long verdict that runs past the cell\) f4ab31a$/ })).length).toBe(5)
+  await ui.unmount()
 })
 
 test("the gates' meters and the status bar: what waits to be pushed, or nothing to push", async ($, on) => {

@@ -5,12 +5,16 @@
  */
 export type CheckStamp = { tree: string; at: number; isFresh: boolean; isWorkFresh: boolean }
 
-/** A repository's last review: a verdict recorded, or only the packet. */
+/** A repository's last review: a verdict recorded (HEAD's own first), or only the packet. */
 export type ReviewMark = {
   sha: string
   at: number
   verdict: string | null
   isCurrent: boolean
+  /** HEAD's verdict: the base of the range its reviewer read; null when none was recorded (no packet, or before review.ts kept it). */
+  base?: string | null
+  /** HEAD's verdict reached all a push sends: its base is already on the upstream (or every remote). */
+  covers?: boolean
 }
 
 export type RepoRow = {

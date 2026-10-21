@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -501,6 +501,43 @@ describe('repositories', () => {
     git(dir, 'push', '-q', 'origin', branch)
     expect(repoMarks(root)).not.toBe(marks)
     expect(cachedRepos(root, cache, undefined, false)[0]?.ahead).toBe(0)
+  })
+
+  test("HEAD's own verdict, and whether its reviewer read all a push sends", () => {
+    const dir = repo()
+    const commit = (subject: string) => {
+      writeFileSync(join(dir, `${subject}.txt`), `${subject}\n`)
+      git(dir, 'add', '.')
+      git(dir, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', subject)
+      return git(dir, 'rev-parse', 'HEAD')
+    }
+    const remote = join(temp(), 'remote.git')
+    git(temp(), 'init', '-q', '--bare', remote)
+    git(dir, 'remote', 'add', 'origin', remote)
+    const pushed = git(dir, 'rev-parse', 'HEAD')
+    git(dir, 'push', '-q', '-u', 'origin', git(dir, 'rev-parse', '--abbrev-ref', 'HEAD'))
+    const one = commit('one')
+    const head = commit('two')
+    const verdict = (sha: string, base?: string) =>
+      writeFileSync(join(dir, '.git', 'harness', `review-${sha}`), `verdict: clean\nhead: ${sha}\n${base ? `base: ${base}\ntip: ${sha}\n` : ''}`)
+    // Its reviewer read from the upstream on: both commits a push sends.
+    verdict(head, pushed)
+    expect(readRepo(dir)?.review).toMatchObject({ isCurrent: true, base: pushed, covers: true })
+    // Read from the first unpushed commit on: the other one unread.
+    verdict(head, one)
+    expect(readRepo(dir)?.review).toMatchObject({ isCurrent: true, base: one, covers: false })
+    // Recorded with no range (no packet, or before review.ts kept one).
+    verdict(head)
+    expect(readRepo(dir)?.review).toMatchObject({ isCurrent: true, base: null, covers: false })
+    // The whole history read (a packet from the first commit): all of it.
+    verdict(head, '4b825dc642cb6eb9a060e54bf8d69288fbee4904')
+    expect(readRepo(dir)?.review?.covers).toBe(true)
+    // A newer verdict file for another commit (a reset since) doesn't hide HEAD's own.
+    verdict(head, pushed)
+    const other = join(dir, '.git', 'harness', `review-${one}`)
+    writeFileSync(other, `verdict: 2 findings\nhead: ${one}\n`)
+    utimesSync(other, new Date(Date.now() + 60_000), new Date(Date.now() + 60_000))
+    expect(readRepo(dir)?.review).toMatchObject({ sha: head, verdict: 'clean', covers: true })
   })
 
   test('unmoved, the cached rows stand; fresh reads them anew', () => {

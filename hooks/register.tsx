@@ -320,12 +320,13 @@ const WAITING = (c: BoardCard) => c.status.startsWith('waiting') || c.status ===
 /**
  * What the gates stand before: the repositories a push would send commits
  * from, how many of them are stamped (pre-push lets them through), reviewed
- * (a verdict on HEAD) and both. One with nothing to push asks nothing of them.
+ * (a verdict on HEAD whose reviewer read all the push sends) and both. One
+ * with nothing to push asks nothing of them.
  */
 export function toPush(repos: RepoRow[]): { repos: RepoRow[]; fresh: number; reviewed: number; ready: number } {
   const waiting = repos.filter(r => (r.ahead ?? 0) > 0)
   const isFresh = (r: RepoRow) => r.check?.isFresh === true
-  const isReviewed = (r: RepoRow) => !!r.review?.verdict && r.review.isCurrent
+  const isReviewed = (r: RepoRow) => !!r.review?.verdict && r.review.isCurrent && r.review.covers === true
   return {
     repos: waiting,
     fresh: waiting.filter(isFresh).length,
@@ -1555,6 +1556,8 @@ export const register: Register = on => {
       const row = (r: RepoRow) => {
         const mark = checkMark(r.check, now, r.failed)
         const verdict = r.review?.verdict ?? null
+        // Said first, a verdict being long: one on an older commit, or HEAD's that didn't read all a push sends.
+        const state = !r.review ? null : !r.review.isCurrent ? 'older' : (r.ahead ?? 0) > 0 && verdict && !r.review.covers ? (r.review.base ? 'partial' : 'no packet') : null
         const kind = held.get(r.name)
         return (
           <Box key={`repo-${r.name}`} width={colW}>
@@ -1568,7 +1571,10 @@ export const register: Register = on => {
             {cell(markW, line(mark.text, { color: mark.color }))}
             <Box flexGrow={1} flexShrink={1} minWidth={0}>
               {r.review
-                ? line(`${verdict ?? 'packet'} ${r.review.sha.slice(0, 7)}${r.review.isCurrent ? '' : ' older'}`, { color: verdict ? verdictColor(verdict) : 'inactive' })
+                ? runs(`repo-${r.name}-review`, [
+                    state ? [`${state} `, { color: state === 'older' ? 'inactive' : PALETTE.wait, fixed: true }] : null,
+                    [`${verdict ?? 'packet'} ${r.review.sha.slice(0, 7)}`, { color: verdict ? verdictColor(verdict) : 'inactive' }],
+                  ])
                 : line('no review', { dim: true })}
             </Box>
           </Box>

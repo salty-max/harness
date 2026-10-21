@@ -39,7 +39,9 @@ holds the gates, the part of the harness that runs in code.
   (`CLAUDE_CODE_SUBAGENT_MODEL`, else per helper).
 - **Gates**: what waits to be pushed (the repositories with commits their
   upstream lacks, or no remote has on a branch never pushed, `to push 6`): how many of them are stamped (`fresh`,
-  pre-push lets them through) and reviewed (`current`, a verdict on HEAD),
+  pre-push lets them through) and reviewed (`current`, a verdict on HEAD
+  whose reviewer read all the push sends: its packet's base already on the
+  upstream, the commits after the packet's tip its findings' fixes),
   amber while one isn't, `nothing to push` and `—` when none waits (the
   repositories' box has them all); cards waiting. At work only while a
   q.ts run goes on, in any session, the run named where the stamp's note
@@ -62,10 +64,14 @@ holds the gates, the part of the harness that runs in code.
   the working directory as it is was checked but not committed yet.
   `· 2d old`: the last check was on something else. `✗ 3m exit 1`: the
   last check run (q.ts's `.cache/logs/check.log`) failed after the newest
-  stamp. The review is the
-  verdict `addon-kit/review.ts` records as `.git/harness/review-<sha>` (its
+  stamp. The review is HEAD's verdict, else the newest, as
+  `addon-kit/review.ts` records it in `.git/harness/review-<sha>` (its
   first line, the `verdict:` prefix dropped; green when clean, amber with
-  findings), else the newest packet in `.cache/review/`. A dot before a
+  findings), else the newest packet in `.cache/review/`. Said before it,
+  why it doesn't count: `older` (on another commit), and where something
+  waits to be pushed, `partial` (its packet's range starts after the
+  upstream: the push sends commits its reviewer didn't read) or `no packet`
+  (no range recorded with it). A dot before a
   name says who holds it (`addon-kit/board.ts`'s lock): `●` cyan while a
   running card names it (a session is at work there), `○` amber while
   only cards stopped mid-task do (blocked, or waiting on the user: their
