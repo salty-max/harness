@@ -101,6 +101,9 @@ export type LiveSession = {
   helpers: { type: string; at: number }[]
 }
 
+/** A q.ts run going on now (addon-kit's events.ts, `running/<pid>.json`): the gates at work. */
+export type GateRun = { pid: number; name: string; repo: string; at: number }
+
 /** What `bin/snapshot.ts` prints: the numbers every session shares. */
 export type Snapshot = {
   at: number
@@ -116,6 +119,8 @@ export type Snapshot = {
   moments?: Record<string, MomentDay>
   /** The live sessions in the family folder; absent when the registry can't be read (or an older snapshot). */
   sessions?: LiveSession[]
+  /** The q.ts runs going on, the oldest first; absent in an older snapshot. */
+  gates?: GateRun[]
 }
 
 /** The session the panel is drawn in. */

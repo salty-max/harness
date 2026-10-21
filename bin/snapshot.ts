@@ -3,8 +3,8 @@
 // repository's check stamp and review, the task board, today's tokens by
 // model from every Claude Code transcript on this machine, and today's
 // events (the harness's events.log, helpers and answered prompts from the
-// transcripts). The panel runs it on a timer; nothing here writes outside
-// its own cache.
+// transcripts), and the q.ts runs going on (the gates at work). The panel
+// runs it on a timer; nothing here writes outside its own cache.
 //
 //   bun snapshot.ts [--root <family folder>] [--projects <dir>]
 //                   [--cache <dir>] [--day YYYY-MM-DD] [--fresh]
@@ -16,10 +16,10 @@
 
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 
 import { momentOf } from '../hooks/format'
-import type { BoardCard, HarnessEvent, HelperDay, HelperDef, LiveSession, ModelDay, MomentDay, RepoRow, Snapshot } from '../types'
+import type { BoardCard, GateRun, HarnessEvent, HelperDay, HelperDef, LiveSession, ModelDay, MomentDay, RepoRow, Snapshot } from '../types'
 
 const CHUNK = 16 * 1024 * 1024
 
@@ -733,6 +733,35 @@ export function readSessions(dir: string, root: string, day: SessionDay, now = D
     .sort((a, b) => rank(a.status) - rank(b.status) || b.since - a.since)
 }
 
+// --- the gates at work -----------------------------------------------------
+
+/**
+ * The q.ts runs going on (addon-kit's events.ts writes `<dir>/<pid>.json` as
+ * one starts and removes it before its verdict is logged): those whose
+ * process lives and started no later than the run (a pid reused since started
+ * after; ps's start is to the second), the oldest first. A run killed before
+ * its end leaves its file: left out here, swept by the next run.
+ */
+export function readGates(dir: string, starts: (pids: number[]) => Map<number, number> | null = startsOf): GateRun[] {
+  let names: string[]
+  try {
+    names = readdirSync(dir).filter(n => /^\d+\.json$/.test(n))
+  } catch {
+    return []
+  }
+  const found: GateRun[] = []
+  for (const name of names) {
+    try {
+      const r = JSON.parse(readFileSync(join(dir, name), 'utf8')) as Partial<GateRun>
+      if (Number.isInteger(r.pid) && `${r.pid}.json` === name && typeof r.name === 'string' && typeof r.repo === 'string' && Number.isFinite(r.at))
+        found.push({ pid: r.pid as number, name: r.name, repo: r.repo, at: r.at as number })
+    } catch {}
+  }
+  const alive = found.length > 0 ? starts(found.map(r => r.pid)) : null
+  if (!alive) return []
+  return found.filter(r => (alive.get(r.pid) ?? Number.POSITIVE_INFINITY) <= r.at + 1_000).sort((a, b) => a.at - b.at)
+}
+
 // --- the command ----------------------------------------------------------
 
 function arg(name: string): string | undefined {
@@ -765,7 +794,8 @@ if (import.meta.main) {
     } catch {}
     const helpers = agentDefs([join(root, '.claude', 'agents'), join(homedir(), '.claude', 'agents')])
     const transcripts = await readTranscripts(projects, cacheDir, day, root, agentModels(helpers))
-    const log = process.env.HARNESS_EVENTS === 'off' ? [] : readEventLog(process.env.HARNESS_EVENTS || join(root, '.cache', 'harness', 'events.log'), dayBounds(day)[0])
+    const eventsFile = process.env.HARNESS_EVENTS === 'off' ? null : process.env.HARNESS_EVENTS || join(root, '.cache', 'harness', 'events.log')
+    const log = eventsFile ? readEventLog(eventsFile, dayBounds(day)[0]) : []
     const snapshot: Snapshot = {
       at: Date.now(),
       repos: cachedRepos(root, cacheDir, stamps, isFresh),
@@ -776,6 +806,7 @@ if (import.meta.main) {
       helperDay: transcripts.helperDay,
       moments: transcripts.moments,
       sessions: readSessions(join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'sessions'), root, transcripts.sessions),
+      gates: eventsFile ? readGates(join(dirname(eventsFile), 'running')) : [],
     }
     const text = JSON.stringify(snapshot)
     const tmp = `${shared}.${process.pid}`

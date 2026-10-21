@@ -37,7 +37,9 @@ holds the gates, the part of the harness that runs in code.
   80%, red from 95%; past 80% the title's mark gives the fullest window
   and when it resets), the ask rules, the subagent model
   (`CLAUDE_CODE_SUBAGENT_MODEL`, else per helper).
-- **Gates**: checks fresh (HEAD stamped), reviews current, cards waiting.
+- **Gates**: checks fresh (HEAD stamped), reviews current, cards waiting;
+  at work only while a q.ts run goes on, in any session, the run named
+  where the stamp's note stands (`q check · yonder`, `+1` for more).
 - **Helpers**, fanned out from the gates: running ones first, then the
   family's (`.claude/agents/*.md`) and today's, the busiest first (by runs,
   then the latest), the planner's left to it. Each with its model, status,
@@ -120,6 +122,9 @@ holds the gates, the part of the harness that runs in code.
   The tools append to `~/code/wow-addons/.cache/harness/events.log`
   (`addon-kit/events.ts`; `HARNESS_EVENTS` names another file, `off`
   none); the transcripts' events are read with the usage, incrementally.
+  Beside the log, `running/<pid>.json` is a q.ts run going on (written
+  as it starts, removed before its verdict is logged): the snapshot's
+  `gates`, those whose process lives and started no later than the run.
 
 The layout follows the pane's width: the mock-up's three columns from 96
 columns, two from 64, one below; every column truncates rather than wraps.
@@ -150,7 +155,8 @@ pane itself redraws only when a number moved. It moves when work does:
   pulse's cycle. On the desktop each line's pulse starts at the wall
   clock's phase of its cycle, so a redraw doesn't make it jump;
 - a box at work wears a running border: the main session's while its turn
-  runs, the gates' while work flows through them (the turn, or a helper),
+  runs, the gates' while a q.ts run goes on (the turn's pulse comes down
+  to them all the same, but a turn or a helper isn't theirs),
   a helper's while it runs, the planner's while an Opus helper does, the
   lead's while a handback comes in.
   On the desktop every box's border is four vector edges (rounded strips
@@ -168,7 +174,7 @@ pane itself redraws only when a number moved. It moves when work does:
   module draws them: the pane doesn't redraw for them (it did every 450 ms
   for the beat that blinked the whole border before, 21 October 2026);
 - the spinners (braille) turn while what they stand for works: the gates
-  and the session in a turn, a helper while it runs, the planner while an
+  while a q.ts run goes on, the session in a turn, a helper while it runs, the planner while an
   Opus helper runs;
 - bars and figures (Today, the context, the gates' meters, the helpers'
   shares, the planner's runs and tokens) roll to a new value in half a
@@ -223,8 +229,9 @@ The mod runs it through `$.process.run` every 2 seconds while the pane is
 shown (`$.ui.panes()`: open and in front), every 30 seconds otherwise for
 the status line; a snapshot under 2 seconds old is shared by every open
 session through `~/.cache/harness-view/snapshot.json`. Each second it stats
-the event log and the board's folder: a line there (a check, a review, a
-card, a hook's refusal) reads every number anew at once (`--fresh`, the
+the event log, the runs' folder beside it and the board's folder: a line
+there (a check, a review, a card, a hook's refusal, a run starting or
+ending) reads every number anew at once (`--fresh`, the
 repositories' rows too: a stamp or a verdict rewritten in place moves no
 mark), so it shows within a second of its tool writing it. Refresh does the
 same. A read that changed nothing but its own time draws nothing again; the

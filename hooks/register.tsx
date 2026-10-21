@@ -448,17 +448,19 @@ async function pace($: EngineInterface) {
 }
 
 /**
- * The event log (every check, review, card and hook refusal appends to it)
- * and the board's folder, a stat each: a change reads every number anew at
- * once, the repositories' rows too (a stamp or a verdict rewritten in place
- * moves no mark the shared reads look at), so the pane shows it within a
- * second of its tool writing it.
+ * The event log (every check, review, card and hook refusal appends to it),
+ * the q.ts runs going on beside it (`running/`, a file each) and the board's
+ * folder, a stat each: a change reads every number anew at once, the
+ * repositories' rows too (a stamp or a verdict rewritten in place moves no
+ * mark the shared reads look at), so the pane shows it within a second of
+ * its tool writing it.
  */
 async function watch($: EngineInterface) {
   if (!isShown) return
   const [{ root }, events] = await Promise.all([familyRoot($), $.env.get('HARNESS_EVENTS')])
   if (events === 'off') return
-  const paths = [events || `${root}/.cache/harness/events.log`, `${root}/board`]
+  const log = events || `${root}/.cache/harness/events.log`
+  const paths = [log, `${log.slice(0, log.lastIndexOf('/'))}/running`, `${root}/board`]
   const seen = (await Promise.all(paths.map(path => $.fs.stat(path).then(s => `${s.size}:${s.mtimeMs}`, () => '-')))).join('|')
   if (seen === watched) return
   const isFirst = watched === ''
@@ -760,6 +762,9 @@ export const register: Register = on => {
     // Work flows down the diagram while the main loop's turn runs or a helper does; out to the helpers while one runs.
     const isDelegating = running.length > 0
     const isWorking = work.isRunning || isDelegating
+    // The gates at work: a q.ts run going on, in any session (the hooks are done in an instant).
+    const gates = snap?.gates ?? []
+    const isGating = gates.length > 0
     // A helper just handed back: the way back to the lead lights up a few seconds (HANDBACK_MS).
     const isReturning = back !== null
     // A spinner inside a line's words: `words [ ⠋ ]`.
@@ -1160,6 +1165,8 @@ export const register: Register = on => {
     }
 
     // --- the gates: what runs in code ------------------------------------------
+    // At work only while a q.ts run goes on (the turn's pulse comes down to them
+    // all the same): its spinner turns, its border runs, the run is named.
     const gatesBox = (w: number) => {
       const inner = w - 4
       const [labelW = 10, figureW = 12] = fit([10, 12], inner, 6)
@@ -1170,7 +1177,7 @@ export const register: Register = on => {
         PALETTE.gate,
         <>
           <Box justifyContent="space-between">
-            {spinning('gates-state', inner >= 48 ? 'GATES · q · hooks · review [ ' : 'GATES [ ', isWorking, PALETTE.gate, { bold: true, color: PALETTE.gate })}
+            {spinning('gates-state', inner >= 48 ? 'GATES · q · hooks · review [ ' : 'GATES [ ', isGating, PALETTE.gate, { bold: true, color: PALETTE.gate })}
             <Box key="stamps">
               <Text dimColor>stamps </Text>
               {motion('stamps', { kind: 'count', value: fresh, unit: 'int', bold: true })}
@@ -1181,11 +1188,17 @@ export const register: Register = on => {
           {meter('reviews', 'reviews', labelW, reviewed, repos.length, barW, `${reviewed}/${repos.length} current`, PALETTE.gate, figureW)}
           {meter('board', 'board', labelW, waiting, Math.max(board.length, 1), barW, `${waiting} waiting`, waiting > 0 ? PALETTE.wait : PALETTE.gate, figureW)}
           <Box justifyContent="space-between">
-            {runs('stamp-note', [['stamp', { color: PALETTE.gate }], [' → push passes', { dim: true }]])}
+            {gates[0]
+              ? runs('gate-run', [
+                  [`q ${gates[0].name}`, { color: PALETTE.gate, bold: true }],
+                  [` · ${gates[0].repo}`, { dim: true }],
+                  gates.length > 1 ? [` +${gates.length - 1}`, { dim: true, fixed: true }] : null,
+                ])
+              : runs('stamp-note', [['stamp', { color: PALETTE.gate }], [' → push passes', { dim: true }]])}
             {runs('refusal-note', [['refusal', { color: PALETTE.gate }], [' → the log', { dim: true }]])}
           </Box>
         </>,
-        { running: isWorking ? { lines: 6 } : undefined },
+        { running: isGating ? { lines: 6 } : undefined },
       )
     }
 

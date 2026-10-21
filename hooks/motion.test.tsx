@@ -91,7 +91,8 @@ describe('the pulse', () => {
 })
 
 test('the lines pulse while the turn runs and stand still once it ends (the terminal: characters)', async ($, on) => {
-  world(on)
+  let gates: NonNullable<Snapshot['gates']> = []
+  world(on, { snapshot: () => ({ ...snap(), gates }) })
   await $.session.start({ cwd: FAMILY, surface: 'desktop', isInteractive: true })
   const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'terminal', ...PANE })
   await ui.press({ key: 'refresh' })
@@ -108,11 +109,19 @@ test('the lines pulse while the turn runs and stand still once it ends (the term
   expect(await lights('to-gates-1')).toBe(true)
   // The gates' line on to the helpers is theirs: dark with none running.
   expect(await lights('to-fan')).toBe(false)
-  expect(JSON.stringify(await ui.drawn({ in: 'gates-state-spin' }))).toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/)
+  // The gates themselves stand still: nothing runs through q.
+  expect(JSON.stringify(await ui.drawn({ in: 'gates-state-spin' }))).toContain('"-"')
   // The helpers' part waits for a helper.
   expect(await lights('fan-out')).toBe(false)
   await $.turn.complete({ answer: 'ok', durationMs: 5, isAborted: false, turnId: 't1', reason: 'answer' })
   expect(await lights('to-gates-1')).toBe(false)
+  // A q.ts run, in this session or another: the gates turn, the turn's lines stay dark.
+  gates = [{ pid: 41, name: 'check', repo: 'yonder', at: AT - 5_000 }]
+  await ui.press({ key: 'refresh' })
+  expect(JSON.stringify(await ui.drawn({ in: 'gates-state-spin' }))).toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/)
+  expect(await lights('to-gates-1')).toBe(false)
+  gates = []
+  await ui.press({ key: 'refresh' })
   expect(JSON.stringify(await ui.drawn({ in: 'gates-state-spin' }))).toContain('"-"')
   await ui.unmount()
 })
@@ -159,12 +168,13 @@ const svgIn = (tree: unknown, key: string): string => {
 
 test('the pulse goes out to the running helpers alone, back to the lead once one is done, then stands still', async ($, on) => {
   let agents: Agent[] = [{ id: 'a1', type: 'data-scout', description: 'A question about the data', status: 'running' }]
+  let gates: NonNullable<Snapshot['gates']> = []
   const helpers = [
     { name: 'data-scout', model: 'sonnet', description: 'Answers a data question.' },
     { name: 'prose-reader', model: 'sonnet', description: 'Reads text cold.' },
     { name: 'Explore', model: 'haiku', description: 'Searches.' },
   ]
-  const { clock } = world(on, { snapshot: () => ({ ...snap(), helpers }), agents: () => agents })
+  const { clock } = world(on, { snapshot: () => ({ ...snap(), helpers, gates }), agents: () => agents })
   await $.session.start({ cwd: FAMILY, surface: 'desktop', isInteractive: true })
   const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'desktop', ...PANE })
   await ui.press({ key: 'refresh' })
@@ -173,10 +183,16 @@ test('the pulse goes out to the running helpers alone, back to the lead once one
   // Out: three boxes drawn, the pulse to the running one alone (one dot each on the fan-out and the arrows).
   const dots = (source: string) => (source.match(/<ellipse[^>]*opacity="0"/g) ?? []).length
   expect([dots(await svg('fan-out')), dots(await svg('arrows'))]).toEqual([1, 1])
-  // Nothing back to the lead while it runs; the gates at work, their edge breathing.
+  // Nothing back to the lead while it runs; the gates still, a helper isn't theirs.
   expect(await svg('merge')).not.toContain('repeatCount')
   expect(await svg('to-back')).not.toContain('repeatCount')
+  expect(await svg('gates')).not.toContain('repeatCount')
+  // A q.ts run: the gates at work, their edge breathing.
+  gates = [{ pid: 41, name: 'check', repo: 'yonder', at: AT - 5_000 }]
+  await ui.press({ key: 'refresh' })
   expect(await svg('gates')).toContain('repeatCount="indefinite"')
+  gates = []
+  await ui.press({ key: 'refresh' })
   // Done: the way back lights up from its box, the way out goes dark.
   agents = [{ ...agents[0]!, status: 'completed' }]
   await clock.advance(1100)

@@ -476,6 +476,47 @@ test("the sessions: each live one's status, model, card and an Open that hands t
   expect(statusLine({ ...snap, sessions: [session('self', { status: 'waiting' })] }, 0, 'self')).not.toContain('session waiting')
 })
 
+test('the gates are at work only while a q.ts run goes on, not for a helper or the turn alone', async ($, on) => {
+  let snap: Snapshot = SNAPSHOT
+  mock.env(on, { HOME: '/Users/someone' })
+  const clock = mock.clock(on, { now: SNAPSHOT.at })
+  on('process.run', () => ({ value: { exitCode: 0, stdout: JSON.stringify(snap), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('command.register', ($, e) => ({ value: { command: e.name } }))
+  on('session.root', () => ({ value: '/Users/someone/code/wow-addons' }))
+  on('session.surfaces', () => ({ value: ['desktop'] }))
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('session.usage', () => ({ value: { context: { tokens: 1000, window: 1_000_000, percent: 0 }, rateLimits: [] } }))
+  on('settings.read', () => ({ value: {} }))
+  // A helper at work: the pulse runs out to it through the gates, which stay still.
+  on('agent.list', () => ({ value: [{ id: 'a1', type: 'reviewer', description: 'Review the push', status: 'running' }] }))
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/Users/someone/code/wow-addons', surface: 'desktop', isInteractive: true })
+  await clock.advance(1100)
+  const runsNow = [
+    { pid: 41, name: 'check', repo: 'yonder', at: SNAPSHOT.at - 20_000 },
+    { pid: 42, name: 'package', repo: 'palaver', at: SNAPSHOT.at - 5_000 },
+  ]
+  for (const surface of ['terminal', 'desktop'] as const) {
+    for (const gates of [[], runsNow]) {
+      snap = { ...SNAPSHOT, gates }
+      const ui = await $.ui.mount({ plugin: 'harness-view', surface, ...PANE, props: { ...PANE.props, bodyColumns: 110 } })
+      await ui.press({ key: 'refresh' })
+      const at = `${surface} ${gates.length} runs`
+      const isOn = gates.length > 0
+      const spin = await ui.find({ key: 'gates-state-spin' })
+      expect([at, (spin?.props.props as { on?: boolean } | undefined)?.on]).toEqual([at, isOn])
+      // The running border: the terminal's comets on its edges, the desktop's edges told they run.
+      if (surface === 'terminal') expect([at, (await ui.find({ key: 'gates-top' })) !== undefined]).toEqual([at, isOn])
+      // The run named where the stamp's note stands, the others counted.
+      expect([at, (await ui.find({ text: 'q check' })) !== undefined, (await ui.find({ text: ' +1' })) !== undefined]).toEqual([at, isOn, isOn])
+      expect([at, (await ui.find({ text: /^stamp$/ })) !== undefined]).toEqual([at, !isOn])
+      await ui.unmount()
+    }
+  }
+})
+
 test('a failing snapshot says why in the pane', async ($, on) => {
   on('process.run', () => ({
     value: { exitCode: 1, stdout: '', stderr: 'boom: no projects', isStdoutTruncated: false, isStderrTruncated: false },

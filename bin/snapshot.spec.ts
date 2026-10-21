@@ -18,6 +18,7 @@ import {
   parseEventLine,
   readBoard,
   readEventLog,
+  readGates,
   readRepo,
   readSessions,
   readTranscripts,
@@ -524,5 +525,32 @@ describe('the live sessions', () => {
     write(dir2, 32, { name: 'Reused', startedAt: 1_792_519_640_000, procStart: 'Tue Oct 20 18:06:55 2026' })
     const psStarts = () => new Map<number, number>([[31, 1_792_519_615_000], [32, 1_792_519_900_000]])
     expect(readSessions(dir2, root, day, 1_792_520_000_000, psStarts)?.map(s => s.name)).toEqual(['Slow start'])
+  })
+})
+
+describe('the gates at work', () => {
+  const write = (dir: string, pid: number, extra: Record<string, unknown> = {}) =>
+    writeFileSync(join(dir, `${pid}.json`), JSON.stringify({ pid, name: 'check', repo: 'yonder', at: 2_000_000, ...extra }))
+
+  test('the q.ts runs whose process lives and started no later, the oldest first; a dead, reused or broken one left out', () => {
+    const dir = temp()
+    write(dir, 41, { at: 3_000_000, name: 'package', repo: 'palaver' })
+    write(dir, 42)
+    // Gone (killed before its end), a pid since reused by a later process, broken files.
+    write(dir, 43)
+    write(dir, 44)
+    writeFileSync(join(dir, '45.json'), 'not json')
+    writeFileSync(join(dir, '46.json'), JSON.stringify({ pid: 99, name: 'check', repo: 'yonder', at: 2_000_000 }))
+    writeFileSync(join(dir, '.47.tmp'), '{}')
+    // ps tells the start to the second: a run that wrote its file in the same second as its process started is kept.
+    const starts = (pids: number[]) => new Map(pids.filter(p => p !== 43).map(p => [p, p === 44 ? 2_500_000 : p === 42 ? 2_000_400 : 1_000_000] as [number, number]))
+    expect(readGates(dir, starts)).toEqual([
+      { pid: 42, name: 'check', repo: 'yonder', at: 2_000_000 },
+      { pid: 41, name: 'package', repo: 'palaver', at: 3_000_000 },
+    ])
+    // No folder yet, no run, or no ps: none at work.
+    expect(readGates(join(dir, 'missing'), starts)).toEqual([])
+    expect(readGates(temp(), () => { throw new Error('ps asked with nothing to ask') })).toEqual([])
+    expect(readGates(dir, () => null)).toEqual([])
   })
 })
