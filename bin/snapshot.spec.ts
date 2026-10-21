@@ -472,6 +472,28 @@ describe('repositories', () => {
     expect(cachedRepos(root, cache, undefined, false)[0]?.check).toMatchObject({ isFresh: false })
   })
 
+  test("what a push would send: the commits its upstream lacks, none known without one; a push moves the row", () => {
+    const dir = repo()
+    const root = join(dir, '..')
+    const cache = temp()
+    expect(readRepo(dir)?.ahead).toBeNull()
+    const remote = join(temp(), 'remote.git')
+    git(temp(), 'init', '-q', '--bare', remote)
+    git(dir, 'remote', 'add', 'origin', remote)
+    const branch = git(dir, 'rev-parse', '--abbrev-ref', 'HEAD')
+    git(dir, 'push', '-q', '-u', 'origin', branch)
+    expect(readRepo(dir)?.ahead).toBe(0)
+    writeFileSync(join(dir, 'b.txt'), 'b\n')
+    git(dir, 'add', '.')
+    git(dir, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'b')
+    expect(cachedRepos(root, cache, undefined, false)[0]?.ahead).toBe(1)
+    // The push moves the upstream's log: the cached row is read again at once.
+    const marks = repoMarks(root)
+    git(dir, 'push', '-q', 'origin', branch)
+    expect(repoMarks(root)).not.toBe(marks)
+    expect(cachedRepos(root, cache, undefined, false)[0]?.ahead).toBe(0)
+  })
+
   test('unmoved, the cached rows stand; fresh reads them anew', () => {
     const dir = repo()
     const root = join(dir, '..')

@@ -37,9 +37,13 @@ holds the gates, the part of the harness that runs in code.
   80%, red from 95%; past 80% the title's mark gives the fullest window
   and when it resets), the ask rules, the subagent model
   (`CLAUDE_CODE_SUBAGENT_MODEL`, else per helper).
-- **Gates**: checks fresh (HEAD stamped), reviews current, cards waiting;
-  at work only while a q.ts run goes on, in any session, the run named
-  where the stamp's note stands (`q check · yonder`, `+1` for more).
+- **Gates**: what waits to be pushed (the repositories with commits their
+  upstream lacks, `to push 6`): how many of them are stamped (`fresh`,
+  pre-push lets them through) and reviewed (`current`, a verdict on HEAD),
+  amber while one isn't, `nothing to push` and `—` when none waits (the
+  repositories' box has them all); cards waiting. At work only while a
+  q.ts run goes on, in any session, the run named where the stamp's note
+  stands (`q check · yonder`, `+1` for more).
 - **Helpers**, fanned out from the gates: running ones first, then the
   family's (`.claude/agents/*.md`) and today's, the busiest first (by runs,
   then the latest), the planner's left to it. Each with its model, status,
@@ -107,7 +111,8 @@ holds the gates, the part of the harness that runs in code.
   source in its colour (a helper as `opus:reviewer`), the repository and
   what happened, a figure on the right in its status's colour (stamped,
   failed, spawn, 86k tok, allowed). Under it the prompt line and a status
-  bar: helpers active, Opus runs, gates, cards waiting, today's tokens.
+  bar: helpers active, Opus runs, gates (ready to push: stamped and
+  reviewed, of those to push), cards waiting, today's tokens.
   - `check` (or a q.ts run of another name): the verdict line and the
     stamp, written by `addon-kit/q.ts`;
   - `hook`: a git hook refusing a commit or a push (`githooks/_event`);
@@ -198,8 +203,9 @@ regions mid-pulse included), the desktop app can't be captured from here. A prom
 their day totals are today's only.
 
 The status line under the prompt (`$.ui.status`) says what claude-hud does
-not: cards waiting, agents running, repositories a push of HEAD would pass,
-today's tokens by model family. One line, beside claude-hud, which is left
+not: cards waiting, agents running, the repositories with something to
+push that are ready (stamped and reviewed, `ready to push 0/6`; nothing
+when none waits), today's tokens by model family. One line, beside claude-hud, which is left
 untouched. `/harness` opens the pane again once closed.
 
 The mod stays silent in a session whose project root is outside
@@ -241,8 +247,8 @@ at the turn's start and end.
 
 Most of a read's time is the repositories (git, the stamps: 0.85 s for
 eleven). Their rows are kept in `~/.cache/harness-view/repos.json` and read
-again only when one moved (HEAD, its log, the index, `.git/harness`, q's
-log, a packet) or after 20 seconds, for edits in a working tree: a read
+again only when one moved (HEAD, its log, the index, the upstream's log
+on a push or a fetch, `.git/harness`, q's log, a packet) or after 20 seconds, for edits in a working tree: a read
 with nothing moved takes 0.04 s. Transcripts are read incrementally:
 offsets, seen ids, the Bash calls waiting for an answer and the day's
 events in `~/.cache/harness-view/usage-<day>.json` (a cache of an older

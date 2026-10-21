@@ -317,6 +317,23 @@ const MOMENTS: { key: Moment; title: string; who: string }[] = [
 
 const WAITING = (c: BoardCard) => c.status.startsWith('waiting') || c.status === 'ready-to-push'
 
+/**
+ * What the gates stand before: the repositories a push would send commits
+ * from, how many of them are stamped (pre-push lets them through), reviewed
+ * (a verdict on HEAD) and both. One with nothing to push asks nothing of them.
+ */
+export function toPush(repos: RepoRow[]): { repos: RepoRow[]; fresh: number; reviewed: number; ready: number } {
+  const waiting = repos.filter(r => (r.ahead ?? 0) > 0)
+  const isFresh = (r: RepoRow) => r.check?.isFresh === true
+  const isReviewed = (r: RepoRow) => !!r.review?.verdict && r.review.isCurrent
+  return {
+    repos: waiting,
+    fresh: waiting.filter(isFresh).length,
+    reviewed: waiting.filter(isReviewed).length,
+    ready: waiting.filter(r => isFresh(r) && isReviewed(r)).length,
+  }
+}
+
 /** The one status line: what claude-hud does not already say. */
 export function statusLine(snap: Snapshot | null, running: number, self: string | null = null): string {
   const parts: string[] = []
@@ -331,8 +348,8 @@ export function statusLine(snap: Snapshot | null, running: number, self: string 
   }
   if (running > 0) parts.push(`${running} agent${running > 1 ? 's' : ''}`)
   if (snap) {
-    const fresh = snap.repos.filter(r => r.check?.isFresh).length
-    parts.push(`checks ${fresh}/${snap.repos.length}`)
+    const push = toPush(snap.repos)
+    if (push.repos.length > 0) parts.push(`ready to push ${push.ready}/${push.repos.length}`)
     // One figure a family (haiku 4.5 and 5.5 together): the pane has the versions.
     const families = new Map<string, number>()
     for (const d of snap.usage.models) {
@@ -941,7 +958,8 @@ export const register: Register = on => {
     const helperRuns = Object.values(day).reduce((n, d) => n + d.runs, 0)
     const helperTokens = Object.values(day).reduce((n, d) => n + d.tokens, 0)
     const fresh = repos.filter(r => r.check?.isFresh).length
-    const reviewed = repos.filter(r => r.review?.verdict && r.review.isCurrent).length
+    const push = toPush(repos)
+    const pushing = push.repos.length
     const waiting = board.filter(WAITING).length
     const dayTotal = models.reduce((sum, d) => sum + total(d), 0)
     const cacheRead = models.reduce((sum, d) => sum + d.cacheRead, 0)
@@ -1166,7 +1184,10 @@ export const register: Register = on => {
 
     // --- the gates: what runs in code ------------------------------------------
     // At work only while a q.ts run goes on (the turn's pulse comes down to them
-    // all the same): its spinner turns, its border runs, the run is named.
+    // all the same): its spinner turns, its border runs, the run is named. Its
+    // meters count what waits to be pushed alone (the repositories' box has them all).
+    const gateMeter = (key: string, value: number, word: string, labelW: number, barW: number, figureW: number) =>
+      meter(key, key, labelW, value, Math.max(pushing, 1), barW, pushing > 0 ? `${value}/${pushing} ${word}` : '—', value < pushing ? PALETTE.wait : PALETTE.gate, figureW)
     const gatesBox = (w: number) => {
       const inner = w - 4
       const [labelW = 10, figureW = 12] = fit([10, 12], inner, 6)
@@ -1178,14 +1199,19 @@ export const register: Register = on => {
         <>
           <Box justifyContent="space-between">
             {spinning('gates-state', inner >= 48 ? 'GATES · q · hooks · review [ ' : 'GATES [ ', isGating, PALETTE.gate, { bold: true, color: PALETTE.gate })}
-            <Box key="stamps">
-              <Text dimColor>stamps </Text>
-              {motion('stamps', { kind: 'count', value: fresh, unit: 'int', bold: true })}
-              <Text bold>/{repos.length}</Text>
-            </Box>
+            {pushing > 0 ? (
+              <Box key="to-push">
+                <Text dimColor>to push </Text>
+                {motion('to-push', { kind: 'count', value: pushing, unit: 'int', bold: true })}
+              </Box>
+            ) : (
+              <Box key="to-push">
+                <Text dimColor>nothing to push</Text>
+              </Box>
+            )}
           </Box>
-          {meter('checks', 'checks', labelW, fresh, repos.length, barW, `${fresh}/${repos.length} fresh`, PALETTE.gate, figureW)}
-          {meter('reviews', 'reviews', labelW, reviewed, repos.length, barW, `${reviewed}/${repos.length} current`, PALETTE.gate, figureW)}
+          {gateMeter('checks', push.fresh, 'fresh', labelW, barW, figureW)}
+          {gateMeter('reviews', push.reviewed, 'current', labelW, barW, figureW)}
           {meter('board', 'board', labelW, waiting, Math.max(board.length, 1), barW, `${waiting} waiting`, waiting > 0 ? PALETTE.wait : PALETTE.gate, figureW)}
           <Box justifyContent="space-between">
             {gates[0]
@@ -1722,7 +1748,7 @@ export const register: Register = on => {
           {[
             statusPair('helpers', `${running.length}/${Math.max(helpers.length, running.length)} active`, running.length > 0 ? PALETTE.wait : PALETTE.haiku),
             statusPair(family(opusModel), `${opusRuns} runs`, PALETTE.opus),
-            statusPair('gates', `${fresh}/${repos.length}`, fresh === repos.length ? PALETTE.ok : PALETTE.wait),
+            statusPair('gates', pushing > 0 ? `${push.ready}/${pushing} ready` : 'nothing to push', push.ready < pushing ? PALETTE.wait : PALETTE.ok),
             statusPair('sessions', `${live.length} live${live.some(x => x.status === 'waiting' && x.id !== selfId) ? ' · asking' : ''}`, live.some(x => x.status === 'waiting' && x.id !== selfId) ? PALETTE.wait : PALETTE.plain),
             statusPair('board', `${waiting} waiting`, waiting > 0 ? PALETTE.wait : PALETTE.ok),
             statusPair('today', tokens(dayTotal), PALETTE.plain),

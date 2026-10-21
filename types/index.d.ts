@@ -20,6 +20,8 @@ export type RepoRow = {
   /** The last check run when it failed after the newest stamp (`.cache/logs/check.log`). */
   failed: { at: number; exit: number } | null
   review: ReviewMark | null
+  /** The commits a push would send (`@{u}..HEAD`); null with no upstream; absent in an older snapshot. */
+  ahead?: number | null
 }
 
 /**

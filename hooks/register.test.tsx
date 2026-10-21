@@ -22,6 +22,7 @@ import {
   sourceLabel,
   statusLine,
   tokens,
+  toPush,
   toneColor,
   verdictTone,
   where,
@@ -30,13 +31,14 @@ import {
 const SNAPSHOT: Snapshot = {
   at: 1_760_940_000_000,
   repos: [
-    { name: 'yonder', head: 'f4ab31a', check: { tree: 'abc', at: 1_760_939_000_000, isFresh: true, isWorkFresh: true }, failed: null, review: null },
+    { name: 'yonder', head: 'f4ab31a', check: { tree: 'abc', at: 1_760_939_000_000, isFresh: true, isWorkFresh: true }, failed: null, review: null, ahead: 2 },
     {
       name: 'wow-data',
       head: '6b545ad',
       check: null,
       failed: { at: 1_760_939_500_000, exit: 1 },
       review: { sha: '6b545ad', at: 1_760_930_000_000, verdict: 'no findings', isCurrent: true },
+      ahead: 1,
     },
   ],
   board: [
@@ -105,7 +107,9 @@ describe('numbers', () => {
   test('the status line is one line and says what claude-hud does not', async () => {
     const line = statusLine(SNAPSHOT, 2)
     expect(line.includes('\n')).toBe(false)
-    expect(line).toBe('harness · board 1 waiting · 2 agents · checks 1/2 · today opus 109M haiku 735k')
+    expect(line).toBe('harness · board 1 waiting · 2 agents · ready to push 0/2 · today opus 109M haiku 735k')
+    // Nothing to push: nothing said of the gates.
+    expect(statusLine({ ...SNAPSHOT, repos: SNAPSHOT.repos.map(r => ({ ...r, ahead: 0 })) }, 0)).toBe('harness · board 1 waiting · today opus 109M haiku 735k')
     expect(statusLine(null, 0)).toBe('harness: reading')
   })
 
@@ -267,7 +271,7 @@ test('the pane draws the board, the checks and the day on every surface', async 
   }
   expect(runs[0]?.[0]).toBe('bun')
   expect(runs[0]?.slice(2)).toEqual(['--root', '/Users/someone/code/wow-addons', '--fresh'])
-  expect(statuses.at(-1)).toBe('harness · board 1 waiting · checks 1/2 · today opus 109M haiku 735k')
+  expect(statuses.at(-1)).toBe('harness · board 1 waiting · ready to push 0/2 · today opus 109M haiku 735k')
 })
 
 test("the plan's limits are meters, the planner's moments say who, how often and their last word", async ($, on) => {
@@ -474,6 +478,57 @@ test("the sessions: each live one's status, model, card and an Open that hands t
   expect(statusLine(snap, 0, 'self')).toStartWith('harness · 1 session waiting · ')
   // Its own prompt isn't another's: this session waiting says nothing of itself.
   expect(statusLine({ ...snap, sessions: [session('self', { status: 'waiting' })] }, 0, 'self')).not.toContain('session waiting')
+})
+
+test('the gates count what waits to be pushed alone: stamped, reviewed, both', async () => {
+  const row = (name: string, ahead: number | null | undefined, isFresh: boolean, isCurrent: boolean | null) => ({
+    name,
+    head: 'f4ab31a',
+    check: { tree: 't', at: 0, isFresh, isWorkFresh: isFresh },
+    failed: null,
+    review: isCurrent === null ? null : { sha: 'f4ab31a', at: 0, verdict: 'no findings', isCurrent },
+    ahead,
+  })
+  const push = toPush([
+    row('ready', 1, true, true),
+    row('unreviewed', 3, true, false),
+    row('unchecked', 1, false, true),
+    // Nothing to push, no upstream, an older snapshot's row: asked nothing, whatever their stamps.
+    row('pushed', 0, false, false),
+    row('local', null, false, null),
+    row('older', undefined, false, null),
+  ])
+  expect([push.repos.map(r => r.name), push.fresh, push.reviewed, push.ready]).toEqual([['ready', 'unreviewed', 'unchecked'], 2, 2, 1])
+  // A packet alone is no review.
+  expect(toPush([{ ...row('packet', 1, true, true), review: { sha: 'f4ab31a', at: 0, verdict: null, isCurrent: true } }]).reviewed).toBe(0)
+})
+
+test("the gates' meters and the status bar: what waits to be pushed, or nothing to push", async ($, on) => {
+  let snap: Snapshot = SNAPSHOT
+  mock.env(on, { HOME: '/Users/someone' })
+  mock.clock(on, { now: SNAPSHOT.at })
+  on('process.run', () => ({ value: { exitCode: 0, stdout: JSON.stringify(snap), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('ui.status', () => ({ value: undefined }))
+  on('session.surfaces', () => ({ value: ['desktop'] }))
+  for (const surface of ['terminal', 'desktop'] as const) {
+    for (const isWaiting of [true, false]) {
+      snap = isWaiting ? SNAPSHOT : { ...SNAPSHOT, repos: SNAPSHOT.repos.map(r => ({ ...r, ahead: 0 })) }
+      const ui = await $.ui.mount({ plugin: 'harness-view', surface, ...PANE, props: { ...PANE.props, bodyColumns: 110 } })
+      await ui.press({ key: 'refresh' })
+      const at = `${surface} ${isWaiting ? 'waiting' : 'nothing'}`
+      const has = async (text: string | RegExp, isThere = true) => expect([at, text, (await ui.find({ text })) !== undefined]).toEqual([at, text, isThere])
+      // yonder stamped, not reviewed; wow-data reviewed, not stamped: both amber, neither ready.
+      await has(/^to push $/, isWaiting)
+      await has('1/2 fresh', isWaiting)
+      await has('1/2 current', isWaiting)
+      await has('0/2 ready', isWaiting)
+      await has('nothing to push', !isWaiting)
+      expect([at, (await ui.findAll({ type: 'Text', text: /^—$/ })).length]).toEqual([at, isWaiting ? 0 : 2])
+      // The repositories' box still has them all.
+      await has('1/2 pushable')
+      await ui.unmount()
+    }
+  }
 })
 
 test('the gates are at work only while a q.ts run goes on, not for a helper or the turn alone', async ($, on) => {

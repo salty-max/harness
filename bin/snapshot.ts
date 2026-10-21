@@ -141,7 +141,10 @@ export function readRepo(dir: string, kit?: StampKit): RepoRow | null {
     review = { sha, at: packet.at, verdict: null, isCurrent: head.startsWith(sha) || sha.startsWith(head) }
   }
 
-  return { name: basename(dir), head: head.slice(0, 7), check, failed: failedCheck(dir, check?.at ?? 0), review }
+  // What a push would send: the commits its upstream doesn't have yet (none known without one).
+  const ahead = git(dir, ['rev-list', '--count', '@{u}..HEAD'])
+
+  return { name: basename(dir), head: head.slice(0, 7), check, failed: failedCheck(dir, check?.at ?? 0), review, ahead: ahead === null ? null : Number(ahead) }
 }
 
 const repoDirs = (root: string) =>
@@ -156,15 +159,29 @@ export function readRepos(root: string, kit?: StampKit): RepoRow[] {
     .sort((a, b) => a.name.localeCompare(b.name))
 }
 
+/** The branch's upstream's log as the family's branches have it, origin/<branch> (another upstream's row moves within REPOS_MS). */
+function upstreamLog(dir: string): string | null {
+  try {
+    const branch = /^ref: refs\/heads\/(.+)$/m.exec(readFileSync(join(dir, '.git', 'HEAD'), 'utf8'))?.[1]
+    return branch ? `.git/logs/refs/remotes/origin/${branch}` : null
+  } catch {
+    return null
+  }
+}
+
 /**
  * What moves when a repository's row would: a commit, a checkout or an add
- * (HEAD, its log, the index), a stamp or a verdict (`.git/harness`), a check
- * run (q's log), a packet. A stat each, where the row's own read runs git.
+ * (HEAD, its log, the index), a push or a fetch (the upstream's log), a stamp
+ * or a verdict (`.git/harness`), a check run (q's log), a packet. A stat
+ * each, where the row's own read runs git.
  */
 export function repoMarks(root: string): string {
   const parts = ['.git/HEAD', '.git/logs/HEAD', '.git/index', '.git/harness', '.cache/logs/check.log', '.cache/review']
   return repoDirs(root)
-    .map(dir => `${basename(dir)}:${parts.map(p => (existsSync(join(dir, p)) ? statSync(join(dir, p)).mtimeMs : 0)).join(',')}`)
+    .map(dir => {
+      const upstream = upstreamLog(dir)
+      return `${basename(dir)}:${[...parts, ...(upstream ? [upstream] : [])].map(p => (existsSync(join(dir, p)) ? statSync(join(dir, p)).mtimeMs : 0)).join(',')}`
+    })
     .join('|')
 }
 
