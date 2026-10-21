@@ -542,8 +542,8 @@ describe('the gates at work', () => {
     writeFileSync(join(dir, '45.json'), 'not json')
     writeFileSync(join(dir, '46.json'), JSON.stringify({ pid: 99, name: 'check', repo: 'yonder', at: 2_000_000 }))
     writeFileSync(join(dir, '.47.tmp'), '{}')
-    // ps tells the start to the second: a run that wrote its file in the same second as its process started is kept.
-    const starts = (pids: number[]) => new Map(pids.filter(p => p !== 43).map(p => [p, p === 44 ? 2_500_000 : p === 42 ? 2_000_400 : 1_000_000] as [number, number]))
+    // A process that started the very moment it wrote its file is still the run.
+    const starts = (pids: number[]) => new Map(pids.filter(p => p !== 43).map(p => [p, p === 44 ? 2_500_000 : p === 42 ? 2_000_000 : 1_000_000] as [number, number]))
     expect(readGates(dir, starts)).toEqual([
       { pid: 42, name: 'check', repo: 'yonder', at: 2_000_000 },
       { pid: 41, name: 'package', repo: 'palaver', at: 3_000_000 },

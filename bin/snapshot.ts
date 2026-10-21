@@ -738,8 +738,9 @@ export function readSessions(dir: string, root: string, day: SessionDay, now = D
 /**
  * The q.ts runs going on (addon-kit's events.ts writes `<dir>/<pid>.json` as
  * one starts and removes it before its verdict is logged): those whose
- * process lives and started no later than the run (a pid reused since started
- * after; ps's start is to the second), the oldest first. A run killed before
+ * process lives and started no later than the run wrote its file (a pid
+ * reused since started after; ps's start, cut to the second, is never later
+ * than the real one), the oldest first. A run killed before
  * its end leaves its file: left out here, swept by the next run.
  */
 export function readGates(dir: string, starts: (pids: number[]) => Map<number, number> | null = startsOf): GateRun[] {
@@ -759,7 +760,7 @@ export function readGates(dir: string, starts: (pids: number[]) => Map<number, n
   }
   const alive = found.length > 0 ? starts(found.map(r => r.pid)) : null
   if (!alive) return []
-  return found.filter(r => (alive.get(r.pid) ?? Number.POSITIVE_INFINITY) <= r.at + 1_000).sort((a, b) => a.at - b.at)
+  return found.filter(r => (alive.get(r.pid) ?? Number.POSITIVE_INFINITY) <= r.at).sort((a, b) => a.at - b.at)
 }
 
 // --- the command ----------------------------------------------------------
