@@ -300,8 +300,9 @@ export function readBoard(dir: string, today: string, kit?: CardKit): BoardCard[
 // cache is read again whole; 5 keeps every event id seen today, 6 the
 // Opus helpers' calls by moment, 7 each session's model and open helpers, 8 and 9 the
 // session's mode, 10 the skills each session used, 11 left the moments out again, 12 ends a
-// background helper's run at the notice of its end)
-const CACHE_VERSION = 12
+// background helper's run at the notice of its end, 13 carries the sessions' skills, open helpers, events and
+// file offsets over midnight from the day before)
+const CACHE_VERSION = 13
 
 type UsageCache = {
   version: number
@@ -384,6 +385,11 @@ export function parseEventLine(line: string): HarnessEvent | null {
   return { at, source, tone: (TONES.includes(tone) ? tone : '') as HarnessEvent['tone'], repo, text: text.join(' ') }
 }
 
+/** Where the session log starts: the day's start, or twelve hours back when that reaches further (just after midnight the log is not blank). */
+export function logSince(day: string, now: number): number {
+  return Math.min(dayBounds(day)[0], now - 12 * 3600_000)
+}
+
 /** The log's events since `from`, newest first, read from its end (its writer trims it past 256 KB). */
 export function readEventLog(path: string, from: number, max = MAX_EVENTS): HarnessEvent[] {
   if (!existsSync(path)) return []
@@ -411,6 +417,8 @@ export type EventState = {
   known: Set<string>
   /** The skills installed (a folder in `skills/`): a typed `/name` counts as a skill only when it is one of these, a built-in command or a mod's isn't. */
   skillNames?: Set<string>
+  /** Where the day starts: the helpers' day sums and the tokens count from here, the rows and events read from `from`, a little before it (default: from). */
+  dayFrom?: number
 }
 
 // The part of a command a push or release prompt is about (the root's ask rules).
@@ -468,7 +476,7 @@ function helperEnded(state: EventState, id: string, at: number, repo: string | n
     ...(typeof tokens === 'number' ? { tokens } : {}),
     ...(typeof ms === 'number' ? { ms } : {}),
   })
-  if (!isNew) return
+  if (!isNew || at < (state.dayFrom ?? 0)) return
   const day = (state.helpers[type] ??= { runs: 0, tokens: 0, ms: 0, lastAt: 0, model: null })
   day.runs += 1
   day.tokens += tokens ?? 0
@@ -608,7 +616,7 @@ export function scanLine(line: string, from: number, to: number, seen: Set<strin
   } catch {
     return
   }
-  if (isUsage) countRow(row, from, to, seen, models)
+  if (isUsage) countRow(row, state.dayFrom ?? from, to, seen, models)
   // A session's main loop's last model (a helper's rows are a sidechain).
   if (isUsage && row.sessionId && !row.isSidechain && row.message?.model && !row.message.model.startsWith('<')) state.sessions.models[row.sessionId] = row.message.model
   if (isEvent) eventRow(row, from, to, state)
@@ -685,6 +693,40 @@ async function readLine(file: ReturnType<typeof Bun.file>, start: number, size: 
   return null
 }
 
+const EDGE_MS = 3600_000
+const KNOWN_MAX = 2000
+
+/**
+ * A new day's cache starts from the newest older one of this version (within the week kept): what a live
+ * session did stays (its skills, open helpers and model, the events, the files read so far), only the
+ * day's figures start again (tokens, ids seen, the helpers' day).
+ */
+function carriedOver(cacheDir: string, day: string, fresh: UsageCache): UsageCache {
+  let best: UsageCache | null = null
+  try {
+    for (const name of readdirSync(cacheDir)) {
+      const older = /^usage-(\d{4}-\d{2}-\d{2})\.json$/.exec(name)?.[1]
+      if (!older || older >= day || (best && older <= best.day)) continue
+      try {
+        const saved = JSON.parse(readFileSync(join(cacheDir, name), 'utf8')) as UsageCache
+        if (saved.version === CACHE_VERSION && saved.day === older) best = saved
+      } catch {}
+    }
+  } catch {}
+  if (!best) return fresh
+  // Skills of sessions untouched for a week go, the ids known are capped (oldest first).
+  const stale = dayBounds(day)[0] - 7 * 86_400_000
+  const skills = Object.fromEntries(Object.entries(best.sessions.skills ?? {}).filter(([, uses]) => uses.some(u => u.at >= stale)))
+  return {
+    ...fresh,
+    files: best.files,
+    pending: best.pending,
+    events: best.events,
+    sessions: { ...best.sessions, skills },
+    known: best.known.slice(-KNOWN_MAX),
+  }
+}
+
 /** Today's tokens by model and today's helper and prompt events, read on from where the last read stopped. */
 export async function readTranscripts(
   projects: string,
@@ -694,16 +736,21 @@ export async function readTranscripts(
   helpers: Record<string, string> = {},
   skillNames?: Set<string>,
 ): Promise<{ usage: Snapshot['usage']; events: HarnessEvent[]; helperDay: Record<string, HelperDay>; sessions: SessionDay }> {
-  const [from, to] = dayBounds(day)
+  const [dayFrom, to] = dayBounds(day)
+  // The rows and events read a little before the day starts: a line written across midnight is read once, by its id.
+  const from = dayFrom - EDGE_MS
   const cachePath = join(cacheDir, `usage-${day}.json`)
   let cache: UsageCache = { version: CACHE_VERSION, day, files: {}, seen: [], models: {}, pending: {}, events: [], helpers: {}, sessions: { models: {}, modes: {}, open: {}, skills: {} }, known: [] }
   try {
     const saved = JSON.parse(readFileSync(cachePath, 'utf8')) as UsageCache
     if (saved.day === day && saved.version === CACHE_VERSION) cache = saved
-  } catch {}
+    else throw new Error('not today')
+  } catch {
+    cache = carriedOver(cacheDir, day, cache)
+  }
 
   const seen = new Set(cache.seen)
-  const state: EventState = { root, models: helpers, pending: cache.pending, events: cache.events, helpers: cache.helpers, sessions: cache.sessions, known: new Set(cache.known), skillNames }
+  const state: EventState = { root, models: helpers, pending: cache.pending, events: cache.events, helpers: cache.helpers, sessions: cache.sessions, known: new Set(cache.known), skillNames, dayFrom }
   const files = listTranscripts(projects, from)
   for (const { path, size } of files) {
     const known = cache.files[path]?.offset ?? 0
@@ -903,13 +950,14 @@ if (import.meta.main) {
     const helpers = agentDefs([join(root, '.claude', 'agents'), join(homedir(), '.claude', 'agents')])
     const transcripts = await readTranscripts(projects, cacheDir, day, root, agentModels(helpers), skillNames([join(root, '.claude', 'skills'), join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'skills')]))
     const eventsFile = process.env.HARNESS_EVENTS === 'off' ? null : process.env.HARNESS_EVENTS || join(root, '.cache', 'harness', 'events.log')
-    const log = eventsFile ? readEventLog(eventsFile, dayBounds(day)[0]) : []
+    const since = logSince(day, Date.now())
+    const log = eventsFile ? readEventLog(eventsFile, since) : []
     const snapshot: Snapshot = {
       at: Date.now(),
       repos: cachedRepos(root, cacheDir, stamps, isFresh),
       board: readBoard(join(root, 'board'), day, cards),
       usage: transcripts.usage,
-      events: [...log, ...transcripts.events].sort((a, b) => b.at - a.at).slice(0, MAX_EVENTS),
+      events: [...log, ...transcripts.events.filter(e => e.at >= since)].sort((a, b) => b.at - a.at).slice(0, MAX_EVENTS),
       helpers,
       helperDay: transcripts.helperDay,
       sessions: readSessions(join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'sessions'), root, transcripts.sessions),

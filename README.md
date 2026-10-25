@@ -67,8 +67,8 @@ holds the gates, the part of the harness that runs in code.
   result only says `async_launched`; until 25 October 2026 those were
   never summed and the fan-out stayed empty). Not summed: a helper
   resumed after its first notice (SendMessage: the call is closed by then,
-  and the end's event is once a call) and a run whose call opened before
-  midnight (the day starts with no open calls). With none running or
+  and the end's event is once a call) and a run that ended before the day
+  began (a call open at midnight stays open, its end counts in the new day). With none running or
   worked, and nothing handing back, the diagram ends at the gates.
   The planner, a tall Opus box of today's calls by moment, went on 25
   October 2026: two of its four moments were nearly always 0, and its one
@@ -119,7 +119,7 @@ holds the gates, the part of the harness that runs in code.
   `procStart` in UTC, to two seconds, so a pid reused since is left out).
   A session that used skills today has a second line under its row, a dim label and the names in violet:
   `skills child (typed), wow-releasing ×2` (see "Skills" below).
-  Its model and helpers come from today's transcripts: an Agent call is
+  Its model, skills and helpers come from its transcript, whatever the day (the day's cache starts from the one before, 26 October 2026, so a session past midnight keeps them): an Agent call is
   open until its result (a background one: until the notice of its end,
   a user row or, mid-turn, a `queued_command` attachment), a helper's
   own calls aside, six hours at most. The Board says "session gone" on a
@@ -143,7 +143,7 @@ holds the gates, the part of the harness that runs in code.
   own another session's running card holds; that card is on the board
   too), or "free now" once nothing holds them. The header counts what waits on you,
   what runs and what is blocked.
-- **Session log**: today's last 6 events, newest first: the time, the
+- **Session log**: the last 6 events of today, or of the last 12 hours until midday (just after midnight it isn't blank), newest first: the time, the
   source in its colour (a helper as `opus:reviewer`), the repository and
   what happened, a figure on the right in its status's colour (stamped,
   failed, spawn, 86k tok, allowed).
@@ -258,7 +258,7 @@ there (a frame is a cell's change, twelve a second). The desktop's paint of bord
 own and was checked in tests only: the terminal's was seen (a `claude
 --plugin-dir` session, and the whole pane painted with Ink, the motion's
 regions mid-pulse included), the desktop app can't be captured from here. A prompt shows in the log once answered. Helpers, prompts and
-their day totals are today's only.
+their day totals are today's only (the tokens, the helpers' runs: the rows and the log are not).
 
 The status line under the prompt (`$.ui.status`) says what claude-hud does
 not: this session's phase and model first (`planning opus 5.5`, `building
@@ -312,7 +312,7 @@ seconds, for edits in a working tree: a read with nothing moved takes
 0.04 s. Transcripts are read incrementally:
 offsets, seen ids, the Bash calls waiting for an answer and the day's
 events in `~/.cache/harness-view/usage-<day>.json` (a cache of an older
-version is read again whole).
+version is read again whole). A new day's cache starts from the newest older one of this version (its file offsets, events, sessions' skills and open helpers, pending calls and ids known), and keeps the figures of the day alone (tokens, helpers' day) fresh; events are read from an hour before the day starts, once by their ids. events.log's times are UTC and read as instants: "today" is the local day.
 
 ## Checks
 

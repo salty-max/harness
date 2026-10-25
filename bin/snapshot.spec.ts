@@ -13,6 +13,7 @@ import {
   countLine,
   type EventState,
   eventRow,
+  logSince,
   scanLine,
   skillNames,
   failedCheck,
@@ -444,6 +445,53 @@ describe('events in the transcripts', () => {
     // Read again from the start (a rewritten file): the same event once.
     writeFileSync(join(cache, 'usage-2026-10-20.json'), JSON.stringify({ ...JSON.parse(readFileSync(join(cache, 'usage-2026-10-20.json'), 'utf8')), files: {} }))
     expect((await readTranscripts(projects, cache, '2026-10-20', '/f')).events).toHaveLength(1)
+  })
+})
+
+describe('past midnight', () => {
+  const line = (o: object) => `${JSON.stringify(o)}\n`
+  const base = { cwd: '/f/yonder', sessionId: 'S1' }
+  const tool = (at: Date, id: string, name: string, input: object) => line({ ...base, type: 'assistant', timestamp: at.toISOString(), message: { content: [{ type: 'tool_use', id, name, input }] } })
+
+  test('a session started at 23:55 keeps its skill and open helper at 00:10, only the day figures start again', async () => {
+    const projects = temp()
+    const cache = temp()
+    mkdirSync(join(projects, 'p'), { recursive: true })
+    const file = join(projects, 'p', 'S1.jsonl')
+    const night = new Date(2026, 9, 25, 23, 55)
+    writeFileSync(file, tool(night, 'sk1', 'Skill', { skill: 'wow-translating' }) + tool(night, 'h1', 'Agent', { subagent_type: 'reviewer', description: 'look' }))
+    const before = await readTranscripts(projects, cache, '2026-10-25', '/f')
+    expect(before.sessions.skills?.S1?.map(u => u.name)).toEqual(['wow-translating'])
+
+    // 00:10 the next day: the helper's end, a new load of the same skill.
+    const after = new Date(2026, 9, 26, 0, 10)
+    const notice = '<task-notification>\n<tool-use-id>h1</tool-use-id>\n<status>completed</status>\n<usage><subagent_tokens>900</subagent_tokens><duration_ms>5000</duration_ms></usage>\n</task-notification>'
+    appendFileSync(file, line({ ...base, type: 'user', timestamp: after.toISOString(), message: { role: 'user', content: notice } }))
+    const open = await readTranscripts(projects, cache, '2026-10-26', '/f')
+    // Its skill and the night's events stay; the helper's end counts in the new day only.
+    expect(open.sessions.skills?.S1?.map(u => u.name)).toEqual(['wow-translating'])
+    expect(open.sessions.open).toEqual({})
+    expect(open.helperDay.reviewer?.runs).toBe(1)
+    expect(open.events.map(e => e.text)).toContain('wow-translating loaded')
+    // The night's helper is not in the new day's, nor its tokens.
+    const prior = await readTranscripts(projects, cache, '2026-10-25', '/f')
+    expect(prior.helperDay.reviewer).toBeUndefined()
+  })
+
+  test('a helper still open at 00:10 stays open', async () => {
+    const projects = temp()
+    const cache = temp()
+    mkdirSync(join(projects, 'p'), { recursive: true })
+    writeFileSync(join(projects, 'p', 'S1.jsonl'), tool(new Date(2026, 9, 25, 23, 55), 'h1', 'Agent', { subagent_type: 'reviewer', run_in_background: true }))
+    await readTranscripts(projects, cache, '2026-10-25', '/f')
+    const next = await readTranscripts(projects, cache, '2026-10-26', '/f')
+    expect(Object.values(next.sessions.open).map(h => h.type)).toEqual(['reviewer'])
+  })
+
+  test('the log starts twelve hours back until midday, the day after', () => {
+    const day = '2026-10-26'
+    expect(logSince(day, new Date(2026, 9, 26, 0, 10).getTime())).toBe(new Date(2026, 9, 25, 12, 10).getTime())
+    expect(logSince(day, new Date(2026, 9, 26, 15, 0).getTime())).toBe(new Date(2026, 9, 26).getTime())
   })
 })
 
