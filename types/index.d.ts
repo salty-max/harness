@@ -99,6 +99,8 @@ export type LiveSession = {
   since: number
   /** Where it runs: `claude-desktop`, `cli`, ... */
   entrypoint: string
+  /** A background session (`claude --bg`, addon-kit's session.ts): `claude attach` joins it. */
+  background?: boolean
   /** The desktop app's link to it (`claude://claude.ai/epitaxy/<id>`), a desktop session's alone. */
   link: string | null
   /** Its main loop's last model today. */

@@ -86,7 +86,9 @@ holds the gates, the part of the harness that runs in code.
   (`/usr/bin/open claude://claude.ai/epitaxy/<its desktop id>`; the
   pane's links follow `https:` alone on the desktop, a button's press
   runs anything). This session's row says "this", a terminal one
-  "terminal" (no window to bring up from here). Read from Claude Code's
+  "terminal" (no window to bring up from here), a background one (`claude
+  --bg`, addon-kit's `session.ts`; the registry's `kind: "bg"`) "bg":
+  `claude attach` joins it by its name. Read from Claude Code's
   registry of live sessions, `~/.claude/sessions/<pid>.json` (what its
   agent list and ListAgents read: an internal format, read only, so the
   box says when it can't read it): each file a session's id, folder,

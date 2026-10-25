@@ -572,6 +572,7 @@ describe('the live sessions', () => {
     write(dir, 11, { name: 'Riddles', status: 'busy', statusUpdatedAt: 2_000_000, entrypoint: 'claude-desktop', hostSessionId: 'local_aa-11' })
     write(dir, 12, { name: 'Downloads', status: 'waiting', waitingFor: 'permission prompt', entrypoint: 'claude-desktop', hostSessionId: 'local_bb-12' })
     write(dir, 13, { name: 'In a terminal', entrypoint: 'cli', cwd: `${root}/yonder` })
+    write(dir, 21, { name: 'In the background', entrypoint: 'cli', kind: 'bg', statusUpdatedAt: 500_000 })
     // Elsewhere, gone, or a pid since reused by a later process: left out.
     write(dir, 14, { name: 'Elsewhere', cwd: '/Users/someone/code/other' })
     write(dir, 15, { name: 'Gone' })
@@ -588,7 +589,10 @@ describe('the live sessions', () => {
       ['Downloads', 'waiting', 'permission prompt', 'claude://claude.ai/epitaxy/local_bb-12'],
       ['Riddles', 'busy', null, 'claude://claude.ai/epitaxy/local_aa-11'],
       ['In a terminal', 'idle', null, null],
+      ['In the background', 'idle', null, null],
     ])
+    // A background one (`claude --bg`, session.ts's) says so: `claude attach` joins it.
+    expect(live?.map(s => s.background)).toEqual([false, false, false, true])
     expect(live?.[1]).toMatchObject({ id: 's11', model: 'claude-sonnet-5-5', helpers: [{ type: 'reviewer', at: 2_500_000 }], since: 2_000_000 })
     // A helper open for hours was never seen back: left out.
     expect(readSessions(dir, root, day, 2_500_000 + 7 * 3600_000, starts)?.[1]?.helpers).toEqual([])

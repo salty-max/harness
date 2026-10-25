@@ -1643,7 +1643,7 @@ export const register: Register = on => {
             {cardW > 0 ? cell(cardW, card ? line(card.status, { color: cardColor(card.status) }) : line('no card', { dim: true })) : null}
             {cell(ageW, line(ago(x.since, now), { dim: true }), true)}
             <Box width={openW} flexShrink={0} justifyContent="flex-end">
-              {isSelf ? line('this', { dim: true }) : x.link ? <Button key={`open-${x.id}`} label="Open" onPress={() => void openSession($, x.link as string)} /> : line(x.entrypoint === 'cli' ? 'terminal' : '', { dim: true })}
+              {isSelf ? line('this', { dim: true }) : x.link ? <Button key={`open-${x.id}`} label="Open" onPress={() => void openSession($, x.link as string)} /> : line(x.entrypoint === 'cli' ? (x.background ? 'bg' : 'terminal') : '', { dim: true })}
             </Box>
           </Box>
         )

@@ -416,6 +416,7 @@ test("the sessions: each live one's status, model, card and an Open that hands t
       session('downloads', { name: 'Addon downloads', status: 'waiting', waitingFor: 'permission prompt' }),
       session('self', { name: 'This one', status: 'busy', helpers: [{ type: 'reviewer', at: SNAPSHOT.at }] }),
       session('term', { name: 'In a terminal', entrypoint: 'cli', link: null, model: 'claude-sonnet-5-5' }),
+      session('bg', { name: 'In the background', entrypoint: 'cli', link: null, background: true, model: 'claude-sonnet-5-5' }),
     ],
     board: [
       { ...SNAPSHOT.board[0]!, session: 'self', status: 'running', title: 'The panel' },
@@ -453,13 +454,14 @@ test("the sessions: each live one's status, model, card and an Open that hands t
       await ui.press({ key: 'refresh' })
       const at = `${surface} ${bodyColumns}`
       const has = async (text: string | RegExp, isThere = true) => expect([at, text, (await ui.find({ text })) !== undefined]).toEqual([at, text, isThere])
-      await has(/^SESSIONS · 3/)
+      await has(/^SESSIONS · 4/)
       await has('1 waiting on you')
       await has(' waiting')
       await has('Addon downloads')
-      // This session's row: no Open, it says so; a terminal one can't be opened from here.
+      // This session's row: no Open, it says so; a terminal one can't be opened from here, a background one is attached.
       await has('this')
       await has('terminal')
+      await has('bg')
       if (bodyColumns >= 96) {
         await has('permission prompt')
         await has('opus 5.5 · reviewer')
