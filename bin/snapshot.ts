@@ -731,7 +731,7 @@ export function readSessions(dir: string, root: string, day: SessionDay, now = D
       const isText = (v: unknown) => v === undefined || typeof v === 'string'
       const isSound =
         Number.isInteger(r.pid) && (r.pid as number) > 0 && typeof r.sessionId === 'string' && /^[\w-]+$/.test(r.sessionId) && typeof r.cwd === 'string' &&
-        [r.name, r.status, r.waitingFor, r.entrypoint, r.hostSessionId, r.procStart, r.kind].every(isText)
+        [r.name, r.status, r.waitingFor, r.entrypoint, r.hostSessionId, r.procStart].every(isText)
       if (isSound && (r.cwd === root || (r.cwd as string).startsWith(`${root}/`))) found.push(r)
     } catch {}
   }
@@ -762,6 +762,7 @@ export function readSessions(dir: string, root: string, day: SessionDay, now = D
         waitingFor: r.status === 'waiting' ? (r.waitingFor ?? null) : null,
         since: r.statusUpdatedAt ?? r.updatedAt ?? r.startedAt ?? now,
         entrypoint: r.entrypoint ?? '',
+        // (not in the soundness check: a kind of another shape only means not a background one)
         background: r.kind === 'bg',
         link: r.entrypoint === 'claude-desktop' && r.hostSessionId && /^[\w-]+$/.test(r.hostSessionId) ? `claude://claude.ai/epitaxy/${r.hostSessionId}` : null,
         model: day.models[id] ?? null,

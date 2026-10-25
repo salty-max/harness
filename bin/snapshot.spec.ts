@@ -582,6 +582,8 @@ describe('the live sessions', () => {
     // A malformed one is left out alone: the others still read.
     writeFileSync(join(dir, '19.json'), JSON.stringify({ pid: '19; rm', sessionId: 's19', cwd: root, name: 'Bad pid' }))
     writeFileSync(join(dir, '20.json'), JSON.stringify({ pid: 20, sessionId: 's20', cwd: root, name: { not: 'a string' } }))
+    // A kind of another shape (an internal format) only means not a background one: the session stays.
+    write(dir, 22, { name: 'Odd kind', kind: { not: 'a string' }, statusUpdatedAt: 400_000 })
     const starts = (pids: number[]) => new Map(pids.filter(p => p !== 15).map(p => [p, p === 16 ? 9_000_000 : 999_000] as [number, number]))
     const day = { models: { s11: 'claude-sonnet-5-5' }, open: { t1: { session: 's11', type: 'reviewer', at: 2_500_000 }, t2: { session: 's99', type: 'Explore', at: 2_500_000 } } }
     const live = readSessions(dir, root, day, 3_000_000, starts)
@@ -590,9 +592,10 @@ describe('the live sessions', () => {
       ['Riddles', 'busy', null, 'claude://claude.ai/epitaxy/local_aa-11'],
       ['In a terminal', 'idle', null, null],
       ['In the background', 'idle', null, null],
+      ['Odd kind', 'idle', null, null],
     ])
     // A background one (`claude --bg`, session.ts's) says so: `claude attach` joins it.
-    expect(live?.map(s => s.background)).toEqual([false, false, false, true])
+    expect(live?.map(s => s.background)).toEqual([false, false, false, true, false])
     expect(live?.[1]).toMatchObject({ id: 's11', model: 'claude-sonnet-5-5', helpers: [{ type: 'reviewer', at: 2_500_000 }], since: 2_000_000 })
     // A helper open for hours was never seen back: left out.
     expect(readSessions(dir, root, day, 2_500_000 + 7 * 3600_000, starts)?.[1]?.helpers).toEqual([])
