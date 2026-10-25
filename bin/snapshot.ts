@@ -701,7 +701,7 @@ const KNOWN_MAX = 2000
  * session did stays (its skills, open helpers and model, the events, the files read so far), only the
  * day's figures start again (tokens, ids seen, the helpers' day).
  */
-function carriedOver(cacheDir: string, day: string, fresh: UsageCache): UsageCache {
+function carriedOver(projects: string, cacheDir: string, day: string, fresh: UsageCache): UsageCache {
   let best: UsageCache | null = null
   try {
     for (const name of readdirSync(cacheDir)) {
@@ -717,12 +717,20 @@ function carriedOver(cacheDir: string, day: string, fresh: UsageCache): UsageCac
   // Skills of sessions untouched for a week go, the ids known are capped (oldest first).
   const stale = dayBounds(day)[0] - 7 * 86_400_000
   const skills = Object.fromEntries(Object.entries(best.sessions.skills ?? {}).filter(([, uses]) => uses.some(u => u.at >= stale)))
+  // Only what is still around goes on: the files touched this week and their sessions' model and mode, the calls
+  // not older than a helper may stay open (a session killed mid-call leaves none behind).
+  const kept = listTranscripts(projects, stale)
+  const files = Object.fromEntries(kept.filter(f => best.files[f.path]).map(f => [f.path, best.files[f.path] as { offset: number }]))
+  const ids = new Set(kept.map(f => basename(f.path, '.jsonl')))
+  const only = <T,>(m: Record<string, T>) => Object.fromEntries(Object.entries(m).filter(([id]) => ids.has(id)))
+  const now = dayBounds(day)[0]
+  const open = Object.fromEntries(Object.entries(best.sessions.open).filter(([, h]) => now - h.at < OPEN_MAX_MS))
   return {
     ...fresh,
-    files: best.files,
-    pending: best.pending,
+    files,
+    pending: Object.fromEntries(Object.entries(best.pending).filter(([, c]) => now - c.at < OPEN_MAX_MS)),
     events: best.events,
-    sessions: { ...best.sessions, skills },
+    sessions: { models: only(best.sessions.models), modes: only(best.sessions.modes), open, skills },
     known: best.known.slice(-KNOWN_MAX),
   }
 }
@@ -736,6 +744,7 @@ export async function readTranscripts(
   helpers: Record<string, string> = {},
   skillNames?: Set<string>,
 ): Promise<{ usage: Snapshot['usage']; events: HarnessEvent[]; helperDay: Record<string, HelperDay>; sessions: SessionDay }> {
+  const began = Date.now()
   const [dayFrom, to] = dayBounds(day)
   // The rows and events read a little before the day starts: a line written across midnight is read once, by its id.
   const from = dayFrom - EDGE_MS
@@ -746,7 +755,7 @@ export async function readTranscripts(
     if (saved.day === day && saved.version === CACHE_VERSION) cache = saved
     else throw new Error('not today')
   } catch {
-    cache = carriedOver(cacheDir, day, cache)
+    cache = carriedOver(projects, cacheDir, day, cache)
   }
 
   const seen = new Set(cache.seen)
@@ -760,6 +769,10 @@ export async function readTranscripts(
     const next = await readFrom(path, offset, size, line => scanLine(line, from, to, seen, cache.models, state))
     cache.files[path] = { offset: next }
   }
+
+  // A read that began before midnight and ran past it must not move the offsets over the new day's lines: the
+  // cache stays as it was and the next day's reads them (the events by their ids).
+  if (began < to && Date.now() >= to) return { usage: { day, models: Object.values(cache.models), files: files.length }, events: state.events, helperDay: cache.helpers, sessions: cache.sessions }
 
   cache.seen = [...seen]
   cache.events = state.events.sort((a, b) => b.at - a.at).slice(0, MAX_EVENTS)

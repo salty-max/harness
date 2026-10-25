@@ -68,7 +68,7 @@ holds the gates, the part of the harness that runs in code.
   never summed and the fan-out stayed empty). Not summed: a helper
   resumed after its first notice (SendMessage: the call is closed by then,
   and the end's event is once a call) and a run that ended before the day
-  began (a call open at midnight stays open, its end counts in the new day). With none running or
+  began (a call open at midnight stays open, its end counts in the new day, when the day before was read). With none running or
   worked, and nothing handing back, the diagram ends at the gates.
   The planner, a tall Opus box of today's calls by moment, went on 25
   October 2026: two of its four moments were nearly always 0, and its one
