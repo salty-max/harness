@@ -10,6 +10,7 @@ import {
   checkMark,
   clockTime,
   eventFigure,
+  skillsText,
   eventText,
   fit,
   holds,
@@ -190,6 +191,9 @@ describe('numbers', () => {
     expect(sourceLabel({ source: 'check', text: 'check: ok' })).toBe('check')
     expect(eventFigure({ at: 0, source: 'helper', tone: 'info', repo: '', text: 'reviewer started: Review' })).toBe('spawn')
     expect(eventFigure({ at: 0, source: 'helper', tone: 'ok', repo: '', text: 'reviewer done', tokens: 106_689 })).toBe('107k tok')
+    expect(eventFigure({ at: 0, source: 'skill', tone: 'ok', repo: '', text: 'child loaded' })).toBe('loaded')
+    expect(eventFigure({ at: 0, source: 'skill', tone: 'ok', repo: '', text: 'child typed' })).toBe('typed')
+    expect(skillsText([{ name: 'child', by: 'user', at: 0, count: 1 }, { name: 'wow-releasing', by: 'session', at: 0, count: 2 }])).toBe('child (typed), wow-releasing ×2')
     expect(eventFigure({ at: 0, source: 'check', tone: 'ok', repo: '', text: 'check: ok (3s) · stamped abc1234' })).toBe('stamped')
     expect(eventFigure({ at: 0, source: 'check', tone: 'fail', repo: '', text: 'check: FAILED (exit 1, 3s)' })).toBe('failed')
     expect(eventFigure({ at: 0, source: 'review', tone: '', repo: '', text: 'abc1234 clean' })).toBe('clean')

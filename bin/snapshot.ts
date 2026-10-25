@@ -299,8 +299,9 @@ export function readBoard(dir: string, today: string, kit?: CardKit): BoardCard[
 // (version 2 added the events, 3 left every Bash call out of the pending
 // ones but pushes and releases, 4 added each helper's day: an older day
 // cache is read again whole; 5 keeps every event id seen today, 6 the
-// Opus helpers' calls by moment, 7 each session's model and open helpers)
-const CACHE_VERSION = 9
+// Opus helpers' calls by moment, 7 each session's model and open helpers, 8 and 9 the
+// session's mode, 10 the skills each session used)
+const CACHE_VERSION = 10
 
 type UsageCache = {
   version: number
@@ -317,7 +318,10 @@ type UsageCache = {
 }
 
 /** What the transcripts say of each session: its main loop's last model, its helpers started and not yet back (by the Agent call's id). */
-export type SessionDay = { models: Record<string, string>; /** Its permission mode as the transcript last recorded it (`plan`: planning, anything else building). */ modes: Record<string, string>; open: Record<string, { session: string; type: string; at: number }> }
+export type SessionDay = { models: Record<string, string>; /** Its permission mode as the transcript last recorded it (`plan`: planning, anything else building). */ modes: Record<string, string>; open: Record<string, { session: string; type: string; at: number }>; /** The skills each session used today: loaded by the session (a `Skill` call) or typed by the user (`/name`), once each with the last time and a count. */ skills?: Record<string, SkillUse[]> }
+
+/** One skill a session used: `by` says who started it. */
+export type SkillUse = { name: string; by: 'user' | 'session'; at: number; count: number }
 
 function listTranscripts(dir: string, since: number): { path: string; size: number }[] {
   const out: { path: string; size: number }[] = []
@@ -340,6 +344,7 @@ type Row = {
   sessionId?: string
   isSidechain?: boolean
   message?: { id?: string; model?: string; usage?: Record<string, number>; content?: unknown }
+  uuid?: string
   toolUseResult?: unknown
   permissionDecision?: { decision?: string; source?: string }
 }
@@ -407,6 +412,8 @@ export type EventState = {
   sessions: SessionDay
   /** Every event id seen today: the events keep only the last 40, a reread line must not come back as new. */
   known: Set<string>
+  /** The skills installed (a folder in `skills/`): a typed `/name` counts as a skill only when it is one of these, a built-in command or a mod's isn't. */
+  skillNames?: Set<string>
 }
 
 // The part of a command a push or release prompt is about (the root's ask rules).
@@ -428,6 +435,17 @@ export function repoOf(root: string, cwd: string | undefined, command = ''): str
   return cwd?.startsWith(`${root}/`) ? (cwd.slice(root.length + 1).split('/')[0] ?? '') : ''
 }
 
+/** Notes a skill used by a session: once a name and starter, the last time and how often. */
+function noteSkill(state: EventState, session: string | undefined, name: string, by: SkillUse['by'], at: number) {
+  if (!session) return
+  const list = ((state.sessions.skills ??= {})[session] ??= [])
+  const used = list.find(u => u.name === name && u.by === by)
+  if (used) {
+    used.at = Math.max(used.at, at)
+    used.count += 1
+  } else list.push({ name, by, at, count: 1 })
+}
+
 /** Adds an event once a day, by its id; false when it was seen already. */
 function addEvent(state: EventState, event: HarnessEvent): boolean {
   if (event.id === undefined || state.known.has(event.id)) return false
@@ -447,11 +465,22 @@ export function eventRow(row: Row, from: number, to: number, state: EventState) 
   const cwd = row.cwd
   if (!(at >= from && at < to) || (cwd !== state.root && !cwd?.startsWith(`${state.root}/`))) return
   const content = row.message?.content
+  // A skill the user typed: a user row whose text is the command (`/name`), a skill when it is one installed.
+  if (row.type === 'user' && typeof content === 'string' && content.includes('<command-name>')) {
+    const typed = /<command-name>\/?([\w:.-]+)<\/command-name>/.exec(content)?.[1]
+    if (typed && state.skillNames?.has(typed) && row.uuid && addEvent(state, { id: `${row.uuid}:skill`, at, source: 'skill', tone: 'ok', repo: repoOf(state.root, cwd), text: `${typed} typed` })) {
+      noteSkill(state, row.sessionId, typed, 'user', at)
+    }
+    return
+  }
   const blocks = (Array.isArray(content) ? content : []) as Block[]
   for (const block of blocks) {
     if (row.type === 'assistant' && block?.type === 'tool_use' && typeof block.id === 'string') {
       const input = block.input ?? {}
-      if (block.name === 'Agent' || block.name === 'Task') {
+      if (block.name === 'Skill' && typeof input.skill === 'string') {
+        // The session loaded a skill itself.
+        if (addEvent(state, { id: `${block.id}:skill`, at, source: 'skill', tone: 'ok', repo: repoOf(state.root, cwd), text: `${input.skill} loaded` })) { if (!row.isSidechain) noteSkill(state, row.sessionId, input.skill, 'session', at) }
+      } else if (block.name === 'Agent' || block.name === 'Task') {
         const type = String(input.subagent_type ?? 'general-purpose')
         const model = typeof input.model === 'string' ? input.model : state.models[type]
         const brief = typeof input.description === 'string' ? input.description : ''
@@ -522,7 +551,8 @@ export function eventRow(row: Row, from: number, to: number, state: EventState) 
 // A line worth parsing for an event: an Agent or Bash call, or a result that is a helper's or a prompt's answer
 // (an Agent result names its agentType, a prompt's answer its user source or the rejection).
 const isEventLine = (line: string) =>
-  /"name":"(?:Agent|Task|Bash)"/.test(line) ||
+  /"name":"(?:Agent|Task|Bash|Skill)"/.test(line) ||
+  (line.includes('<command-name>') && line.includes('"type":"user"')) ||
   (line.includes('"tool_use_id"') && (line.includes('"agentType"') || line.includes('"source":"user') || line.includes('User rejected tool use')))
 
 const RESULT_ID = /"tool_use_id":"([^"]+)"/g
@@ -588,6 +618,17 @@ export function agentDefs(dirs: string[]): HelperDef[] {
 }
 
 /** Each helper's model by its name, for the events. */
+/** The skills installed: a folder of the skills directories holding a SKILL.md (a link to one counts). */
+export function skillNames(dirs: string[]): Set<string> {
+  const names = new Set<string>()
+  for (const dir of dirs) {
+    try {
+      for (const n of readdirSync(dir)) if (existsSync(join(dir, n, 'SKILL.md'))) names.add(n)
+    } catch {}
+  }
+  return names
+}
+
 export const agentModels = (defs: HelperDef[]): Record<string, string> =>
   Object.fromEntries(defs.filter(d => d.model).map(d => [d.name, d.model as string]))
 
@@ -637,17 +678,18 @@ export async function readTranscripts(
   day: string,
   root: string,
   helpers: Record<string, string> = {},
+  skillNames?: Set<string>,
 ): Promise<{ usage: Snapshot['usage']; events: HarnessEvent[]; helperDay: Record<string, HelperDay>; moments: Record<string, MomentDay>; sessions: SessionDay }> {
   const [from, to] = dayBounds(day)
   const cachePath = join(cacheDir, `usage-${day}.json`)
-  let cache: UsageCache = { version: CACHE_VERSION, day, files: {}, seen: [], models: {}, pending: {}, events: [], helpers: {}, moments: {}, sessions: { models: {}, modes: {}, open: {} }, known: [] }
+  let cache: UsageCache = { version: CACHE_VERSION, day, files: {}, seen: [], models: {}, pending: {}, events: [], helpers: {}, moments: {}, sessions: { models: {}, modes: {}, open: {}, skills: {} }, known: [] }
   try {
     const saved = JSON.parse(readFileSync(cachePath, 'utf8')) as UsageCache
     if (saved.day === day && saved.version === CACHE_VERSION) cache = saved
   } catch {}
 
   const seen = new Set(cache.seen)
-  const state: EventState = { root, models: helpers, pending: cache.pending, events: cache.events, helpers: cache.helpers, moments: cache.moments, sessions: cache.sessions, known: new Set(cache.known) }
+  const state: EventState = { root, models: helpers, pending: cache.pending, events: cache.events, helpers: cache.helpers, moments: cache.moments, sessions: cache.sessions, known: new Set(cache.known), skillNames }
   const files = listTranscripts(projects, from)
   for (const { path, size } of files) {
     const known = cache.files[path]?.offset ?? 0
@@ -778,6 +820,7 @@ export function readSessions(dir: string, root: string, day: SessionDay, now = D
         model: day.models[id] ?? null,
         mode: day.modes[id] ?? null,
         helpers,
+        skills: [...(day.skills?.[id] ?? [])].sort((a, b) => a.at - b.at),
       }
     })
     .sort((a, b) => rank(a.status) - rank(b.status) || b.since - a.since)
@@ -844,7 +887,7 @@ if (import.meta.main) {
       cards = (await import(join(root, 'addon-kit', 'board.ts'))) as CardKit
     } catch {}
     const helpers = agentDefs([join(root, '.claude', 'agents'), join(homedir(), '.claude', 'agents')])
-    const transcripts = await readTranscripts(projects, cacheDir, day, root, agentModels(helpers))
+    const transcripts = await readTranscripts(projects, cacheDir, day, root, agentModels(helpers), skillNames([join(root, '.claude', 'skills'), join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'skills')]))
     const eventsFile = process.env.HARNESS_EVENTS === 'off' ? null : process.env.HARNESS_EVENTS || join(root, '.cache', 'harness', 'events.log')
     const log = eventsFile ? readEventLog(eventsFile, dayBounds(day)[0]) : []
     const snapshot: Snapshot = {

@@ -13,6 +13,7 @@ import {
   type EventState,
   eventRow,
   scanLine,
+  skillNames,
   failedCheck,
   parseCard,
   parseEventLine,
@@ -248,6 +249,42 @@ describe('events in the transcripts', () => {
     // A prompt that merely quotes the field is no record of it.
     scanLine(`{"type":"user","message":{"content":"the \\"permissionMode\\":\\"plan\\" row"},"sessionId":"s2"}`, from, to, new Set(), {}, s)
     expect(s.sessions.modes.s2).toBeUndefined()
+  })
+
+  test('a skill the session loaded or the user typed: a log line and the session\'s list, built-in commands left out', () => {
+    const s = { ...state(), skillNames: new Set(['child', 'wow-releasing']) }
+    const loaded = (id: string, skill: string) => ({ ...call(id, 'Skill', { skill, args: 'x' }), sessionId: 's1' })
+    const typed = (uuid: string, name: string) => ({ type: 'user', uuid, timestamp: noon, cwd: '/f', sessionId: 's1', message: { content: `<command-name>/${name}</command-name>\n<command-message>${name}</command-message>\n<command-args></command-args>` } })
+    eventRow(loaded('t1', 'child'), from, to, s)
+    eventRow(loaded('t2', 'child'), from, to, s)
+    eventRow(typed('u1', 'wow-releasing'), from, to, s)
+    // A built-in command or a mod's is no skill; a row read again counts once.
+    eventRow(typed('u2', 'harness'), from, to, s)
+    eventRow(typed('u1', 'wow-releasing'), from, to, s)
+    expect(s.events.map(e => [e.source, e.text])).toEqual([['skill', 'child loaded'], ['skill', 'child loaded'], ['skill', 'wow-releasing typed']])
+    expect(s.sessions.skills?.s1).toEqual([
+      { name: 'child', by: 'session', at: Date.parse(noon), count: 2 },
+      { name: 'wow-releasing', by: 'user', at: Date.parse(noon), count: 1 },
+    ])
+    // A helper's own load (a sidechain) is a log line, not the session's.
+    eventRow({ ...loaded('t9', 'child'), isSidechain: true }, from, to, s)
+    expect(s.sessions.skills?.s1?.[0]?.count).toBe(2)
+    expect(s.events.at(-1)?.text).toBe('child loaded')
+    // Through the line filter: the Skill call and the typed command are both parsed, a mere mention of a skill isn't.
+    const t = { ...state(), skillNames: new Set(['child']) }
+    scanLine(JSON.stringify(loaded('t3', 'child')), from, to, new Set(), {}, t)
+    scanLine(JSON.stringify(typed('u3', 'child')), from, to, new Set(), {}, t)
+    scanLine(`{"type":"assistant","message":{"content":[{"type":"text","text":"the Skill tool"}]}}`, from, to, new Set(), {}, t)
+    expect(t.sessions.skills?.s1?.map(u => [u.name, u.by])).toEqual([['child', 'session'], ['child', 'user']])
+  })
+
+  test('the installed skills: a folder holding a SKILL.md', () => {
+    const dir = temp()
+    mkdirSync(join(dir, 'child'))
+    writeFileSync(join(dir, 'child', 'SKILL.md'), '---\nname: child\n---\n')
+    mkdirSync(join(dir, 'empty'))
+    writeFileSync(join(dir, 'README.md'), '')
+    expect([...skillNames([dir, join(dir, 'missing')])]).toEqual(['child'])
   })
 
   test('a helper starting and finishing, with its model, tokens and time', () => {
@@ -606,7 +643,7 @@ describe('the live sessions', () => {
     write(dir, 22, { name: 'Odd kind', kind: { not: 'a string' }, statusUpdatedAt: 400_000 })
     const starts = (pids: number[]) => new Map(pids.filter(p => p !== 15).map(p => [p, p === 16 ? 9_000_000 : 999_000] as [number, number]))
     const day = { models: { s11: 'claude-sonnet-5-5' }, modes: { s11: 'plan' }, open: { t1: { session: 's11', type: 'reviewer', at: 2_500_000 }, t2: { session: 's99', type: 'Explore', at: 2_500_000 } } }
-    const live = readSessions(dir, root, day, 3_000_000, starts)
+    const live = readSessions(dir, root, { ...day, skills: { s11: [{ name: 'child', by: 'user' as const, at: 2_600_000, count: 1 }] } }, 3_000_000, starts)
     expect(live?.map(s => [s.name, s.status, s.waitingFor, s.link])).toEqual([
       ['Downloads', 'waiting', 'permission prompt', 'claude://claude.ai/epitaxy/local_bb-12'],
       ['Riddles', 'busy', null, 'claude://claude.ai/epitaxy/local_aa-11'],
@@ -618,6 +655,8 @@ describe('the live sessions', () => {
     expect(live?.map(s => s.background)).toEqual([false, false, false, true, false])
     expect(live?.[1]).toMatchObject({ id: 's11', model: 'claude-sonnet-5-5', mode: 'plan', helpers: [{ type: 'reviewer', at: 2_500_000 }], since: 2_000_000 })
     // A helper open for hours was never seen back: left out.
+    expect(live?.[1]?.skills).toEqual([{ name: 'child', by: 'user', at: 2_600_000, count: 1 }])
+    expect(live?.[0]?.skills).toEqual([])
     expect(readSessions(dir, root, day, 2_500_000 + 7 * 3600_000, starts)?.[1]?.helpers).toEqual([])
     // No registry, or no ps: nothing known (undefined), not "no session".
     expect(readSessions(join(dir, 'missing'), root, day, 0, starts)).toBeUndefined()

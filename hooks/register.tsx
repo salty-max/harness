@@ -105,6 +105,7 @@ export function family(model: string | null | undefined): string {
 // A source of the log: the gates (q's runs, the hooks) green as in the mock-up's router, a review the reviewer's.
 const SOURCE: Record<string, string> = {
   hook: PALETTE.gate,
+  skill: PALETTE.opus,
   review: PALETTE.opus,
   board: PALETTE.wait,
   ask: PALETTE.ask,
@@ -209,6 +210,11 @@ export function checkMark(check: CheckStamp | null, now: number, failed: RepoRow
   return { text: `· ${age} old`, color: 'inactive' }
 }
 
+/** The skills a session used, as one line: `child (typed), wow-releasing ×2` (a skill the user typed says so, the session's own loads don't). */
+export function skillsText(skills: LiveSession['skills']): string {
+  return skills.map(u => `${u.name}${u.by === 'user' ? ' (typed)' : ''}${u.count > 1 ? ` ×${u.count}` : ''}`).join(', ')
+}
+
 /** A log line's words: a helper's model, tokens and time after what it did. */
 export function eventText(e: HarnessEvent): string {
   const more = [e.model && e.ms !== undefined ? modelName(e.model) : '', e.tokens ? `${tokens(e.tokens)} tok` : '', e.ms ? duration(e.ms) : '']
@@ -218,6 +224,7 @@ export function eventText(e: HarnessEvent): string {
 /** A log line's figure on the right, the mock-up's last column. */
 export function eventFigure(e: HarnessEvent): string {
   if (e.source === 'helper') return e.text.endsWith(' started') || e.text.includes(' started:') ? 'spawn' : e.tokens ? `${tokens(e.tokens)} tok` : (e.text.split(' ')[1] ?? '')
+  if (e.source === 'skill') return e.text.split(' ').at(-1) ?? ''
   if (e.source === 'ask') return e.text.endsWith(' refused') ? 'refused' : 'allowed'
   if (e.source === 'hook') return 'refused'
   if (e.source === 'board') return e.text.split(' ').at(-1) ?? ''
@@ -1618,8 +1625,11 @@ export const register: Register = on => {
             ? line(x.waitingFor ?? 'waiting on you', { color: PALETTE.wait })
             : line(`${x.model ? `${stance(x.model, x.mode, null).phase === 'planning' ? 'plan' : 'build'} ${modelName(x.model)}` : '—'}${helping.length ? ` · ${helping.join(', ')}` : ''}`, { color: helping.length ? PALETTE.wait : x.model ? modelColor(x.model) : 'inactive' })
         const card = cardOf(x)
+        // The skills it used, each with who started it (a user's `/name` typed, the session's own load) and a count past one.
+        const skilled = x.skills ?? []
         return (
-          <Box key={`session-${x.id}`} alignItems="center">
+          <Box key={`session-${x.id}`} flexDirection="column">
+          <Box alignItems="center">
             <Box width={statusW} flexShrink={0}>
               {x.status === 'busy' ? motion(`session-${x.id}-spin`, { kind: 'spin', on: true, color }) : line(x.status === 'waiting' ? '●' : '·', { color })}
               {line(` ${x.status}`, { color, bold: x.status === 'waiting' })}
@@ -1632,6 +1642,13 @@ export const register: Register = on => {
             <Box width={openW} flexShrink={0} justifyContent="flex-end">
               {isSelf ? line('this', { dim: true }) : x.link ? <Button key={`open-${x.id}`} label="Open" onPress={() => void openSession($, x.link as string)} /> : line(x.entrypoint === 'cli' ? (x.background ? 'bg' : 'terminal') : '', { dim: true })}
             </Box>
+          </Box>
+          {skilled.length > 0 ? (
+            <Box>
+              <Box width={statusW} flexShrink={0} />
+              {cell(inner - statusW, runs(`session-${x.id}-skills`, [['skills ', { dim: true }], [skillsText(skilled), { color: PALETTE.opus }]]))}
+            </Box>
+          ) : null}
           </Box>
         )
       }

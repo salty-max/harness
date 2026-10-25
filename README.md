@@ -109,6 +109,8 @@ holds the gates, the part of the harness that runs in code.
   its folder is the family's and its process lives (`/bin/ps` in the C
   locale, one call: the start it prints is the one the registry wrote,
   `procStart` in UTC, to two seconds, so a pid reused since is left out).
+  A session that used skills today has a second line under its row, a dim label and the names in violet:
+  `skills child (typed), wow-releasing ×2` (see "Skills" below).
   Its model and helpers come from today's transcripts: an Agent call is
   open until its result (a background one: until the notice of its end,
   a user row or, mid-turn, a `queued_command` attachment), a helper's
@@ -142,6 +144,9 @@ holds the gates, the part of the harness that runs in code.
   - `hook`: a git hook refusing a commit or a push (`githooks/_event`);
   - `review`: a verdict recorded by `review.ts`;
   - `board`: a card added or moved to another status (`board.ts`);
+  - `skill`: a skill used, in violet: `child loaded` (the session called the
+    `Skill` tool) or `wow-releasing typed` (the user typed `/wow-releasing`),
+    so a skill that was meant to run can be seen running (see "Skills");
   - `helper`: a helper starting and finishing, in its model's colour, with
     its model, tokens and time (the Agent call and its result in the
     transcripts of sessions in the family folder);
@@ -154,6 +159,26 @@ holds the gates, the part of the harness that runs in code.
   Beside the log, `running/<pid>.json` is a q.ts run going on (written
   as it starts, removed before its verdict is logged): the snapshot's
   `gates`, those whose process lives and started no later than the run.
+
+### Skills
+
+To be sure a skill is actually used, not only installed. Two traces in a
+transcript, both read with the usage: a `Skill` tool call (`input.skill`:
+the session loaded it itself, `by: session`), and a user row holding
+`<command-name>/name</command-name>` (the user typed it, `by: user`). Each
+is one `skill` line in the log and one entry in its session's list (once a
+name and starter, with a count). A typed command counts only when `name` is
+a folder holding a `SKILL.md` in `~/.claude/skills/` or the family folder's
+`.claude/skills/`, so `/model` or `/harness` stay out.
+
+What it can't see: a skill whose `SKILL.md` was read with Read or cat
+(the instructions were seen, nothing was loaded: no trace, no line); a
+plugin's skill typed as `/plugin:skill` (not in those folders: loaded by the
+session it shows, typed it doesn't); a skill the instructions were followed
+from memory without loading; a skill a helper loaded (its rows are a
+sidechain): a log line, but not on its session's list, which says what the
+session itself used. And a line says a skill was loaded, never that
+its steps were followed.
 
 The layout follows the pane's width: the mock-up's three columns from 96
 columns, two from 64, one below; every column truncates rather than wraps.

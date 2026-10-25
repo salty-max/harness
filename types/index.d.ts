@@ -109,6 +109,8 @@ export type LiveSession = {
   mode: string | null
   /** Its helpers running: started, no result yet (a background one: no notice of its end yet). */
   helpers: { type: string; at: number }[]
+  /** The skills it used today, oldest first: `by` says whether the session loaded it (a `Skill` call) or the user typed it (`/name`), `at` the last time, `count` how often. */
+  skills: { name: string; by: 'user' | 'session'; at: number; count: number }[]
 }
 
 /** A q.ts run going on now (addon-kit's events.ts, `running/<pid>.json`): the gates at work. */
