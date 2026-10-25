@@ -538,7 +538,7 @@ export function scanLine(line: string, from: number, to: number, seen: Set<strin
     for (const [, id] of line.matchAll(/<tool-use-id>([\w-]+)<\/tool-use-id>/g)) if (id) delete state.sessions.open[id]
   }
   // The mode a session is in, the last one the transcript records (read off the line, unparsed): a
-  // `permission-mode` row each time it changes in an interactive session, and the field on a main-loop
+  // `permission-mode` row in an interactive session (written again most turns), and the field on a main-loop
   // user record (all a `-p` run writes: no row). A helper's own records are a sidechain.
   const isModeRow = line.startsWith('{"type":"permission-mode"')
   if (isModeRow || (line.includes('"permissionMode":"') && line.includes('"type":"user"') && !line.includes('"isSidechain":true'))) {

@@ -17,7 +17,7 @@ holds the gates, the part of the harness that runs in code.
 - **Header**: the harness, and what this session does now: `PLANNING` or
   `BUILDING` and the model of its last call. The phase is the transcript's
   permission mode, the last one its transcript records (`bin/snapshot.ts`): a
-  `permission-mode` row each time it changes, or the `permissionMode` field
+  `permission-mode` row (written again most turns), or the `permissionMode` field
   of a main-loop user record, whichever comes last; a mode naming `plan` is
   planning, anything else building. A `claude -p --permission-mode plan`
   probe (25 October 2026) wrote no row, only `"permissionMode":"plan"` on its user
