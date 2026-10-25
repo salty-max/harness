@@ -18,14 +18,16 @@ holds the gates, the part of the harness that runs in code.
   name, when the numbers last changed and Refresh, then the plan's rate
   limits as meters (green, amber from 80%, red from 95%), each with its
   reset; past 80% the title names the fullest window (`· seven day at
-  86%`). Under 64 columns the limits stack, named `5h` and `7d`. The
+  86%`). They stack where they don't fit side by side (a bar of 8 at
+  least), and under 64 columns, named `5h` and `7d`. The
   settings' model, mode, context window, ask rules and subagent model were
   rows of a box until 25 October 2026: the settings are one file away.
 - **Main session** (dashed, its model's colour), laid out as the other
   boxes: `PLANNING` or `BUILDING` and the model of its last call, the
   session's title after it (cut first), its state on the right (idle,
   working, the helpers running); the context as a meter to the box's
-  edge; the effort, and the cost on the right. The phase is the
+  edge; the effort, and the cost on the right (the state on a line of its
+  own under 64 columns). The phase is the
   transcript's permission mode, the last one its transcript records
   (`bin/snapshot.ts`): a `permission-mode` row (written again most turns),
   or the `permissionMode` field of a main-loop user record, whichever comes
@@ -63,7 +65,10 @@ holds the gates, the part of the harness that runs in code.
   foreground, the notice of its end (`<task-notification>`: status,
   tokens, time) for one in the background, which every helper is now (its
   result only says `async_launched`; until 25 October 2026 those were
-  never summed and the fan-out stayed empty). With none running or
+  never summed and the fan-out stayed empty). Not summed: a helper
+  resumed after its first notice (SendMessage: the call is closed by then,
+  and the end's event is once a call) and a run whose call opened before
+  midnight (the day starts with no open calls). With none running or
   worked, and nothing handing back, the diagram ends at the gates.
   The planner, a tall Opus box of today's calls by moment, went on 25
   October 2026: two of its four moments were nearly always 0, and its one

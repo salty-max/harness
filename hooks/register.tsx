@@ -991,16 +991,20 @@ export const register: Register = on => {
     const limitColor = (pct: number) => (pct >= 95 ? PALETTE.fail : pct >= 80 ? PALETTE.wait : PALETTE.ok)
     const isShort = W < 64
     const limitGap = 4
-    const limitW = isShort || limits.length === 0 ? W : Math.floor((W - limitGap * (limits.length - 1)) / limits.length)
+    // Each meter's columns: its name as long as the longest, the figure, the reset (kept when a window says none: the
+    // bars line up), a bar of 8 at least. Side by side while they fit, else stacked.
+    const limitLabelW = Math.min(16, Math.max(2, ...limits.map(l => limitName(l.kind, isShort).length)) + 1)
+    const sideW = limits.length === 0 ? W : Math.floor((W - limitGap * (limits.length - 1)) / limits.length)
+    const isStacked = isShort || sideW < limitLabelW + 5 + 10 + 8
+    const limitW = isStacked ? W : sideW
     const limitMeter = (l: (typeof limits)[number], i: number) => {
       const color = limitColor(l.percentUsed)
-      const labelW = isShort ? 4 : 10
+      const labelW = limitLabelW
       const figureW = 5
-      // (the reset's column kept when a window says none: the bars line up)
       const resetW = 10
       const barW = Math.max(3, limitW - labelW - figureW - resetW)
       return (
-        <Box key={`limit-${l.kind}`} width={limitW} flexShrink={0} marginLeft={!isShort && i > 0 ? limitGap : 0}>
+        <Box key={`limit-${l.kind}`} width={limitW} flexShrink={0} marginLeft={!isStacked && i > 0 ? limitGap : 0}>
           {cell(labelW, line(limitName(l.kind, isShort), { dim: true }))}
           {barOf(`limit-${l.kind}-bar`, l.percentUsed, 100, barW, color)}
           {cell(figureW, line(`${Math.round(l.percentUsed)}%`, { color, bold: true }), true)}
@@ -1031,7 +1035,7 @@ export const register: Register = on => {
             <Button key="refresh" label="Refresh" onPress={() => void refreshSnapshot($, true)} />
           </Box>
         </Box>
-        <Box width={W} flexDirection={isShort ? 'column' : 'row'}>
+        <Box width={W} flexDirection={isStacked ? 'column' : 'row'}>
           {limits.length > 0 ? limits.map(limitMeter) : line(facts ? 'limits: none read yet' : 'limits: …', { dim: true })}
         </Box>
         {rule}
@@ -1047,6 +1051,8 @@ export const register: Register = on => {
       const labelW = 9
       const figureW = 14
       const barW = Math.max(4, inner - labelW - figureW)
+      // The state beside the title where both fit (the title's fixed runs, a helper or two running), else a line of its own.
+      const isStateBeside = inner >= 60
       const effort = facts?.settings.effort ?? null
       const effortLevel = effort ? Math.max(1, ['low', 'medium', 'high', 'xhigh', 'max'].indexOf(effort) + 1) : 0
       const state =
@@ -1068,10 +1074,13 @@ export const register: Register = on => {
               wrong ? [` · WANT ${wrong.toUpperCase()}`, { color: PALETTE.fail, bold: true, fixed: true }] : null,
               mine?.name && inner >= 56 ? [` · ${mine.name}`, { dim: true }] : null,
             ])}
-            <Box flexShrink={0} marginLeft={1}>
-              {state}
-            </Box>
+            {isStateBeside ? (
+              <Box flexShrink={0} marginLeft={1}>
+                {state}
+              </Box>
+            ) : null}
           </Box>
+          {isStateBeside ? null : state}
           <Box key="context">
             {cell(labelW, line('context', { dim: true }))}
             {barOf('context-bar', facts?.contextTokens ?? 0, facts?.window ?? 0, barW, builderColor)}
