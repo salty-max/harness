@@ -300,7 +300,7 @@ export function readBoard(dir: string, today: string, kit?: CardKit): BoardCard[
 // ones but pushes and releases, 4 added each helper's day: an older day
 // cache is read again whole; 5 keeps every event id seen today, 6 the
 // Opus helpers' calls by moment, 7 each session's model and open helpers)
-const CACHE_VERSION = 8
+const CACHE_VERSION = 9
 
 type UsageCache = {
   version: number
@@ -537,12 +537,15 @@ export function scanLine(line: string, from: number, to: number, seen: Set<strin
   if (line.includes('<task-notification>')) {
     for (const [, id] of line.matchAll(/<tool-use-id>([\w-]+)<\/tool-use-id>/g)) if (id) delete state.sessions.open[id]
   }
-  // The mode a session is in, as Claude Code records it each time it changes (read off the line, unparsed).
-  if (line.startsWith('{"type":"permission-mode"')) {
+  // The mode a session is in, the last one the transcript records (read off the line, unparsed): a
+  // `permission-mode` row each time it changes in an interactive session, and the field on a main-loop
+  // user record (all a `-p` run writes: no row). A helper's own records are a sidechain.
+  const isModeRow = line.startsWith('{"type":"permission-mode"')
+  if (isModeRow || (line.includes('"permissionMode":"') && line.includes('"type":"user"') && !line.includes('"isSidechain":true'))) {
     const mode = /"permissionMode":"([\w-]+)"/.exec(line)?.[1]
     const id = /"sessionId":"([\w-]+)"/.exec(line)?.[1]
     if (mode && id) state.sessions.modes[id] = mode
-    return
+    if (isModeRow) return
   }
   const isUsage = line.includes('"type":"assistant"') && line.includes('"usage"')
   const isEvent = isEventLine(line)

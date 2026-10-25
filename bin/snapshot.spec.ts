@@ -230,13 +230,24 @@ describe('events in the transcripts', () => {
     ...extra,
   })
 
-  test("a session's permission mode: the last one the transcript recorded", () => {
+  test("a session's permission mode: the last one the transcript recorded, a row or a user record's field", () => {
     const s = state()
-    const mode = (m: string) => `{"type":"permission-mode","permissionMode":"${m}","sessionId":"s1"}`
-    scanLine(mode('plan'), from, to, new Set(), {}, s)
+    const row = (m: string) => `{"type":"permission-mode","permissionMode":"${m}","sessionId":"s1"}`
+    const user = (m: string, extra = '') => `{"parentUuid":null,"isSidechain":${extra || 'false'},"type":"user","message":{"role":"user","content":"hi"},"permissionMode":"${m}","sessionId":"s1"}`
+    // A `-p` run: a plan user record and no mode row at all.
+    scanLine(user('plan'), from, to, new Set(), {}, s)
     expect(s.sessions.modes.s1).toBe('plan')
-    scanLine(mode('auto'), from, to, new Set(), {}, s)
+    // Later, a mode row of auto: building again.
+    scanLine(row('auto'), from, to, new Set(), {}, s)
     expect(s.sessions.modes.s1).toBe('auto')
+    scanLine(row('plan'), from, to, new Set(), {}, s)
+    expect(s.sessions.modes.s1).toBe('plan')
+    // A helper's record (a sidechain) is not the session's.
+    scanLine(user('auto', 'true'), from, to, new Set(), {}, s)
+    expect(s.sessions.modes.s1).toBe('plan')
+    // A prompt that merely quotes the field is no record of it.
+    scanLine(`{"type":"user","message":{"content":"the \\"permissionMode\\":\\"plan\\" row"},"sessionId":"s2"}`, from, to, new Set(), {}, s)
+    expect(s.sessions.modes.s2).toBeUndefined()
   })
 
   test('a helper starting and finishing, with its model, tokens and time', () => {

@@ -16,11 +16,14 @@ holds the gates, the part of the harness that runs in code.
 
 - **Header**: the harness, and what this session does now: `PLANNING` or
   `BUILDING` and the model of its last call. The phase is the transcript's
-  permission mode (`permission-mode` rows, `bin/snapshot.ts`: a mode
-  naming `plan` is planning, anything else building). Seen so far, 25
-  October 2026, only `auto` rows: plan mode's own row has not been caught
-  in a transcript, so a planning session may read as building until it
-  is. Under the settings' `opusplan` a session planning on another model
+  permission mode, the last one its transcript records (`bin/snapshot.ts`): a
+  `permission-mode` row each time it changes, or the `permissionMode` field
+  of a main-loop user record, whichever comes last; a mode naming `plan` is
+  planning, anything else building. A `claude -p --permission-mode plan`
+  probe (25 October 2026) wrote no row, only `"permissionMode":"plan"` on its user
+  record, hence both. Interactive plan mode (Shift+Tab, opusplan) has not
+  been caught in a transcript yet: it is read from the same row and field,
+  the one inference left. Under the settings' `opusplan` a session planning on another model
   than Opus says `WANT OPUS` in red (`stance` in `hooks/format.ts`).
   Building on Opus is not flagged, the plain model is there to read: the
   settings can't tell a code session meant for Sonnet from a prose one
