@@ -488,6 +488,20 @@ describe('past midnight', () => {
     expect(Object.values(next.sessions.open).map(h => h.type)).toEqual(['reviewer'])
   })
 
+  test('a pane idle since the evening still finds the skill and the helper after midnight', async () => {
+    const projects = temp()
+    const cache = temp()
+    mkdirSync(join(projects, 'p'), { recursive: true })
+    const file = join(projects, 'p', 'S1.jsonl')
+    writeFileSync(file, tool(new Date(2026, 9, 25, 20, 0), 'sk0', 'Skill', { skill: 'child' }))
+    await readTranscripts(projects, cache, '2026-10-25', '/f')
+    // Nobody read from 21:00 to 00:30.
+    appendFileSync(file, tool(new Date(2026, 9, 25, 22, 0), 'sk1', 'Skill', { skill: 'wow-translating' }) + tool(new Date(2026, 9, 25, 22, 0), 'h1', 'Agent', { subagent_type: 'reviewer', run_in_background: true }))
+    const next = await readTranscripts(projects, cache, '2026-10-26', '/f')
+    expect(next.sessions.skills?.S1?.map(u => u.name).sort()).toEqual(['child', 'wow-translating'])
+    expect(Object.values(next.sessions.open).map(h => h.type)).toEqual(['reviewer'])
+  })
+
   test('the log starts twelve hours back until midday, the day after', () => {
     const day = '2026-10-26'
     expect(logSince(day, new Date(2026, 9, 26, 0, 10).getTime())).toBe(new Date(2026, 9, 25, 12, 10).getTime())

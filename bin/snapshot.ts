@@ -701,7 +701,7 @@ const KNOWN_MAX = 2000
  * session did stays (its skills, open helpers and model, the events, the files read so far), only the
  * day's figures start again (tokens, ids seen, the helpers' day).
  */
-function carriedOver(projects: string, cacheDir: string, day: string, fresh: UsageCache): UsageCache {
+function carriedOver(projects: string, cacheDir: string, day: string, fresh: UsageCache): { cache: UsageCache; since?: number } {
   let best: UsageCache | null = null
   try {
     for (const name of readdirSync(cacheDir)) {
@@ -713,7 +713,7 @@ function carriedOver(projects: string, cacheDir: string, day: string, fresh: Usa
       } catch {}
     }
   } catch {}
-  if (!best) return fresh
+  if (!best) return { cache: fresh }
   // Skills of sessions untouched for a week go, the ids known are capped (oldest first).
   const stale = dayBounds(day)[0] - 7 * 86_400_000
   const skills = Object.fromEntries(Object.entries(best.sessions.skills ?? {}).filter(([, uses]) => uses.some(u => u.at >= stale)))
@@ -725,13 +725,17 @@ function carriedOver(projects: string, cacheDir: string, day: string, fresh: Usa
   const only = <T,>(m: Record<string, T>) => Object.fromEntries(Object.entries(m).filter(([id]) => ids.has(id)))
   const now = dayBounds(day)[0]
   const open = Object.fromEntries(Object.entries(best.sessions.open).filter(([, h]) => now - h.at < OPEN_MAX_MS))
+  // The lines after the carried offsets are read from the day it was cut: a pane idle since the evening still finds them.
   return {
+    since: dayBounds(best.day)[0],
+    cache: {
     ...fresh,
     files,
     pending: Object.fromEntries(Object.entries(best.pending).filter(([, c]) => now - c.at < OPEN_MAX_MS)),
     events: best.events,
     sessions: { models: only(best.sessions.models), modes: only(best.sessions.modes), open, skills },
     known: best.known.slice(-KNOWN_MAX),
+    },
   }
 }
 
@@ -744,10 +748,9 @@ export async function readTranscripts(
   helpers: Record<string, string> = {},
   skillNames?: Set<string>,
 ): Promise<{ usage: Snapshot['usage']; events: HarnessEvent[]; helperDay: Record<string, HelperDay>; sessions: SessionDay }> {
-  const began = Date.now()
   const [dayFrom, to] = dayBounds(day)
   // The rows and events read a little before the day starts: a line written across midnight is read once, by its id.
-  const from = dayFrom - EDGE_MS
+  let from = dayFrom - EDGE_MS
   const cachePath = join(cacheDir, `usage-${day}.json`)
   let cache: UsageCache = { version: CACHE_VERSION, day, files: {}, seen: [], models: {}, pending: {}, events: [], helpers: {}, sessions: { models: {}, modes: {}, open: {}, skills: {} }, known: [] }
   try {
@@ -755,7 +758,9 @@ export async function readTranscripts(
     if (saved.day === day && saved.version === CACHE_VERSION) cache = saved
     else throw new Error('not today')
   } catch {
-    cache = carriedOver(projects, cacheDir, day, cache)
+    const carried = carriedOver(projects, cacheDir, day, cache)
+    cache = carried.cache
+    if (carried.since !== undefined) from = Math.min(from, carried.since)
   }
 
   const seen = new Set(cache.seen)
@@ -770,9 +775,9 @@ export async function readTranscripts(
     cache.files[path] = { offset: next }
   }
 
-  // A read that began before midnight and ran past it must not move the offsets over the new day's lines: the
+  // A read of a day just over (its day picked before midnight, the work after it) must not move the offsets over the new day's lines: the
   // cache stays as it was and the next day's reads them (the events by their ids).
-  if (began < to && Date.now() >= to) return { usage: { day, models: Object.values(cache.models), files: files.length }, events: state.events, helperDay: cache.helpers, sessions: cache.sessions }
+  if (Date.now() >= to && Date.now() - to < 60_000) return { usage: { day, models: Object.values(cache.models), files: files.length }, events: state.events, helperDay: cache.helpers, sessions: cache.sessions }
 
   cache.seen = [...seen]
   cache.events = state.events.sort((a, b) => b.at - a.at).slice(0, MAX_EVENTS)
