@@ -300,7 +300,7 @@ export function readBoard(dir: string, today: string, kit?: CardKit): BoardCard[
 // ones but pushes and releases, 4 added each helper's day: an older day
 // cache is read again whole; 5 keeps every event id seen today, 6 the
 // Opus helpers' calls by moment, 7 each session's model and open helpers)
-const CACHE_VERSION = 7
+const CACHE_VERSION = 8
 
 type UsageCache = {
   version: number
@@ -317,7 +317,7 @@ type UsageCache = {
 }
 
 /** What the transcripts say of each session: its main loop's last model, its helpers started and not yet back (by the Agent call's id). */
-export type SessionDay = { models: Record<string, string>; open: Record<string, { session: string; type: string; at: number }> }
+export type SessionDay = { models: Record<string, string>; /** Its permission mode as the transcript last recorded it (`plan`: planning, anything else building). */ modes: Record<string, string>; open: Record<string, { session: string; type: string; at: number }> }
 
 function listTranscripts(dir: string, since: number): { path: string; size: number }[] {
   const out: { path: string; size: number }[] = []
@@ -537,6 +537,13 @@ export function scanLine(line: string, from: number, to: number, seen: Set<strin
   if (line.includes('<task-notification>')) {
     for (const [, id] of line.matchAll(/<tool-use-id>([\w-]+)<\/tool-use-id>/g)) if (id) delete state.sessions.open[id]
   }
+  // The mode a session is in, as Claude Code records it each time it changes (read off the line, unparsed).
+  if (line.startsWith('{"type":"permission-mode"')) {
+    const mode = /"permissionMode":"([\w-]+)"/.exec(line)?.[1]
+    const id = /"sessionId":"([\w-]+)"/.exec(line)?.[1]
+    if (mode && id) state.sessions.modes[id] = mode
+    return
+  }
   const isUsage = line.includes('"type":"assistant"') && line.includes('"usage"')
   const isEvent = isEventLine(line)
   if (!isEvent && line.includes('"tool_result"')) {
@@ -630,7 +637,7 @@ export async function readTranscripts(
 ): Promise<{ usage: Snapshot['usage']; events: HarnessEvent[]; helperDay: Record<string, HelperDay>; moments: Record<string, MomentDay>; sessions: SessionDay }> {
   const [from, to] = dayBounds(day)
   const cachePath = join(cacheDir, `usage-${day}.json`)
-  let cache: UsageCache = { version: CACHE_VERSION, day, files: {}, seen: [], models: {}, pending: {}, events: [], helpers: {}, moments: {}, sessions: { models: {}, open: {} }, known: [] }
+  let cache: UsageCache = { version: CACHE_VERSION, day, files: {}, seen: [], models: {}, pending: {}, events: [], helpers: {}, moments: {}, sessions: { models: {}, modes: {}, open: {} }, known: [] }
   try {
     const saved = JSON.parse(readFileSync(cachePath, 'utf8')) as UsageCache
     if (saved.day === day && saved.version === CACHE_VERSION) cache = saved
@@ -766,6 +773,7 @@ export function readSessions(dir: string, root: string, day: SessionDay, now = D
         background: r.kind === 'bg',
         link: r.entrypoint === 'claude-desktop' && r.hostSessionId && /^[\w-]+$/.test(r.hostSessionId) ? `claude://claude.ai/epitaxy/${r.hostSessionId}` : null,
         model: day.models[id] ?? null,
+        mode: day.modes[id] ?? null,
         helpers,
       }
     })

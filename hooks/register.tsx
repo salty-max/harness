@@ -2,11 +2,11 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
 import type { AgentRow, AgentSteps, BoardCard, CheckStamp, HarnessEvent, LiveSession, ModelDay, RepoRow, SessionFacts, Snapshot } from '../types'
-import { ago, bar, FRESH_MS, type Moment, momentOf, tokens } from './format'
+import { ago, bar, FRESH_MS, type Moment, momentOf, stance, tokens } from './format'
 import type { MotionProps } from './motion'
 import { BAR_PX, barSvg, EDGE_PX, edgeSvg, LINE_PX, lineSvg, SIDE_PX } from './vector'
 
-export { ago, bar, tokens }
+export { ago, bar, stance, tokens }
 
 const PANE = 'harness'
 const TITLE = 'Harness'
@@ -17,7 +17,7 @@ const SNAPSHOT_MS = 30_000
 // The event log and the board looked at (a stat each): a line there reads anew at once.
 const WATCH_MS = 1_000
 const SESSION_MS = 1_000
-const LOG_LINES = 10
+const LOG_LINES = 6
 const AGES_MS = 30_000
 // The gaps between the boxes: a row between stacked ones, two columns beside.
 const GAP_Y = 1
@@ -336,8 +336,14 @@ export function toPush(repos: RepoRow[]): { repos: RepoRow[]; fresh: number; rev
 }
 
 /** The one status line: what claude-hud does not already say. */
-export function statusLine(snap: Snapshot | null, running: number, self: string | null = null): string {
+export function statusLine(snap: Snapshot | null, running: number, self: string | null = null, mine: { model: string | null; setting: string | null } | null = null): string {
   const parts: string[] = []
+  // First, what this session is doing and on which model: planning on Opus, building on Sonnet (opusplan), a wrong one flagged.
+  if (mine?.model) {
+    const mode = snap?.sessions?.find(x => x.id === self)?.mode ?? null
+    const { phase, wrong } = stance(mine.model, mode, mine.setting)
+    parts.push(`${phase} ${modelName(mine.model)}${wrong ? ` (want ${wrong})` : ''}`)
+  }
   if (snap) {
     // Another session stuck on a prompt first: it waits on the user, and nothing else says so.
     const asking = (snap.sessions ?? []).filter(x => x.status === 'waiting' && x.id !== self).length
@@ -549,7 +555,7 @@ async function refreshAgents($: EngineInterface) {
 
 async function refreshStatus($: EngineInterface) {
   const [snap, rows, facts] = await Promise.all([read($, snapshot), read($, agents), read($, session)])
-  const line = statusLine(snap, rows.filter(a => a.status === 'running').length, facts?.id ?? null)
+  const line = statusLine(snap, rows.filter(a => a.status === 'running').length, facts?.id ?? null, facts ? { model: facts.lastModel ?? facts.model, setting: facts.settings.model } : null)
   if (isChanged('status', line)) $.ui.status(line)
 }
 
@@ -971,26 +977,19 @@ export const register: Register = on => {
     const moment = runningOpus ? momentOf(runningOpus.type, runningOpus.description) : null
 
     // --- header --------------------------------------------------------------
-    const legend: [string, string][] = [
-      [PALETTE.opus, 'opus · plan'],
-      [PALETTE.sonnet, 'sonnet · build'],
-      [PALETTE.haiku, 'haiku · swarm'],
-      [PALETTE.gate, 'gates · code'],
-    ]
+    // What this session does now and on which model (the transcript's permission mode, the last call's model).
+    const mine = live.find(x => x.id === selfId)
+    const { phase, wrong } = stance(builder, mine?.mode, facts?.settings.model)
     const isShort = W < 64
     const header = (
       <Box key="header" flexDirection="column" width={W} alignItems="center">
         {runs('title', [
           [isShort ? 'HARNESS' : 'WOW-ADDONS HARNESS', { bold: true }],
           [' · ', { dim: true }],
-          [`${modelName(opusModel).toUpperCase()} PLANS`, { color: PALETTE.opus, bold: true }],
-          [' · ', { dim: true }],
-          [`${builderName.toUpperCase()} BUILDS`, { color: builderColor, bold: true }],
+          [phase.toUpperCase(), { color: builderColor, bold: true }],
+          [` ${builderName.toUpperCase()}`, { color: builderColor, bold: true }],
+          wrong ? [` · WANT ${wrong.toUpperCase()}`, { color: PALETTE.fail, bold: true }] : null,
         ])}
-        {runs(
-          'legend',
-          legend.flatMap(([color, label], i): (Run | null)[] => [i > 0 ? ['  ', {}] : null, ['■', { color }], [` ${isShort ? label.split(' ')[0] : label}`, { dim: true }]]),
-        )}
         <Box justifyContent="space-between" width={W}>
           {snap ? motion('updated', { kind: 'ago', at: snap.at, label: 'changed ' }) : <Text dimColor>reading…</Text>}
           <Button key="refresh" label="Refresh" onPress={() => void refreshSnapshot($, true)} />
@@ -1053,7 +1052,9 @@ export const register: Register = on => {
                   {line(newest.review.verdict ?? '', { color: verdictColor(newest.review.verdict) })}
                 </Box>
               )
-            : line(today ? `last ${clockTime(today.lastAt).slice(0, 5)}` : m.who === 'architect' && isOpusBuilding ? 'off in an opus session' : 'not today', { dim: true })
+            : today
+              ? line(`last ${clockTime(today.lastAt).slice(0, 5)}`, { dim: true })
+              : null
         return (
           <Box key={`moment-${m.key}`} flexDirection="column">
             {label}
@@ -1070,7 +1071,7 @@ export const register: Register = on => {
         <Box flexDirection="column" flexGrow={1}>
           <Box flexDirection="column" alignItems="center" width="100%">
             {line(modelName(opusModel).toUpperCase(), { bold: true, color: PALETTE.opus })}
-            {line(inner >= 30 ? 'second opinions, at four moments' : 'second opinions', { dim: true })}
+            {line(isOpusBuilding ? 'architect off, opus builds' : inner >= 30 ? 'second opinions, at four moments' : 'second opinions', { dim: true })}
             {runningOpus
               ? spinning('planner-state', `${runningOpus.type} at work [ `, true, PALETTE.opus, { color: PALETTE.opus })
               : spinning('planner-state', 'on call [ ', false, PALETTE.opus, { dim: true })}
@@ -1079,24 +1080,6 @@ export const register: Register = on => {
           <Box flexDirection="column" marginTop={1} flexGrow={isTall ? 1 : 0} justifyContent={isTall ? 'space-between' : 'flex-start'} gap={isTall ? 1 : 0}>
             {MOMENTS.map(row)}
           </Box>
-          {isTall ? (
-            <Box flexDirection="column" marginTop={1}>
-              {pair('runs', 'runs today', motion('opus-runs', { kind: 'count', value: opusRuns, unit: 'int', color: PALETTE.opus }), PALETTE.opus)}
-              {pair('tok', 'opus tokens', motion('opus-tokens', { kind: 'count', value: opusTokens, color: PALETTE.opus }), PALETTE.opus)}
-              {pair('time', 'their time', opusMs > 0 ? duration(opusMs) : '0s', PALETTE.opus)}
-            </Box>
-          ) : (
-            <Box marginTop={1}>
-              {runs('planner-day', [
-                [`${opusRuns} runs`, { color: PALETTE.opus }],
-                [' · ', { dim: true }],
-                [`${tokens(opusTokens)} tok`, { color: PALETTE.opus }],
-                [' · ', { dim: true }],
-                [opusMs > 0 ? duration(opusMs) : '0s', { color: PALETTE.opus }],
-                [' today', { dim: true }],
-              ])}
-            </Box>
-          )}
         </Box>,
         { running: runningOpus ? { lines: isTall ? 32 : 9 } : undefined },
       )
@@ -1113,7 +1096,7 @@ export const register: Register = on => {
         w,
         builderColor,
         <Box flexDirection="column" alignItems="center" width="100%">
-          {line(`${builderName} · main session`, { bold: true, color: builderColor })}
+          {line(`${phase} · ${builderName}${wrong ? ` · want ${wrong}` : ''}`, { bold: true, color: wrong ? PALETTE.fail : builderColor })}
           <Box key="context">
             <Text dimColor>context </Text>
             {barOf('context-bar', facts?.contextTokens ?? 0, facts?.window ?? 0, ctxW, builderColor)}
@@ -1134,7 +1117,7 @@ export const register: Register = on => {
             ? spinning('session-state', `[ ${running.map(a => a.type).join(', ')} running `, true, PALETTE.wait, { color: PALETTE.wait })
             : work.isRunning
               ? spinning('session-state', '[ working ', true, builderColor, { color: builderColor })
-              : line(`[ ${helperRuns} helper runs today · ${tokens(helperTokens)} tok ]`, { dim: true })}
+              : line('[ idle ]', { dim: true })}
         </Box>,
         { dashed: true, middle: true, running: work.isRunning ? { lines: 4 } : undefined },
       )
@@ -1147,7 +1130,6 @@ export const register: Register = on => {
       const limits = facts?.rateLimits ?? []
       const worst = limits.reduce<(typeof limits)[number] | null>((a, l) => (!a || l.percentUsed > a.percentUsed ? l : a), null)
       const isOk = !worst || worst.percentUsed < 80
-      const settings = facts?.settings
       const limitColor = (pct: number) => (pct >= 95 ? PALETTE.fail : pct >= 80 ? PALETTE.wait : PALETTE.ok)
       const limitName = (kind: string) => ({ five_hour: 'five hour', seven_day: 'seven day', spend_limit: 'spend' })[kind] ?? kind.replace(/_/g, ' ')
       const resets = worst?.resetsAt ? ` · ${resetIn(worst.resetsAt - now)}` : ''
@@ -1170,15 +1152,10 @@ export const register: Register = on => {
         'inactive',
         <>
           <Box justifyContent="space-between">
-            {line(inner >= 24 ? 'CONFIG & LIMITS' : 'CONFIG', { bold: true })}
+            {line('LIMITS', { bold: true })}
             <Box flexShrink={0}>{line(isOk ? ' [ OK ✓ ]' : ` [ ${Math.round(worst.percentUsed)}%${resets} ]`, { color: isOk ? PALETTE.ok : limitColor(worst.percentUsed) })}</Box>
           </Box>
-          {pair('model', 'model:', settings?.model ?? (facts ? family(facts.model) : '…'), PALETTE.sonnet)}
-          {pair('mode', 'mode:', settings?.mode ?? 'default', PALETTE.plain)}
-          {pair('context', 'context:', facts ? `${tokens(facts.window)} window` : '…', PALETTE.ok)}
           <Box flexDirection="column">{limits.length > 0 ? limits.map(limitRow) : pair('limits', 'limits:', facts ? 'none read yet' : '…', PALETTE.plain)}</Box>
-          {pair('asks', 'asks:', `${settings?.asks ?? 0} rules`, PALETTE.plain)}
-          {pair('subagents', 'subagents:', settings?.subagentModel ? `${settings.subagentModel} · env` : 'per helper', PALETTE.haiku)}
         </>,
       )
     }
@@ -1211,19 +1188,15 @@ export const register: Register = on => {
               </Box>
             )}
           </Box>
-          {gateMeter('checks', push.fresh, 'fresh', labelW, barW, figureW)}
-          {gateMeter('reviews', push.reviewed, 'current', labelW, barW, figureW)}
-          {meter('board', 'board', labelW, waiting, Math.max(board.length, 1), barW, `${waiting} waiting`, waiting > 0 ? PALETTE.wait : PALETTE.gate, figureW)}
-          <Box justifyContent="space-between">
-            {gates[0]
-              ? runs('gate-run', [
-                  [`q ${gates[0].name}`, { color: PALETTE.gate, bold: true }],
-                  [` · ${gates[0].repo}`, { dim: true }],
-                  gates.length > 1 ? [` +${gates.length - 1}`, { dim: true, fixed: true }] : null,
-                ])
-              : runs('stamp-note', [['stamp', { color: PALETTE.gate }], [' → push passes', { dim: true }]])}
-            {runs('refusal-note', [['refusal', { color: PALETTE.gate }], [' → the log', { dim: true }]])}
-          </Box>
+          {pushing > 0 ? gateMeter('checks', push.fresh, 'fresh', labelW, barW, figureW) : null}
+          {pushing > 0 ? gateMeter('reviews', push.reviewed, 'current', labelW, barW, figureW) : null}
+          {gates[0]
+            ? runs('gate-run', [
+                [`q ${gates[0].name}`, { color: PALETTE.gate, bold: true }],
+                [` · ${gates[0].repo}`, { dim: true }],
+                gates.length > 1 ? [` +${gates.length - 1}`, { dim: true, fixed: true }] : null,
+              ])
+            : null}
         </>,
         { running: isGating ? { lines: 6 } : undefined },
       )
@@ -1248,7 +1221,8 @@ export const register: Register = on => {
         .map(h => ({ name: h.name, model: day[h.name]?.model ?? h.model, description: h.description }))
       for (const [name, d] of Object.entries(day)) if (!seen.has(name) && !rest.some(r => r.name === name) && !opusDefs.some(o => o.name === name)) rest.push({ name, model: d.model, description: '' })
       rest.sort((a, b) => (day[b.name]?.runs ?? 0) - (day[a.name]?.runs ?? 0) || (day[b.name]?.lastAt ?? 0) - (day[a.name]?.lastAt ?? 0))
-      for (const r of rest) if (picks.length < k) picks.push(r)
+      // Only those that worked today: an idle helper that never ran says nothing.
+      for (const r of rest) if (picks.length < k && (day[r.name]?.runs ?? 0) > 0) picks.push(r)
       // Fewer boxes than room: centred, the middle one (an odd count) right under the line.
       const n = Math.max(1, picks.length)
       const used = n * bw + (n - 1) * gap
@@ -1260,7 +1234,6 @@ export const register: Register = on => {
           {picks.map((p, i) => {
             const color = modelColor(p.model)
             const today = day[p.name]
-            const share = helperTokens > 0 ? (today?.tokens ?? 0) / helperTokens : 0
             const model = p.model ? modelName(p.model) : 'model ?'
             return (
               <Box key={`helper-${p.name}`} marginLeft={i > 0 ? gap : 0}>
@@ -1271,11 +1244,6 @@ export const register: Register = on => {
                   <Box flexDirection="column" alignItems="center" width="100%">
                     {line(p.name, { bold: true })}
                     {p.agent ? spinning(`helper-${p.name}-state`, `${model} [ running `, true, color, { color }) : line(`${model} [ IDLE ]`, { color })}
-                    <Box key={`helper-${p.name}-share`}>
-                      {barOf(`helper-${p.name}-bar`, share, 1, Math.max(3, bw - 10), color)}
-                      <Text bold> {Math.round(share * 100)}%</Text>
-                    </Box>
-                    {line(p.description || 'built in', { dim: true })}
                     {line(
                       p.agent?.steps
                         ? `● ctx ${tokens(p.agent.steps.context)} · ${p.agent.steps.steps} calls`
@@ -1313,7 +1281,7 @@ export const register: Register = on => {
                   isReturning,
                   builderColor,
                 )
-              : line('rx: no handback today yet', { dim: true })}
+              : null}
         </Box>,
         { dashed: true, running: isReturning ? { lines: 3 } : undefined },
       )
@@ -1376,6 +1344,16 @@ export const register: Register = on => {
           )
         }
         return motion(key, { kind: 'flow', text: l.text, path: l.path, start: l.start, cycle, on: l.on, color: l.color, base: l.base })
+      }
+      // No helper at work or worked today, none handing back: the diagram ends at the gates.
+      if (fan.count === 0 && !back) {
+        return (
+          <Box key="flow" flexDirection="column" width={w}>
+            {pulse('to-gates-1')}
+            {pulse('to-gates-2')}
+            {gatesBox(w)}
+          </Box>
+        )
       }
       return (
         <Box key="flow" flexDirection="column" width={w}>
@@ -1496,6 +1474,10 @@ export const register: Register = on => {
       const [statusW = 5, ageW = 4] = fit([Math.min(15, Math.max(5, ...board.map(c => c.status.length + 1))), 4], inner)
       const busy = board.filter(c => c.status === 'running').length
       const blocked = board.filter(c => c.status === 'blocked').length
+      // Done cards are history: the newest three, the rest said in a count.
+      const open = board.filter(c => c.status !== 'done')
+      const done = board.filter(c => c.status === 'done').sort((a, b) => b.updated.localeCompare(a.updated))
+      const shownCards = [...open, ...done.slice(0, 3)]
       // What a blocked card waits for: the repositories other sessions' running cards hold of its own (board.ts's
       // lock: only a running card holds; its holder may drop one, another come to hold one), before the title so
       // it is never cut; "free now" once nothing holds them.
@@ -1513,7 +1495,7 @@ export const register: Register = on => {
           <Box justifyContent="space-between">
             {line('BOARD', { bold: true })}
             {runs('board-counts', [
-              [waiting > 0 ? `${waiting} waiting on you` : `${board.length} cards`, { color: waiting > 0 ? PALETTE.wait : undefined, dim: waiting === 0 }],
+              [waiting > 0 ? `${waiting} waiting on you` : `${open.length} open`, { color: waiting > 0 ? PALETTE.wait : undefined, dim: waiting === 0 }],
               busy > 0 && inner >= 40 ? [` · ${busy} running`, { color: PALETTE.ask }] : null,
               blocked > 0 ? [` · ${blocked} blocked`, { color: PALETTE.fail }] : null,
             ])}
@@ -1521,7 +1503,7 @@ export const register: Register = on => {
           <Box flexDirection="column">
           {board.length === 0
             ? line('no cards (board/*.md)', { dim: true })
-            : board.map(c => {
+            : shownCards.map(c => {
                 const at = Date.parse(c.updated)
                 return (
                   <Box key={`card-${c.id}`}>
@@ -1539,6 +1521,7 @@ export const register: Register = on => {
                   </Box>
                 )
               })}
+          {done.length > 3 ? line(`+${done.length - 3} done today`, { dim: true }) : null}
           </Box>
         </>,
       )
@@ -1552,7 +1535,11 @@ export const register: Register = on => {
       const held = holds(board)
       const heldN = [...held.values()].filter(k => k === 'held').length
       const [nameW = 10, markW = 13] = fit([Math.min(20, Math.max(10, ...repos.map(r => r.name.length + 3))), 13], colW, 8)
-      const perColumn = Math.ceil(repos.length / columns)
+      // A quiet repository (stamped, nothing to push, not held, no failed check) is a count, not a row.
+      const isQuiet = (r: RepoRow) => !r.failed && !!r.check?.isFresh && (r.ahead ?? 0) === 0 && !held.has(r.name)
+      const loud = repos.filter(r => !isQuiet(r))
+      const quiet = repos.length - loud.length
+      const perColumn = Math.ceil(loud.length / columns)
       const row = (r: RepoRow) => {
         const mark = checkMark(r.check, now, r.failed)
         const verdict = r.review?.verdict ?? null
@@ -1595,12 +1582,17 @@ export const register: Register = on => {
           {repos.length === 0 ? (
             line('reading…', { dim: true })
           ) : (
-            <Box>
-              {Array.from({ length: columns }, (_, i) => (
-                <Box key={`repo-col-${i}`} flexDirection="column" marginLeft={i > 0 ? 2 : 0}>
-                  {repos.slice(i * perColumn, (i + 1) * perColumn).map(row)}
+            <Box flexDirection="column">
+              {loud.length > 0 ? (
+                <Box>
+                  {Array.from({ length: columns }, (_, i) => (
+                    <Box key={`repo-col-${i}`} flexDirection="column" marginLeft={i > 0 ? 2 : 0}>
+                      {loud.slice(i * perColumn, (i + 1) * perColumn).map(row)}
+                    </Box>
+                  ))}
                 </Box>
-              ))}
+              ) : null}
+              {quiet > 0 ? line(`${quiet} more stamped, nothing to push`, { dim: true }) : null}
             </Box>
           )}
         </>,
@@ -1629,7 +1621,7 @@ export const register: Register = on => {
         const what =
           x.status === 'waiting'
             ? line(x.waitingFor ?? 'waiting on you', { color: PALETTE.wait })
-            : line(`${x.model ? modelName(x.model) : '—'}${helping.length ? ` · ${helping.join(', ')}` : ''}`, { color: helping.length ? PALETTE.wait : x.model ? modelColor(x.model) : 'inactive' })
+            : line(`${x.model ? `${stance(x.model, x.mode, null).phase === 'planning' ? 'plan' : 'build'} ${modelName(x.model)}` : '—'}${helping.length ? ` · ${helping.join(', ')}` : ''}`, { color: helping.length ? PALETTE.wait : x.model ? modelColor(x.model) : 'inactive' })
         const card = cardOf(x)
         return (
           <Box key={`session-${x.id}`} alignItems="center">
@@ -1736,37 +1728,6 @@ export const register: Register = on => {
       </>,
     )
 
-    const statusPair = (label: string, value: string, color: string): Run[] => [
-      [`${label} [ `, { dim: true }],
-      [value, { color, bold: true }],
-      [' ] ', { dim: true }],
-    ]
-    const footer = (
-      <Box key="footer" flexDirection="column" width={W} marginTop={1}>
-        {runs('prompt', [
-          ['~/code/wow-addons $ ', { color: PALETTE.ok }],
-          ['claude --model ', { dim: true }],
-          [facts?.settings.model ?? family(builder), { color: builderColor }],
-          [' ', { inverse: true }],
-        ])}
-        {/* Each pair whole, the ones that don't fit on the next line: cut, five pairs read as nothing. */}
-        <Box key="status-bar" flexWrap="wrap" width={W}>
-          {[
-            statusPair('helpers', `${running.length}/${Math.max(helpers.length, running.length)} active`, running.length > 0 ? PALETTE.wait : PALETTE.haiku),
-            statusPair(family(opusModel), `${opusRuns} runs`, PALETTE.opus),
-            statusPair('gates', pushing > 0 ? `${push.ready}/${pushing} ready` : 'nothing to push', push.ready < pushing ? PALETTE.wait : PALETTE.ok),
-            statusPair('sessions', `${live.length} live${live.some(x => x.status === 'waiting' && x.id !== selfId) ? ' · asking' : ''}`, live.some(x => x.status === 'waiting' && x.id !== selfId) ? PALETTE.wait : PALETTE.plain),
-            statusPair('board', `${waiting} waiting`, waiting > 0 ? PALETTE.wait : PALETTE.ok),
-            statusPair('today', tokens(dayTotal), PALETTE.plain),
-          ].map((pair, i) => (
-            <Box key={`status-${i}`} flexShrink={0}>
-              {runs(`status-${i}-runs`, pair)}
-            </Box>
-          ))}
-        </Box>
-      </Box>
-    )
-
     return (
       <Box flexDirection="column" width={W}>
         {header}
@@ -1780,7 +1741,6 @@ export const register: Register = on => {
         <Box marginTop={gapY} flexDirection="column">
           {log}
         </Box>
-        {footer}
       </Box>
     )
   })

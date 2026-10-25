@@ -14,50 +14,54 @@ them, bars of block characters with a checkered rest, statuses ok green,
 waiting amber, failed red. The mock-up's "JEV router" is not ours: its place
 holds the gates, the part of the harness that runs in code.
 
-- **Header**: the harness, the planner's model, the model building now
-  (the last call's: opusplan's Sonnet), a legend of the colours.
+- **Header**: the harness, and what this session does now: `PLANNING` or
+  `BUILDING` and the model of its last call. The phase is the transcript's
+  permission mode (`permission-mode` rows, `bin/snapshot.ts`: `plan` is
+  planning, anything else building); under the settings' `opusplan` Opus
+  should plan and Sonnet build, and a session on the other says `WANT
+  SONNET` (or `OPUS`) in red (`stance` in `hooks/format.ts`). A prose
+  session on plain `opus` expects nothing. 25 October 2026: every main
+  session had run on Opus, unseen.
 - **Planner** (Opus, the tall box on the left): second opinions, eyes that
   didn't write the change, at the family's four moments (CLAUDE.md,
   "Helpers"). Each moment names who it calls (the architect before a plan,
   when the same error comes back, before done; the reviewer before a
   push), a bar of today's Opus calls by moment and their count (◆ once
   called today, ◇ not yet), and its last word: the reviewer's newest
-  recorded verdict (its repository, how long ago), the architect's last
-  call, or "off in an opus session" (the architect is for a Sonnet
-  session: off while Opus builds, unless the settings' model is
-  `opusplan`). A running Opus helper lights its moment, its context and
-  calls live under it, the box's header saying who is at work. At its foot
-  their runs, tokens and time today. Narrower, one line a moment. The
+  recorded verdict (its repository, how long ago), or the time of the
+  last call. The architect is for a Sonnet session: while Opus builds
+  (unless the settings' model is `opusplan`) the subtitle says "architect
+  off, opus builds". A running Opus helper lights its moment, its context
+  and calls live under it, the box's header saying who is at work. The
   calls by moment are counted as each starts (`bin/snapshot.ts`,
   `momentOf` in `hooks/format.ts`: the reviewer's is the push, the
   architect's read from its brief).
-- **Main session** (dashed): its model, context fill, effort, cost, and the
-  helpers running. **Config & limits**: model and mode from the settings,
-  the context window, the plan's rate limits as meters (green, amber from
-  80%, red from 95%; past 80% the title's mark gives the fullest window
-  and when it resets), the ask rules, the subagent model
-  (`CLAUDE_CODE_SUBAGENT_MODEL`, else per helper).
+- **Main session** (dashed): planning or building and its model, context
+  fill, effort, cost, and the helpers running. **Limits**: the plan's rate
+  limits as meters (green, amber from 80%, red from 95%; past 80% the
+  title's mark gives the fullest window and when it resets). The settings'
+  model, mode, context window, ask rules and subagent model were rows here
+  until 25 October 2026: the header says the model, the settings are one
+  file away.
 - **Gates**: what waits to be pushed (the repositories with commits their
   upstream lacks, or no remote has on a branch never pushed, `to push 6`): how many of them are stamped (`fresh`,
   pre-push lets them through) and reviewed (`current`, a verdict on HEAD
   whose reviewer read all the push sends: its packet's base already on the
   upstream and its tip not yet, the commits after the tip its findings'
   fixes),
-  amber while one isn't, `nothing to push` and `—` when none waits (the
-  repositories' box has them all); cards waiting. At work only while a
+  amber while one isn't; with nothing to push the box is its title and
+  `nothing to push`, no meters. At work only while a
   q.ts run goes on, in any session, the run named where the stamp's note
   stands (`q check · yonder`, `+1` for more).
 - **Helpers**, fanned out from the gates: running ones first, then the
-  family's (`.claude/agents/*.md`) and today's, the busiest first (by runs,
-  then the latest), the planner's left to it. Each with its model, status,
-  its share of today's helper tokens, runs and tokens (or its live context
-  and calls).
+  family's that worked today, the busiest first (by runs, then the
+  latest), the planner's left to it; a helper that never ran today isn't
+  drawn. Each with its model, status, runs and tokens (or its live context
+  and calls). With none running or worked, and nothing handing back, the
+  diagram ends at the gates.
 - **Back to lead** (dashed): the last helper's handback, tokens and time;
   "handing back" while a helper of this session has just finished and the
-  shared numbers don't have its figures yet.
-- **Sessions**: every session running in the family folder, this one
-  among them (below).
-- **Today**, **Board**: tokens by model, the board's cards (below).
+  shared numbers don't have its figures yet. Drawn with the helpers only.
 - **Repositories**: each family repository's newest check stamp
   (`.git/harness/check-<tree>`, read through `addon-kit/q.ts`) and review.
   `✓ 12m`: HEAD's tree is stamped, so a push of HEAD passes pre-push.
@@ -77,10 +81,13 @@ holds the gates, the part of the harness that runs in code.
   running card names it (a session is at work there), `○` amber while
   only cards stopped mid-task do (blocked, or waiting on the user: their
   commits go out with its next push); the header counts the held ones.
+  A quiet repository (stamped, nothing to push, not held, no failed
+  check) isn't a row: "12 more stamped, nothing to push".
 - **Sessions**: one row a live session, waiting on you first, then busy,
   then idle: its status (a spinner while busy, amber while it waits on
   you, with what for: "permission prompt"), its title, its main loop's
-  last model and its helpers running, its newest open card's status,
+  last model with `plan` or `build` before it (the mode its transcript
+  last recorded) and its helpers running, its newest open card's status,
   how long since its status changed, and **Open** for a desktop session:
   the press hands the desktop app the session's own link
   (`/usr/bin/open claude://claude.ai/epitaxy/<its desktop id>`; the
@@ -106,22 +113,24 @@ holds the gates, the part of the harness that runs in code.
   other sessions waiting on you.
 - **Today**: tokens by model from every transcript under
   `~/.claude/projects/**/*.jsonl` (each assistant message once, by its id,
-  local day), with the share of cache reads.
+  local day), with the share of cache reads. It counts on its own, not
+  through `addon-kit/usage.ts` (25 October 2026): usage.ts answers what a
+  card or a commit cost, in dollars, from one session's transcripts and
+  too slow to run each two seconds; this is a live figure by model. Both
+  read the same transcripts and count each message once by its id.
 - **Board**: the cards in `~/code/wow-addons/board/*.md`, written by
   `addon-kit/board.ts` and read with its own parser. Waiting and
   ready-to-push cards first, then blocked ones, then running, done cards
-  only from today. Each card's repositories (`wow-data+yonder`), its status
+  only the newest three (the rest a count). Each card's repositories (`wow-data+yonder`), its status
   in its colour (waiting on you amber, running cyan, blocked red, done
   green); a blocked card says the repositories it waits for (those of its
   own another session's running card holds; that card is on the board
   too), or "free now" once nothing holds them. The header counts what waits on you,
   what runs and what is blocked.
-- **Session log**: today's last 10 events, newest first: the time, the
+- **Session log**: today's last 6 events, newest first: the time, the
   source in its colour (a helper as `opus:reviewer`), the repository and
   what happened, a figure on the right in its status's colour (stamped,
-  failed, spawn, 86k tok, allowed). Under it the prompt line and a status
-  bar: helpers active, Opus runs, gates (ready to push: stamped and
-  reviewed, of those to push), cards waiting, today's tokens.
+  failed, spawn, 86k tok, allowed).
   - `check` (or a q.ts run of another name): the verdict line and the
     stamp, written by `addon-kit/q.ts`;
   - `hook`: a git hook refusing a commit or a push (`githooks/_event`);
@@ -212,7 +221,8 @@ regions mid-pulse included), the desktop app can't be captured from here. A prom
 their day totals are today's only.
 
 The status line under the prompt (`$.ui.status`) says what claude-hud does
-not: cards waiting, agents running, the repositories with something to
+not: this session's phase and model first (`planning opus 5.5`, `building
+sonnet 5.5`, `(want sonnet)` after a wrong one), then cards waiting, agents running, the repositories with something to
 push that are ready (stamped and reviewed, `ready to push 0/6`; nothing
 when none waits), today's tokens by model family. One line, beside claude-hud, which is left
 untouched. `/harness` opens the pane again once closed.

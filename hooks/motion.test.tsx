@@ -20,6 +20,9 @@ const snap = (events: HarnessEvent[] = []): Snapshot => ({
   helperDay: {},
 })
 
+// Each helper has worked today: an idle one that never ran isn't drawn.
+const WORKED = Object.fromEntries(['data-scout', 'prose-reader', 'Explore'].map(name => [name, { runs: 1, tokens: 1000, ms: 1000, lastAt: AT - 600_000, model: 'sonnet' }]))
+
 const PANE = {
   component: 'Pane',
   requestId: 'harness',
@@ -99,7 +102,9 @@ test('the lines pulse while the turn runs and stand still once it ends (the term
   // Lit within a round of the cycle: the heavy stroke, bold.
   const lights = async (key: string) => {
     for (let i = 0; i < 40; i++) {
-      if (JSON.stringify(await ui.drawn({ in: key })).includes('"bold":true')) return true
+      // A line not drawn (no helper to lead to) lights nothing.
+      const drawn = await ui.drawn({ in: key }).catch(() => null)
+      if (drawn && JSON.stringify(drawn).includes('"bold":true')) return true
       await ui.advance(FRAME_MS)
     }
     return false
@@ -174,7 +179,7 @@ test('the pulse goes out to the running helpers alone, back to the lead once one
     { name: 'prose-reader', model: 'sonnet', description: 'Reads text cold.' },
     { name: 'Explore', model: 'haiku', description: 'Searches.' },
   ]
-  const { clock } = world(on, { snapshot: () => ({ ...snap(), helpers, gates }), agents: () => agents })
+  const { clock } = world(on, { snapshot: () => ({ ...snap(), helpers, gates, helperDay: WORKED }), agents: () => agents })
   await $.session.start({ cwd: FAMILY, surface: 'desktop', isInteractive: true })
   const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'desktop', ...PANE })
   await ui.press({ key: 'refresh' })
@@ -213,7 +218,7 @@ test('in the terminal too: the cells lit out are the running box\'s way alone, t
     { name: 'prose-reader', model: 'sonnet', description: 'Reads text cold.' },
     { name: 'Explore', model: 'haiku', description: 'Searches.' },
   ]
-  const { clock } = world(on, { snapshot: () => ({ ...snap(), helpers }), agents: () => agents, surface: 'terminal' })
+  const { clock } = world(on, { snapshot: () => ({ ...snap(), helpers, helperDay: WORKED }), agents: () => agents, surface: 'terminal' })
   await $.session.start({ cwd: FAMILY, surface: 'desktop', isInteractive: true })
   const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'terminal', ...PANE })
   await ui.press({ key: 'refresh' })
@@ -336,7 +341,7 @@ describe('the vector parts', () => {
 })
 
 test("the desktop's layout traps: a centred box's lines on a full-width layer, rows of runs that can shrink", async ($, on) => {
-  world(on, { snapshot: () => ({ ...snap(), helpers: [{ name: 'prose-reader', model: 'sonnet', description: 'Reads player-facing text in one language cold and flags rule breaks.' }] }) })
+  world(on, { snapshot: () => ({ ...snap(), helpers: [{ name: 'prose-reader', model: 'sonnet', description: 'Reads player-facing text in one language cold and flags rule breaks.' }], helperDay: WORKED }) })
   const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'desktop', ...PANE })
   await ui.press({ key: 'refresh' })
   type Node = { type?: string; props?: Record<string, unknown>; children?: unknown[] }

@@ -215,7 +215,7 @@ describe('events in the transcripts', () => {
   const from = new Date(2026, 9, 20).getTime()
   const to = new Date(2026, 9, 21).getTime()
   const noon = new Date(2026, 9, 20, 12).toISOString()
-  const state = (): EventState => ({ root: '/f', models: { reviewer: 'opus' }, pending: {}, events: [], helpers: {}, moments: {}, sessions: { models: {}, open: {} }, known: new Set() })
+  const state = (): EventState => ({ root: '/f', models: { reviewer: 'opus' }, pending: {}, events: [], helpers: {}, moments: {}, sessions: { models: {}, modes: {}, open: {} }, known: new Set() })
   const call = (id: string, name: string, input: Record<string, unknown>, cwd = '/f/yonder') => ({
     type: 'assistant',
     timestamp: noon,
@@ -228,6 +228,15 @@ describe('events in the transcripts', () => {
     cwd,
     message: { content: [{ type: 'tool_result', tool_use_id: id, content: 'x' }] },
     ...extra,
+  })
+
+  test("a session's permission mode: the last one the transcript recorded", () => {
+    const s = state()
+    const mode = (m: string) => `{"type":"permission-mode","permissionMode":"${m}","sessionId":"s1"}`
+    scanLine(mode('plan'), from, to, new Set(), {}, s)
+    expect(s.sessions.modes.s1).toBe('plan')
+    scanLine(mode('auto'), from, to, new Set(), {}, s)
+    expect(s.sessions.modes.s1).toBe('auto')
   })
 
   test('a helper starting and finishing, with its model, tokens and time', () => {
@@ -585,7 +594,7 @@ describe('the live sessions', () => {
     // A kind of another shape (an internal format) only means not a background one: the session stays.
     write(dir, 22, { name: 'Odd kind', kind: { not: 'a string' }, statusUpdatedAt: 400_000 })
     const starts = (pids: number[]) => new Map(pids.filter(p => p !== 15).map(p => [p, p === 16 ? 9_000_000 : 999_000] as [number, number]))
-    const day = { models: { s11: 'claude-sonnet-5-5' }, open: { t1: { session: 's11', type: 'reviewer', at: 2_500_000 }, t2: { session: 's99', type: 'Explore', at: 2_500_000 } } }
+    const day = { models: { s11: 'claude-sonnet-5-5' }, modes: { s11: 'plan' }, open: { t1: { session: 's11', type: 'reviewer', at: 2_500_000 }, t2: { session: 's99', type: 'Explore', at: 2_500_000 } } }
     const live = readSessions(dir, root, day, 3_000_000, starts)
     expect(live?.map(s => [s.name, s.status, s.waitingFor, s.link])).toEqual([
       ['Downloads', 'waiting', 'permission prompt', 'claude://claude.ai/epitaxy/local_bb-12'],
@@ -596,7 +605,7 @@ describe('the live sessions', () => {
     ])
     // A background one (`claude --bg`, session.ts's) says so: `claude attach` joins it.
     expect(live?.map(s => s.background)).toEqual([false, false, false, true, false])
-    expect(live?.[1]).toMatchObject({ id: 's11', model: 'claude-sonnet-5-5', helpers: [{ type: 'reviewer', at: 2_500_000 }], since: 2_000_000 })
+    expect(live?.[1]).toMatchObject({ id: 's11', model: 'claude-sonnet-5-5', mode: 'plan', helpers: [{ type: 'reviewer', at: 2_500_000 }], since: 2_000_000 })
     // A helper open for hours was never seen back: left out.
     expect(readSessions(dir, root, day, 2_500_000 + 7 * 3600_000, starts)?.[1]?.helpers).toEqual([])
     // No registry, or no ps: nothing known (undefined), not "no session".

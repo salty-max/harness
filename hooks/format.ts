@@ -48,3 +48,16 @@ export function momentOf(type: string, description: string): Moment | null {
   if (/\b(done|finish\w*|sign(s|ed|ing)?[- ]?off)\b/i.test(description)) return 'done'
   return 'plan'
 }
+
+/**
+ * Whether a session is planning or building, and whether its model is the one
+ * that phase should run on: under opusplan Opus plans (plan mode) and Sonnet
+ * builds, so a session on the other one is `wrong` (the model it should be
+ * on). Any other setting (a prose session's plain `opus`) expects nothing.
+ */
+export function stance(model: string | null | undefined, mode: string | null | undefined, setting: string | null | undefined): { phase: 'planning' | 'building'; wrong: 'opus' | 'sonnet' | null } {
+  const phase = mode === 'plan' ? 'planning' : 'building'
+  const kind = /opus|sonnet|haiku|fable/.exec(model ?? '')?.[0]
+  const want = phase === 'planning' ? 'opus' : 'sonnet'
+  return { phase, wrong: setting === 'opusplan' && kind && kind !== want ? want : null }
+}

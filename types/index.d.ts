@@ -105,6 +105,8 @@ export type LiveSession = {
   link: string | null
   /** Its main loop's last model today. */
   model: string | null
+  /** Its permission mode as the transcript last recorded it: `plan` is planning, anything else building. */
+  mode: string | null
   /** Its helpers running: started, no result yet (a background one: no notice of its end yet). */
   helpers: { type: string; at: number }[]
 }

@@ -21,6 +21,7 @@ import {
   sourceColor,
   sourceLabel,
   statusLine,
+  stance,
   tokens,
   toPush,
   toneColor,
@@ -238,8 +239,9 @@ test('the pane draws the board, the checks and the day on every surface', async 
       const at = `${surface} ${bodyColumns}`
       const has = async (text: string | RegExp) => expect([at, text, (await ui.find({ text })) !== undefined]).toEqual([at, text, true])
       await has(bodyColumns >= 64 ? 'WOW-ADDONS HARNESS' : 'HARNESS')
-      await has('OPUS 5.5 PLANS')
-      await has('CONFIG & LIMITS')
+      // This session's phase and model, first thing: building here (no plan mode recorded), on Opus.
+      await has('BUILDING')
+      await has('LIMITS')
       await has(/^GATES /)
       await has(/^back to /)
       // The planner says what it is for, each moment who it calls.
@@ -272,6 +274,19 @@ test('the pane draws the board, the checks and the day on every surface', async 
   expect(runs[0]?.[0]).toBe('bun')
   expect(runs[0]?.slice(2)).toEqual(['--root', '/Users/someone/code/wow-addons', '--fresh'])
   expect(statuses.at(-1)).toBe('harness · board 1 waiting · ready to push 0/2 · today opus 109M haiku 735k')
+})
+
+test("planning or building, on which model: opusplan wants Opus planning and Sonnet building, a wrong one is said", () => {
+  expect(stance('claude-opus-5-5', 'plan', 'opusplan')).toEqual({ phase: 'planning', wrong: null })
+  expect(stance('claude-sonnet-5-5', 'auto', 'opusplan')).toEqual({ phase: 'building', wrong: null })
+  // Every session ran on Opus, unseen, 20-25 October: building on Opus under opusplan is the one to catch.
+  expect(stance('claude-opus-5-5', 'auto', 'opusplan')).toEqual({ phase: 'building', wrong: 'sonnet' })
+  expect(stance('claude-sonnet-5-5', 'plan', 'opusplan')).toEqual({ phase: 'planning', wrong: 'opus' })
+  // A prose session on plain Opus expects nothing; no mode recorded is building.
+  expect(stance('claude-opus-5-5', null, 'opus')).toEqual({ phase: 'building', wrong: null })
+  const snap = { ...SNAPSHOT, sessions: [{ id: 'me', pid: 1, name: 'x', status: 'busy', waitingFor: null, since: 0, entrypoint: 'cli', link: null, model: 'claude-opus-5-5', mode: 'plan', helpers: [] }] } as Snapshot
+  expect(statusLine(snap, 0, 'me', { model: 'claude-opus-5-5', setting: 'opusplan' })).toStartWith('harness · planning opus 5.5 · ')
+  expect(statusLine({ ...snap, sessions: [{ ...snap.sessions![0]!, mode: 'auto' }] }, 0, 'me', { model: 'claude-opus-5-5', setting: 'opusplan' })).toStartWith('harness · building opus 5.5 (want sonnet) · ')
 })
 
 test("the plan's limits are meters, the planner's moments say who, how often and their last word", async ($, on) => {
@@ -322,8 +337,7 @@ test("the plan's limits are meters, the planner's moments say who, how often and
         // Who each moment calls, and its last word: the newest verdict, or why the architect stays off.
         await has('reviewer')
         await has('no findings')
-        await has('off in an opus session')
-        await has('their time')
+        await has('architect off, opus builds')
       }
       await ui.unmount()
     }
@@ -530,8 +544,10 @@ test("the repositories' box says first why a verdict doesn't count: older, parti
   await ui.press({ key: 'refresh' })
   // Once each (partial, unpacked, stale): the ready row and the one with nothing to push say none.
   const states = await ui.findAll({ type: 'Text', text: /^(older|partial|no packet) $/ })
-  expect(states.map(t => t.text).sort()).toEqual(['no packet ', 'older ', 'partial '])
-  expect((await ui.findAll({ type: 'Text', text: /long verdict that runs past the cell\) f4ab31a$/ })).length).toBe(5)
+  expect(states.map(t => t.text).sort()).toEqual(['no packet ', 'partial '])
+  expect((await ui.findAll({ type: 'Text', text: /long verdict that runs past the cell\) f4ab31a$/ })).length).toBe(3)
+  // The two stamped ones with nothing to push are a count, not rows.
+  expect(await ui.find({ text: '2 more stamped, nothing to push' })).toBeDefined()
   await ui.unmount()
 })
 
@@ -553,9 +569,9 @@ test("the gates' meters and the status bar: what waits to be pushed, or nothing 
       await has(/^to push $/, isWaiting)
       await has('1/2 fresh', isWaiting)
       await has('1/2 current', isWaiting)
-      await has('0/2 ready', isWaiting)
       await has('nothing to push', !isWaiting)
-      expect([at, (await ui.findAll({ type: 'Text', text: /^—$/ })).length]).toEqual([at, isWaiting ? 0 : 2])
+      // Nothing to push: the meters are gone, one line says so.
+      await has(/^checks$/, isWaiting)
       // The repositories' box still has them all.
       await has('1/2 pushable')
       await ui.unmount()
@@ -598,7 +614,6 @@ test('the gates are at work only while a q.ts run goes on, not for a helper or t
       if (surface === 'terminal') expect([at, (await ui.find({ key: 'gates-top' })) !== undefined]).toEqual([at, isOn])
       // The run named where the stamp's note stands, the others counted.
       expect([at, (await ui.find({ text: 'q check' })) !== undefined, (await ui.find({ text: ' +1' })) !== undefined]).toEqual([at, isOn, isOn])
-      expect([at, (await ui.find({ text: /^stamp$/ })) !== undefined]).toEqual([at, !isOn])
       await ui.unmount()
     }
   }
