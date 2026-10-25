@@ -960,10 +960,6 @@ export const register: Register = on => {
     const builderColor = modelColor(builder)
     const opusDefs = helpers.filter(h => family(h.model) === 'opus')
     const opusModel = Object.entries(day).find(([name]) => opusDefs.some(d => d.name === name))?.[1].model ?? opusDefs[0]?.model ?? 'opus'
-    const opusRuns = opusDefs.reduce((n, d) => n + (day[d.name]?.runs ?? 0), 0)
-    const opusTokens = opusDefs.reduce((n, d) => n + (day[d.name]?.tokens ?? 0), 0)
-    const helperRuns = Object.values(day).reduce((n, d) => n + d.runs, 0)
-    const helperTokens = Object.values(day).reduce((n, d) => n + d.tokens, 0)
     const fresh = repos.filter(r => r.check?.isFresh).length
     const push = toPush(repos)
     const pushing = push.repos.length
@@ -1005,7 +1001,6 @@ export const register: Register = on => {
     // for a Sonnet session only). A running helper lights its moment, its
     // calls and context live under it.
     const isTall = tier === 'wide'
-    const opusMs = opusDefs.reduce((n, d) => n + (day[d.name]?.ms ?? 0), 0)
     const planner = (w: number) => {
       const inner = w - 4
       const moments = snap?.moments ?? {}
@@ -1535,8 +1530,8 @@ export const register: Register = on => {
       const held = holds(board)
       const heldN = [...held.values()].filter(k => k === 'held').length
       const [nameW = 10, markW = 13] = fit([Math.min(20, Math.max(10, ...repos.map(r => r.name.length + 3))), 13], colW, 8)
-      // A quiet repository (stamped, nothing to push, not held, no failed check) is a count, not a row.
-      const isQuiet = (r: RepoRow) => !r.failed && !!r.check?.isFresh && (r.ahead ?? 0) === 0 && !held.has(r.name)
+      // A quiet repository (stamped with no edits since, nothing to push, not held, no failed check) is a count, not a row.
+      const isQuiet = (r: RepoRow) => !r.failed && !!r.check?.isFresh && !!r.check.isWorkFresh && (r.ahead ?? 0) === 0 && !held.has(r.name)
       const loud = repos.filter(r => !isQuiet(r))
       const quiet = repos.length - loud.length
       const perColumn = Math.ceil(loud.length / columns)

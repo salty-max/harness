@@ -50,14 +50,16 @@ export function momentOf(type: string, description: string): Moment | null {
 }
 
 /**
- * Whether a session is planning or building, and whether its model is the one
- * that phase should run on: under opusplan Opus plans (plan mode) and Sonnet
- * builds, so a session on the other one is `wrong` (the model it should be
- * on). Any other setting (a prose session's plain `opus`) expects nothing.
+ * Whether a session is planning or building, and whether planning is on the
+ * model it should be: under opusplan Opus plans, so a session in plan mode on
+ * another model is `wrong` (the model it should be on). Building on Opus is
+ * not flagged: the settings can't tell a code session that should build on
+ * Sonnet from a prose one that is meant to stay on Opus, the plain Opus of
+ * `--model opus` never reaching `$.settings.read()`. The pane says the model
+ * plainly there.
  */
-export function stance(model: string | null | undefined, mode: string | null | undefined, setting: string | null | undefined): { phase: 'planning' | 'building'; wrong: 'opus' | 'sonnet' | null } {
-  const phase = mode === 'plan' ? 'planning' : 'building'
+export function stance(model: string | null | undefined, mode: string | null | undefined, setting: string | null | undefined): { phase: 'planning' | 'building'; wrong: 'opus' | null } {
+  const phase = mode?.includes('plan') ? 'planning' : 'building'
   const kind = /opus|sonnet|haiku|fable/.exec(model ?? '')?.[0]
-  const want = phase === 'planning' ? 'opus' : 'sonnet'
-  return { phase, wrong: setting === 'opusplan' && kind && kind !== want ? want : null }
+  return { phase, wrong: setting === 'opusplan' && phase === 'planning' && kind && kind !== 'opus' ? 'opus' : null }
 }

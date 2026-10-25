@@ -16,12 +16,15 @@ holds the gates, the part of the harness that runs in code.
 
 - **Header**: the harness, and what this session does now: `PLANNING` or
   `BUILDING` and the model of its last call. The phase is the transcript's
-  permission mode (`permission-mode` rows, `bin/snapshot.ts`: `plan` is
-  planning, anything else building); under the settings' `opusplan` Opus
-  should plan and Sonnet build, and a session on the other says `WANT
-  SONNET` (or `OPUS`) in red (`stance` in `hooks/format.ts`). A prose
-  session on plain `opus` expects nothing. 25 October 2026: every main
-  session had run on Opus, unseen.
+  permission mode (`permission-mode` rows, `bin/snapshot.ts`: a mode
+  naming `plan` is planning, anything else building). Seen so far, 25
+  October 2026, only `auto` rows: plan mode's own row has not been caught
+  in a transcript, so a planning session may read as building until it
+  is. Under the settings' `opusplan` a session planning on another model
+  than Opus says `WANT OPUS` in red (`stance` in `hooks/format.ts`).
+  Building on Opus is not flagged, the plain model is there to read: the
+  settings can't tell a code session meant for Sonnet from a prose one
+  meant for Opus (`--model opus` never reaches them).
 - **Planner** (Opus, the tall box on the left): second opinions, eyes that
   didn't write the change, at the family's four moments (CLAUDE.md,
   "Helpers"). Each moment names who it calls (the architect before a plan,
@@ -51,8 +54,8 @@ holds the gates, the part of the harness that runs in code.
   fixes),
   amber while one isn't; with nothing to push the box is its title and
   `nothing to push`, no meters. At work only while a
-  q.ts run goes on, in any session, the run named where the stamp's note
-  stands (`q check · yonder`, `+1` for more).
+  q.ts run goes on, in any session, the run named under the meters (`q
+  check · yonder`, `+1` for more).
 - **Helpers**, fanned out from the gates: running ones first, then the
   family's that worked today, the busiest first (by runs, then the
   latest), the planner's left to it; a helper that never ran today isn't
@@ -81,7 +84,7 @@ holds the gates, the part of the harness that runs in code.
   running card names it (a session is at work there), `○` amber while
   only cards stopped mid-task do (blocked, or waiting on the user: their
   commits go out with its next push); the header counts the held ones.
-  A quiet repository (stamped, nothing to push, not held, no failed
+  A quiet repository (stamped with no edits since, nothing to push, not held, no failed
   check) isn't a row: "12 more stamped, nothing to push".
 - **Sessions**: one row a live session, waiting on you first, then busy,
   then idle: its status (a spinner while busy, amber while it waits on
@@ -222,7 +225,7 @@ their day totals are today's only.
 
 The status line under the prompt (`$.ui.status`) says what claude-hud does
 not: this session's phase and model first (`planning opus 5.5`, `building
-sonnet 5.5`, `(want sonnet)` after a wrong one), then cards waiting, agents running, the repositories with something to
+sonnet 5.5`, `(want opus)` after a wrong one), then cards waiting, agents running, the repositories with something to
 push that are ready (stamped and reviewed, `ready to push 0/6`; nothing
 when none waits), today's tokens by model family. One line, beside claude-hud, which is left
 untouched. `/harness` opens the pane again once closed.

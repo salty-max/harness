@@ -276,17 +276,16 @@ test('the pane draws the board, the checks and the day on every surface', async 
   expect(statuses.at(-1)).toBe('harness · board 1 waiting · ready to push 0/2 · today opus 109M haiku 735k')
 })
 
-test("planning or building, on which model: opusplan wants Opus planning and Sonnet building, a wrong one is said", () => {
+test('planning or building, on which model: opusplan wants Opus planning, a wrong one is said', () => {
   expect(stance('claude-opus-5-5', 'plan', 'opusplan')).toEqual({ phase: 'planning', wrong: null })
   expect(stance('claude-sonnet-5-5', 'auto', 'opusplan')).toEqual({ phase: 'building', wrong: null })
-  // Every session ran on Opus, unseen, 20-25 October: building on Opus under opusplan is the one to catch.
-  expect(stance('claude-opus-5-5', 'auto', 'opusplan')).toEqual({ phase: 'building', wrong: 'sonnet' })
   expect(stance('claude-sonnet-5-5', 'plan', 'opusplan')).toEqual({ phase: 'planning', wrong: 'opus' })
-  // A prose session on plain Opus expects nothing; no mode recorded is building.
+  // Building on Opus is said plainly, never flagged: a prose session on `--model opus` looks the same.
+  expect(stance('claude-opus-5-5', 'auto', 'opusplan')).toEqual({ phase: 'building', wrong: null })
   expect(stance('claude-opus-5-5', null, 'opus')).toEqual({ phase: 'building', wrong: null })
   const snap = { ...SNAPSHOT, sessions: [{ id: 'me', pid: 1, name: 'x', status: 'busy', waitingFor: null, since: 0, entrypoint: 'cli', link: null, model: 'claude-opus-5-5', mode: 'plan', helpers: [] }] } as Snapshot
   expect(statusLine(snap, 0, 'me', { model: 'claude-opus-5-5', setting: 'opusplan' })).toStartWith('harness · planning opus 5.5 · ')
-  expect(statusLine({ ...snap, sessions: [{ ...snap.sessions![0]!, mode: 'auto' }] }, 0, 'me', { model: 'claude-opus-5-5', setting: 'opusplan' })).toStartWith('harness · building opus 5.5 (want sonnet) · ')
+  expect(statusLine(snap, 0, 'me', { model: 'claude-sonnet-5-5', setting: 'opusplan' })).toStartWith('harness · planning sonnet 5.5 (want opus) · ')
 })
 
 test("the plan's limits are meters, the planner's moments say who, how often and their last word", async ($, on) => {
