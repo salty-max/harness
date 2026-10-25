@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import type { ModelDay } from '../types'
+import { momentOf } from '../hooks/format'
 import {
   agentDefs,
   agentModels,
@@ -216,7 +217,7 @@ describe('events in the transcripts', () => {
   const from = new Date(2026, 9, 20).getTime()
   const to = new Date(2026, 9, 21).getTime()
   const noon = new Date(2026, 9, 20, 12).toISOString()
-  const state = (): EventState => ({ root: '/f', models: { reviewer: 'opus' }, pending: {}, events: [], helpers: {}, moments: {}, sessions: { models: {}, modes: {}, open: {} }, known: new Set() })
+  const state = (): EventState => ({ root: '/f', models: { reviewer: 'opus' }, pending: {}, events: [], helpers: {}, sessions: { models: {}, modes: {}, open: {} }, known: new Set() })
   const call = (id: string, name: string, input: Record<string, unknown>, cwd = '/f/yonder') => ({
     type: 'assistant',
     timestamp: noon,
@@ -362,20 +363,30 @@ describe('events in the transcripts', () => {
     expect(s.sessions.models).toEqual({ S1: 'claude-sonnet-5-5' })
   })
 
-  test("the Opus helpers' calls by moment: the reviewer's the push, the architect's by its brief, each once", () => {
-    const s = state()
-    eventRow(call('m1', 'Agent', { subagent_type: 'reviewer', description: 'Review the riddles' }), from, to, s)
-    eventRow(call('m2', 'Agent', { subagent_type: 'architect', description: 'The plan for the panel' }), from, to, s)
-    eventRow(call('m3', 'Agent', { subagent_type: 'architect', description: 'The same test failing again' }), from, to, s)
-    eventRow(call('m4', 'Agent', { subagent_type: 'architect', description: 'Sign off the whole change' }), from, to, s)
-    eventRow(call('m5', 'Agent', { subagent_type: 'Explore', description: 'Find the plan' }), from, to, s)
+  test("an Opus helper's moment: the reviewer's the push, the architect's by its brief", () => {
+    expect(momentOf('reviewer', 'Review the riddles')).toBe('push')
+    expect(momentOf('architect', 'The plan for the panel')).toBe('plan')
+    expect(momentOf('architect', 'The same test failing again')).toBe('error')
+    expect(momentOf('architect', 'Sign off the whole change')).toBe('done')
+    expect(momentOf('Explore', 'Find the plan')).toBe(null)
     // Whole words: a design is a plan, an error log's word in a longer one is not an error.
-    eventRow(call('m6', 'Agent', { subagent_type: 'architect', description: 'Design the moment counter' }), from, to, s)
-    eventRow(call('m7', 'Agent', { subagent_type: 'architect', description: 'Assign the terror of the abandoned path' }), from, to, s)
-    // A line read again counts nothing more.
-    eventRow(call('m1', 'Agent', { subagent_type: 'reviewer', description: 'Review the riddles' }), from, to, s)
-    const at = Date.parse(noon)
-    expect(s.moments).toEqual({ push: { runs: 1, lastAt: at }, plan: { runs: 3, lastAt: at }, error: { runs: 1, lastAt: at }, done: { runs: 1, lastAt: at } })
+    expect(momentOf('architect', 'Design the moment counter')).toBe('plan')
+    expect(momentOf('architect', 'Assign the terror of the abandoned path')).toBe('plan')
+  })
+
+  test("a background helper's run ends at the notice of its end: its tokens, time and model, once", () => {
+    const s = state()
+    scanLine(JSON.stringify({ ...call('h1', 'Agent', { subagent_type: 'reviewer', description: 'Review the push' }), sessionId: 'S1' }), from, to, new Set(), {}, s)
+    // Only launched: still open, its model resolved.
+    scanLine(JSON.stringify(result('h1', { sessionId: 'S1', toolUseResult: { isAsync: true, status: 'async_launched', resolvedModel: 'claude-opus-5-5' } })), from, to, new Set(), {}, s)
+    expect(s.sessions.open.h1?.model).toBe('claude-opus-5-5')
+    const notice = '<task-notification>\n<task-id>a1</task-id>\n<tool-use-id>h1</tool-use-id>\n<status>completed</status>\n<usage><subagent_tokens>55565</subagent_tokens><tool_uses>6</tool_uses><duration_ms>78561</duration_ms></usage>\n</task-notification>'
+    // The notice lands twice (a queued row, then the user row): one run.
+    scanLine(JSON.stringify({ type: 'queue-operation', timestamp: noon, content: notice }), from, to, new Set(), {}, s)
+    scanLine(JSON.stringify({ type: 'user', timestamp: noon, cwd: '/f/yonder', message: { role: 'user', content: notice } }), from, to, new Set(), {}, s)
+    expect(s.sessions.open.h1).toBeUndefined()
+    expect(s.helpers.reviewer).toEqual({ runs: 1, tokens: 55565, ms: 78561, lastAt: Date.parse(noon), model: 'claude-opus-5-5' })
+    expect(s.events.find(e => e.id === 'h1:end')).toMatchObject({ text: 'reviewer done', repo: 'yonder', tokens: 55565, ms: 78561 })
   })
 
   test('a push the user allowed or refused, never one a rule let through, nor another command', () => {

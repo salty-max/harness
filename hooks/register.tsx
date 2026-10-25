@@ -314,13 +314,19 @@ export function pulsePath(text: string, from: number, how: 'down' | 'out' | 'in'
   return how === 'out' ? out : out.reverse()
 }
 
-/** The moments the family calls an Opus helper at, in the order they come (CLAUDE.md, "Helpers"). */
-const MOMENTS: { key: Moment; title: string; who: string }[] = [
-  { key: 'plan', title: 'before a plan', who: 'architect' },
-  { key: 'error', title: 'same error twice', who: 'architect' },
-  { key: 'push', title: 'before a push', who: 'reviewer' },
-  { key: 'done', title: 'before done', who: 'architect' },
-]
+/** The moments the family calls an Opus helper at (CLAUDE.md, "Helpers"): a running one's box names its own. */
+export const MOMENT_TITLES: Record<Moment, string> = {
+  plan: 'before a plan',
+  error: 'same error twice',
+  push: 'before a push',
+  done: 'before done',
+}
+
+/** A limit's name: long in the header, short where the pane is narrow. */
+export function limitName(kind: string, isShort = false): string {
+  const names: Record<string, [string, string]> = { five_hour: ['five hour', '5h'], seven_day: ['seven day', '7d'], spend_limit: ['spend', 'spend'] }
+  return names[kind]?.[isShort ? 1 : 0] ?? kind.replace(/_/g, ' ')
+}
 
 const WAITING = (c: BoardCard) => c.status.startsWith('waiting') || c.status === 'ready-to-push'
 
@@ -884,7 +890,7 @@ export const register: Register = on => {
     // A centred box's lines, on a layer as wide as the box: the desktop sizes a
     // centred column to its widest line, uncut. Not a fragment: the engine
     // makes one a column Box of its own, which the centring would size so.
-    // (Used in place of <> by the session's, the helpers' and the lead's boxes.)
+    // (Used in place of <> by the helpers' boxes.)
     const line = (text: string, props: { color?: string; bold?: boolean; dim?: boolean; inverse?: boolean } = {}) => (
       <Text color={props.color} bold={props.bold} dimColor={props.dim} inverse={props.inverse} wrap="truncate-end">
         {text}
@@ -965,8 +971,6 @@ export const register: Register = on => {
     const builder = facts ? (facts.lastModel ?? facts.model) : null
     const builderName = builder ? modelName(builder) : 'main'
     const builderColor = modelColor(builder)
-    const opusDefs = helpers.filter(h => family(h.model) === 'opus')
-    const opusModel = Object.entries(day).find(([name]) => opusDefs.some(d => d.name === name))?.[1].model ?? opusDefs[0]?.model ?? 'opus'
     const fresh = repos.filter(r => r.check?.isFresh).length
     const push = toPush(repos)
     const pushing = push.repos.length
@@ -975,190 +979,121 @@ export const register: Register = on => {
     const cacheRead = models.reduce((sum, d) => sum + d.cacheRead, 0)
     const lastHandback = events.find(ev => ev.source === 'helper' && ev.tokens !== undefined)
 
-    // The moment a running Opus helper is at: the reviewer before a push, the architect by its brief.
-    const runningOpus = running.find(a => opusDefs.some(d => d.name === a.type))
-    const moment = runningOpus ? momentOf(runningOpus.type, runningOpus.description) : null
-
     // --- header --------------------------------------------------------------
-    // What this session does now and on which model (the transcript's permission mode, the last call's model).
+    // The harness's own top, no box: its name, when the numbers last changed and
+    // Refresh, then the plan's limits as meters (green, amber from 80%, red from
+    // 95%), each with its reset, and a rule under it all. Past 80% the title says
+    // the fullest window. Under 64 columns the limits stack, their names short.
     const mine = live.find(x => x.id === selfId)
     const { phase, wrong } = stance(builder, mine?.mode, facts?.settings.model)
+    const limits = facts?.rateLimits ?? []
+    const worst = limits.reduce<(typeof limits)[number] | null>((a, l) => (!a || l.percentUsed > a.percentUsed ? l : a), null)
+    const limitColor = (pct: number) => (pct >= 95 ? PALETTE.fail : pct >= 80 ? PALETTE.wait : PALETTE.ok)
     const isShort = W < 64
-    const header = (
-      <Box key="header" flexDirection="column" width={W} alignItems="center">
-        {runs('title', [
-          [isShort ? 'HARNESS' : 'WOW-ADDONS HARNESS', { bold: true }],
-          [' · ', { dim: true }],
-          [phase.toUpperCase(), { color: builderColor, bold: true }],
-          [` ${builderName.toUpperCase()}`, { color: builderColor, bold: true }],
-          wrong ? [` · WANT ${wrong.toUpperCase()}`, { color: PALETTE.fail, bold: true }] : null,
-        ])}
-        <Box justifyContent="space-between" width={W}>
-          {snap ? motion('updated', { kind: 'ago', at: snap.at, label: 'changed ' }) : <Text dimColor>reading…</Text>}
-          <Button key="refresh" label="Refresh" onPress={() => void refreshSnapshot($, true)} />
+    const limitGap = 4
+    const limitW = isShort || limits.length === 0 ? W : Math.floor((W - limitGap * (limits.length - 1)) / limits.length)
+    const limitMeter = (l: (typeof limits)[number], i: number) => {
+      const color = limitColor(l.percentUsed)
+      const labelW = isShort ? 4 : 10
+      const figureW = 5
+      // (the reset's column kept when a window says none: the bars line up)
+      const resetW = 10
+      const barW = Math.max(3, limitW - labelW - figureW - resetW)
+      return (
+        <Box key={`limit-${l.kind}`} width={limitW} flexShrink={0} marginLeft={!isShort && i > 0 ? limitGap : 0}>
+          {cell(labelW, line(limitName(l.kind, isShort), { dim: true }))}
+          {barOf(`limit-${l.kind}-bar`, l.percentUsed, 100, barW, color)}
+          {cell(figureW, line(`${Math.round(l.percentUsed)}%`, { color, bold: true }), true)}
+          {cell(resetW, line(l.resetsAt ? ` · ${resetIn(l.resetsAt - now)}` : '', { dim: true }))}
         </Box>
+      )
+    }
+    // The rule under the header: a line of the diagram's kind, vector on the desktop (characters overflow its cells).
+    const rule = Svg ? (
+      <Box key="rule" width={W} flexShrink={0}>
+        <Svg source={lineSvg({ text: '─'.repeat(W), how: 'down', at: 0, color: 'inactive', base: 'inactive', on: false, from: 0, to: 0, cycleMs: 0, phaseMs: 0 })} alt="the header's rule" height={LINE_PX} />
+      </Box>
+    ) : (
+      <Text key="rule" dimColor>
+        {'─'.repeat(W)}
+      </Text>
+    )
+    const header = (
+      <Box key="header" flexDirection="column" width={W}>
+        <Box justifyContent="space-between" alignItems="center" width={W}>
+          {runs('title', [
+            [isShort ? 'HARNESS' : 'WOW-ADDONS HARNESS', { bold: true, fixed: true }],
+            worst && worst.percentUsed >= 80 ? [` · ${limitName(worst.kind, isShort)} at ${Math.round(worst.percentUsed)}%`, { color: limitColor(worst.percentUsed), bold: true }] : null,
+          ])}
+          <Box flexShrink={0} alignItems="center">
+            {snap ? motion('updated', { kind: 'ago', at: snap.at, label: isShort ? '' : 'changed ' }) : <Text dimColor>reading…</Text>}
+            <Text> </Text>
+            <Button key="refresh" label="Refresh" onPress={() => void refreshSnapshot($, true)} />
+          </Box>
+        </Box>
+        <Box width={W} flexDirection={isShort ? 'column' : 'row'}>
+          {limits.length > 0 ? limits.map(limitMeter) : line(facts ? 'limits: none read yet' : 'limits: …', { dim: true })}
+        </Box>
+        {rule}
       </Box>
     )
 
-    // --- the planner: the Opus helpers, a second opinion at four moments ------
-    // The box says what it is for (a second opinion, from eyes that didn't
-    // write the change), then each moment: who is called, how often today (a
-    // bar of the day's calls, by moment), and its last word: the reviewer's
-    // newest verdict, the architect's last call, or why it stays off (it is
-    // for a Sonnet session only). A running helper lights its moment, its
-    // calls and context live under it.
-    const isTall = tier === 'wide'
-    const planner = (w: number) => {
-      const inner = w - 4
-      const moments = snap?.moments ?? {}
-      const calls = MOMENTS.reduce((n, m) => n + (moments[m.key]?.runs ?? 0), 0)
-      // The architect is for a Sonnet session only: with Opus building (no opusplan), its moments stay off.
-      const isOpusBuilding = family(builder) === 'opus' && facts?.settings.model !== 'opusplan'
-      const verdicts = repos.filter(r => r.review?.verdict).sort((a, b) => (b.review?.at ?? 0) - (a.review?.at ?? 0))
-      const newest = verdicts[0]
-      const labelW = Math.min(19, inner - 8)
-      // Who it calls: beside the bar, tall (the title keeps its whole line), a column of its own when wide enough.
-      const whoW = isTall || inner >= 44 ? 10 : 0
-      const countW = 4
-      const barW = Math.max(3, inner - (isTall ? 0 : labelW) - whoW - countW - 1)
-      const row = (m: (typeof MOMENTS)[number]) => {
-        const today = moments[m.key]
-        const n = today?.runs ?? 0
-        const isLit = moment === m.key
-        const color = n > 0 || isLit ? PALETTE.opus : 'inactive'
-        const title = `${n > 0 || isLit ? '◆' : '◇'} ${m.title}`
-        const label = line(title, { bold: true, inverse: isLit, color: isLit || n > 0 ? PALETTE.opus : undefined })
-        const meterOf = (
-          <Box key={`moment-${m.key}-meter`} flexGrow={1}>
-            {whoW > 0 ? cell(whoW, line(m.who, { dim: true })) : null}
-            {barOf(`moment-${m.key}-bar`, n, Math.max(calls, 1), barW, PALETTE.opus)}
-            {flush(countW + 1, motion(`moment-${m.key}-count`, { kind: 'count', value: n, unit: 'int', color, bold: n > 0 }))}
-          </Box>
-        )
-        if (!isTall) {
-          return (
-            <Box key={`moment-${m.key}`}>
-              {cell(labelW, label)}
-              {meterOf}
-            </Box>
-          )
-        }
-        // Its last word, or the live run under the lit moment.
-        const agent = isLit ? runningOpus : undefined
-        const word = agent
-          ? spinning(`moment-${m.key}-live`, agent.steps ? `ctx ${tokens(agent.steps.context)} · ${agent.steps.steps} calls [ ` : 'reading [ ', true, PALETTE.opus, { color: PALETTE.opus })
-          : m.key === 'push' && newest?.review
-            ? (
-                <Box key={`moment-${m.key}-word`} flexDirection="column">
-                  {line(`${newest.name} · ${ago(newest.review.at, now)} ago`, { dim: true })}
-                  {line(newest.review.verdict ?? '', { color: verdictColor(newest.review.verdict) })}
-                </Box>
-              )
-            : today
-              ? line(`last ${clockTime(today.lastAt).slice(0, 5)}`, { dim: true })
-              : null
-        return (
-          <Box key={`moment-${m.key}`} flexDirection="column">
-            {label}
-            {meterOf}
-            {word}
-          </Box>
-        )
-      }
-      return frame(
-        'planner',
-        w,
-        PALETTE.opus,
-        // A column, not a fragment: the engine makes a fragment a column of its own, which wouldn't fill the box.
-        <Box flexDirection="column" flexGrow={1}>
-          <Box flexDirection="column" alignItems="center" width="100%">
-            {line(modelName(opusModel).toUpperCase(), { bold: true, color: PALETTE.opus })}
-            {line(isOpusBuilding ? 'architect off, opus builds' : inner >= 30 ? 'second opinions, at four moments' : 'second opinions', { dim: true })}
-            {runningOpus
-              ? spinning('planner-state', `${runningOpus.type} at work [ `, true, PALETTE.opus, { color: PALETTE.opus })
-              : spinning('planner-state', 'on call [ ', false, PALETTE.opus, { dim: true })}
-          </Box>
-          {/* Tall, the moments spread down the box, a line apart at least. */}
-          <Box flexDirection="column" marginTop={1} flexGrow={isTall ? 1 : 0} justifyContent={isTall ? 'space-between' : 'flex-start'} gap={isTall ? 1 : 0}>
-            {MOMENTS.map(row)}
-          </Box>
-        </Box>,
-        { running: runningOpus ? { lines: isTall ? 32 : 9 } : undefined },
-      )
-    }
-
-    // --- the main session and its config ---------------------------------------
+    // --- the main session ------------------------------------------------------
+    // This session, laid out as the other boxes are: what it does and on which
+    // model (its title after, cut first), its state on the right; the context
+    // as a meter to the edge; the effort, and the cost on the right.
     const sessionBox = (w: number) => {
       const inner = w - 4
-      const ctxW = Math.max(6, Math.min(16, inner - 22))
+      const labelW = 9
+      const figureW = 14
+      const barW = Math.max(4, inner - labelW - figureW)
       const effort = facts?.settings.effort ?? null
       const effortLevel = effort ? Math.max(1, ['low', 'medium', 'high', 'xhigh', 'max'].indexOf(effort) + 1) : 0
+      const state =
+        running.length > 0
+          ? spinning('session-state', `[ ${running.map(a => a.type).join(', ')} running `, true, PALETTE.wait, { color: PALETTE.wait })
+          : work.isRunning
+            ? spinning('session-state', '[ working ', true, builderColor, { color: builderColor })
+            : line('[ idle ]', { dim: true })
       return frame(
         'session',
         w,
         builderColor,
-        <Box flexDirection="column" alignItems="center" width="100%">
-          {line(`${phase} · ${builderName}${wrong ? ` · want ${wrong}` : ''}`, { bold: true, color: wrong ? PALETTE.fail : builderColor })}
-          <Box key="context">
-            <Text dimColor>context </Text>
-            {barOf('context-bar', facts?.contextTokens ?? 0, facts?.window ?? 0, ctxW, builderColor)}
-            <Text> </Text>
-            {facts ? motion('context-tokens', { kind: 'count', value: facts.contextTokens ?? 0, bold: true }) : <Text bold>…</Text>}
-            <Text bold wrap="truncate-end">
-              {facts ? ` / ${tokens(facts.window)}` : ''}
-            </Text>
-          </Box>
-          {runs('effort', [
-            ['effort ', { dim: true }],
-            ['■'.repeat(effortLevel), { color: builderColor }],
-            ['■'.repeat(5 - effortLevel), { dim: true }],
-            [` ${effort ? effort.toUpperCase() : 'DEFAULT'}`, { bold: true, color: builderColor }],
-            facts?.costUsd != null ? [` · $${facts.costUsd.toFixed(2)}`, { dim: true }] : null,
-          ])}
-          {running.length > 0
-            ? spinning('session-state', `[ ${running.map(a => a.type).join(', ')} running `, true, PALETTE.wait, { color: PALETTE.wait })
-            : work.isRunning
-              ? spinning('session-state', '[ working ', true, builderColor, { color: builderColor })
-              : line('[ idle ]', { dim: true })}
-        </Box>,
-        { dashed: true, middle: true, running: work.isRunning ? { lines: 4 } : undefined },
-      )
-    }
-
-    // The plan's limits as meters, like the gates': amber from 80%, red from
-    // 95%. Past 80% the title's mark says the worst one and when it resets.
-    const configBox = (w: number) => {
-      const inner = w - 4
-      const limits = facts?.rateLimits ?? []
-      const worst = limits.reduce<(typeof limits)[number] | null>((a, l) => (!a || l.percentUsed > a.percentUsed ? l : a), null)
-      const isOk = !worst || worst.percentUsed < 80
-      const limitColor = (pct: number) => (pct >= 95 ? PALETTE.fail : pct >= 80 ? PALETTE.wait : PALETTE.ok)
-      const limitName = (kind: string) => ({ five_hour: 'five hour', seven_day: 'seven day', spend_limit: 'spend' })[kind] ?? kind.replace(/_/g, ' ')
-      const resets = worst?.resetsAt ? ` · ${resetIn(worst.resetsAt - now)}` : ''
-      const labelW = 10
-      const figureW = 5
-      const barW = Math.max(3, inner - labelW - figureW)
-      const limitRow = (l: (typeof limits)[number]) => {
-        const color = limitColor(l.percentUsed)
-        return (
-          <Box key={`limit-${l.kind}`}>
-            {cell(labelW, line(limitName(l.kind), { dim: true }))}
-            {barOf(`limit-${l.kind}-bar`, l.percentUsed, 100, barW, color)}
-            {flush(figureW, line(`${Math.round(l.percentUsed)}%`, { color, bold: true }))}
-          </Box>
-        )
-      }
-      return frame(
-        'config',
-        w,
-        'inactive',
         <>
           <Box justifyContent="space-between">
-            {line('LIMITS', { bold: true })}
-            <Box flexShrink={0}>{line(isOk ? ' [ OK ✓ ]' : ` [ ${Math.round(worst.percentUsed)}%${resets} ]`, { color: isOk ? PALETTE.ok : limitColor(worst.percentUsed) })}</Box>
+            {runs('session-title', [
+              [phase.toUpperCase(), { color: wrong ? PALETTE.fail : builderColor, bold: true, fixed: true }],
+              [' · ', { dim: true, fixed: true }],
+              [builderName.toUpperCase(), { color: builderColor, bold: true, fixed: true }],
+              wrong ? [` · WANT ${wrong.toUpperCase()}`, { color: PALETTE.fail, bold: true, fixed: true }] : null,
+              mine?.name && inner >= 56 ? [` · ${mine.name}`, { dim: true }] : null,
+            ])}
+            <Box flexShrink={0} marginLeft={1}>
+              {state}
+            </Box>
           </Box>
-          <Box flexDirection="column">{limits.length > 0 ? limits.map(limitRow) : pair('limits', 'limits:', facts ? 'none read yet' : '…', PALETTE.plain)}</Box>
+          <Box key="context">
+            {cell(labelW, line('context', { dim: true }))}
+            {barOf('context-bar', facts?.contextTokens ?? 0, facts?.window ?? 0, barW, builderColor)}
+            {flush(
+              figureW,
+              <Box key="context-figure">
+                {facts ? motion('context-tokens', { kind: 'count', value: facts.contextTokens ?? 0, bold: true }) : <Text bold>…</Text>}
+                <Text bold>{facts ? ` / ${tokens(facts.window)}` : ''}</Text>
+              </Box>,
+            )}
+          </Box>
+          <Box key="effort">
+            {cell(labelW, line('effort', { dim: true }))}
+            {runs('effort-level', [
+              ['■'.repeat(effortLevel), { color: builderColor }],
+              ['■'.repeat(5 - effortLevel), { dim: true }],
+              [` ${effort ? effort.toUpperCase() : 'DEFAULT'}`, { bold: true, color: builderColor }],
+            ])}
+            {flush(9, line(facts?.costUsd != null ? `$${facts.costUsd.toFixed(2)}` : '', { dim: true }))}
+          </Box>
         </>,
+        { dashed: true, running: work.isRunning ? { lines: 5 } : undefined },
       )
     }
 
@@ -1217,11 +1152,11 @@ export const register: Register = on => {
           picks.push({ name: a.type, model: a.steps?.model ?? day[a.type]?.model ?? def?.model ?? null, description: a.description, agent: a })
         }
       }
-      // Then the helpers that aren't the planner's, the busiest today first (by runs, then the latest).
+      // Then the others, the Opus ones among them, the busiest today first (by runs, then the latest).
       const rest = helpers
-        .filter(h => family(h.model) !== 'opus' && !seen.has(h.name))
+        .filter(h => !seen.has(h.name))
         .map(h => ({ name: h.name, model: day[h.name]?.model ?? h.model, description: h.description }))
-      for (const [name, d] of Object.entries(day)) if (!seen.has(name) && !rest.some(r => r.name === name) && !opusDefs.some(o => o.name === name)) rest.push({ name, model: d.model, description: '' })
+      for (const [name, d] of Object.entries(day)) if (!seen.has(name) && !rest.some(r => r.name === name)) rest.push({ name, model: d.model, description: '' })
       rest.sort((a, b) => (day[b.name]?.runs ?? 0) - (day[a.name]?.runs ?? 0) || (day[b.name]?.lastAt ?? 0) - (day[a.name]?.lastAt ?? 0))
       // Only those that worked today: an idle helper that never ran says nothing.
       for (const r of rest) if (picks.length < k && (day[r.name]?.runs ?? 0) > 0) picks.push(r)
@@ -1237,6 +1172,7 @@ export const register: Register = on => {
             const color = modelColor(p.model)
             const today = day[p.name]
             const model = p.model ? modelName(p.model) : 'model ?'
+            const moment = p.agent ? momentOf(p.name, p.description) : null
             return (
               <Box key={`helper-${p.name}`} marginLeft={i > 0 ? gap : 0}>
                 {frame(
@@ -1244,12 +1180,13 @@ export const register: Register = on => {
                   bw,
                   color,
                   <Box flexDirection="column" alignItems="center" width="100%">
-                    {line(p.name, { bold: true })}
+                    {/* A running Opus helper says the moment it was called at (the reviewer's the push, the architect's by its brief). */}
+                    {moment ? runs(`helper-${p.name}-name`, [[p.name, { bold: true, fixed: true }], [` · ${MOMENT_TITLES[moment]}`, { color: PALETTE.opus }]]) : line(p.name, { bold: true })}
                     {p.agent ? spinning(`helper-${p.name}-state`, `${model} [ running `, true, color, { color }) : line(`${model} [ IDLE ]`, { color })}
                     {line(
                       p.agent?.steps
                         ? `● ctx ${tokens(p.agent.steps.context)} · ${p.agent.steps.steps} calls`
-                        : `● ${today?.runs ?? 0} runs · ${tokens(today?.tokens ?? 0)} tok`,
+                        : `● ${today?.runs ?? 0} ${today?.runs === 1 ? 'run' : 'runs'} · ${tokens(today?.tokens ?? 0)} tok`,
                       { color },
                     )}
                   </Box>,
@@ -1264,27 +1201,35 @@ export const register: Register = on => {
     }
 
     // Back to the lead: at work while a helper's handback comes in, its figures once the shared numbers have them.
+    // One row, as the session's box: the title, the handback on the right; two lines where the pane is narrow.
     const backBox = (w: number) => {
       // (the shared numbers have it once an end of that helper's type comes in no earlier than a little before it:
       // the whole family's events, so an earlier run of the same helper must not pass for this one)
       const isKnown = !!back && !!lastHandback && lastHandback.text.startsWith(`${back.type} `) && lastHandback.at >= back.at - 10_000
+      const title = line(`back to ${builderName} · lead`, { bold: true, color: builderColor })
+      const rx =
+        back && !isKnown
+          ? spinning('back-state', `rx: ${back.type} · handing back [ `, true, builderColor)
+          : lastHandback
+            ? spinning('back-state', `rx: ${lastHandback.text.split(' ')[0]} · ${tokens(lastHandback.tokens)} tok · ${duration(lastHandback.ms ?? 0)} [ `, isReturning, builderColor)
+            : null
       return frame(
         'back',
         w,
         builderColor,
-        <Box flexDirection="column" alignItems="center" width="100%">
-          {line(`back to ${builderName} · lead`, { bold: true, color: builderColor })}
-          {back && !isKnown
-            ? spinning('back-state', `rx: ${back.type} · handing back [ `, true, builderColor)
-            : lastHandback
-              ? spinning(
-                  'back-state',
-                  `rx: ${lastHandback.text.split(' ')[0]} · ${tokens(lastHandback.tokens)} tok · ${duration(lastHandback.ms ?? 0)} [ `,
-                  isReturning,
-                  builderColor,
-                )
-              : null}
-        </Box>,
+        w - 4 >= 60 ? (
+          <Box justifyContent="space-between">
+            <Box flexShrink={0}>{title}</Box>
+            <Box minWidth={0} marginLeft={1}>
+              {rx}
+            </Box>
+          </Box>
+        ) : (
+          <>
+            {title}
+            {rx}
+          </>
+        ),
         { dashed: true, running: isReturning ? { lines: 3 } : undefined },
       )
     }
@@ -1292,9 +1237,8 @@ export const register: Register = on => {
     // The flow under the main session: the gates, the helpers, back to the lead.
     const flow = (w: number, from: number) => {
       const c = Math.floor(w / 2)
-      const k = w >= 66 ? 3 : w >= 40 ? 2 : 1
+      const k = w >= 100 ? 4 : w >= 66 ? 3 : w >= 40 ? 2 : 1
       const fan = helperBoxes(w, k)
-      const backW = Math.min(w, Math.max(30, Math.round(w * 0.62)))
       const ends = fan.xs.length > 0 ? fan.xs : [c]
       // Out to the running helpers' boxes alone; back from the one that just handed back (every box, when it isn't drawn).
       const out = fan.xs.filter((_, i) => fan.isRunning[i])
@@ -1369,69 +1313,19 @@ export const register: Register = on => {
           {pulse('merge')}
           {pulse('to-back')}
           <Box width={w} justifyContent="center">
-            {backBox(backW)}
+            {backBox(w)}
           </Box>
         </Box>
       )
     }
 
-    // --- the diagram, by the room there is ------------------------------------------
-    let diagram: RenderChildren
-    if (tier === 'wide') {
-      const L = Math.max(24, Math.min(32, Math.round(W * 0.27)))
-      const A = W - L - 3
-      const Rc = Math.max(28, Math.min(34, Math.round(A * 0.36)))
-      const Sw = A - Rc - 4
-      diagram = (
-        <Box key="diagram" width={W} marginTop={1}>
-          {planner(L)}
-          <Box width={3} flexShrink={0} flexDirection="column" paddingTop={2}>
-            {Svg ? (
-              <Svg source={lineSvg({ text: '◂┄┄', how: 'out', at: 2, color: PALETTE.opus, base: PALETTE.opus, on: !!runningOpus, from: 0, to: 420, cycleMs: 900, phaseMs: now % 900 })} alt="to the planner" height={LINE_PX} />
-            ) : (
-              motion('to-planner', { kind: 'flow', text: '◂┄┄', path: pulsePath('◂┄┄', 2, 'out'), start: 0, cycle: 8, on: !!runningOpus, color: PALETTE.opus, base: PALETTE.opus })
-            )}
-          </Box>
-          <Box width={A} flexShrink={0} flexDirection="column">
-            <Box width={A} alignItems="stretch">
-              {sessionBox(Sw)}
-              <Box width={4} flexShrink={0} paddingTop={2}>
-                <Text dimColor>─▸ </Text>
-              </Box>
-              {configBox(Rc)}
-            </Box>
-            {flow(A, Math.floor(Sw / 2))}
-          </Box>
-        </Box>
-      )
-    } else if (tier === 'medium') {
-      const Rc = Math.max(24, Math.min(32, Math.round(W * 0.38)))
-      const Sw = Math.min(W, Math.max(36, Math.round(W * 0.66)))
-      diagram = (
-        <Box key="diagram" flexDirection="column" width={W} marginTop={1}>
-          <Box width={W}>
-            {planner(W - Rc - GAP_X)}
-            <Box marginLeft={GAP_X}>{configBox(Rc)}</Box>
-          </Box>
-          <Box width={W} justifyContent="center" marginTop={gapY}>
-            {sessionBox(Sw)}
-          </Box>
-          {flow(W, Math.floor(W / 2))}
-        </Box>
-      )
-    } else {
-      // The flow's first line meets the session box: the gaps above it only.
-      diagram = (
-        <Box key="diagram" flexDirection="column" width={W} marginTop={1}>
-          <Box flexDirection="column" width={W} gap={gapY}>
-            {planner(W)}
-            {configBox(W)}
-            {sessionBox(W)}
-          </Box>
-          {flow(W, Math.floor(W / 2))}
-        </Box>
-      )
-    }
+    // --- the diagram: one column, every box the pane's width -------------------------
+    const diagram = (
+      <Box key="diagram" flexDirection="column" width={W} marginTop={gapY}>
+        {sessionBox(W)}
+        {flow(W, Math.floor(W / 2))}
+      </Box>
+    )
 
     // --- the ledger: today, the board, the repositories ----------------------------------
     const todayBox = (w: number) => {
@@ -1614,8 +1508,11 @@ export const register: Register = on => {
       const [statusW = 10, whatW = 26, cardW = 15, ageW = 5, openW = 8] = fit([10, isMid ? 26 : 0, isWide ? 15 : 0, 5, 8], inner, 4)
       // (a column apart from the next: a cut title's ellipsis would touch it)
       const titleW = Math.max(8, inner - statusW - whatW - cardW - ageW - openW - 1)
-      // A session's card: its newest open one (board.ts writes the session's id on it).
-      const cardOf = (x: LiveSession) => board.filter(c => c.session === x.id && c.status !== 'done').sort((a, b) => b.updated.localeCompare(a.updated))[0]
+      // A session's card: its newest open one (board.ts writes the session's id on it), else its newest done one, dim.
+      const cardOf = (x: LiveSession) => {
+        const mine = board.filter(c => c.session === x.id).sort((a, b) => b.updated.localeCompare(a.updated))
+        return mine.find(c => c.status !== 'done') ?? mine[0]
+      }
       const row = (x: LiveSession) => {
         const isSelf = x.id === selfId
         const color = x.status === 'waiting' ? PALETTE.wait : x.status === 'busy' ? PALETTE.ask : 'inactive'
@@ -1637,7 +1534,7 @@ export const register: Register = on => {
             {cell(titleW, line(x.name, { bold: isSelf || x.status === 'waiting' }))}
             <Box width={1} flexShrink={0} />
             {whatW > 0 ? cell(whatW, what) : null}
-            {cardW > 0 ? cell(cardW, card ? line(card.status, { color: cardColor(card.status) }) : line('no card', { dim: true })) : null}
+            {cardW > 0 ? cell(cardW, card ? line(card.status, { color: cardColor(card.status), dim: card.status === 'done' }) : line('no card', { dim: true })) : null}
             {cell(ageW, line(ago(x.since, now), { dim: true }), true)}
             <Box width={openW} flexShrink={0} justifyContent="flex-end">
               {isSelf ? line('this', { dim: true }) : x.link ? <Button key={`open-${x.id}`} label="Open" onPress={() => void openSession($, x.link as string)} /> : line(x.entrypoint === 'cli' ? (x.background ? 'bg' : 'terminal') : '', { dim: true })}

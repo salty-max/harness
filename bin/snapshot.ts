@@ -18,8 +18,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, 
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 
-import { momentOf } from '../hooks/format'
-import type { BoardCard, GateRun, HarnessEvent, HelperDay, HelperDef, LiveSession, ModelDay, MomentDay, RepoRow, Snapshot } from '../types'
+import type { BoardCard, GateRun, HarnessEvent, HelperDay, HelperDef, LiveSession, ModelDay, RepoRow, Snapshot } from '../types'
 
 const CHUNK = 16 * 1024 * 1024
 
@@ -300,8 +299,9 @@ export function readBoard(dir: string, today: string, kit?: CardKit): BoardCard[
 // ones but pushes and releases, 4 added each helper's day: an older day
 // cache is read again whole; 5 keeps every event id seen today, 6 the
 // Opus helpers' calls by moment, 7 each session's model and open helpers, 8 and 9 the
-// session's mode, 10 the skills each session used)
-const CACHE_VERSION = 10
+// session's mode, 10 the skills each session used, 11 left the moments out again, 12 ends a
+// background helper's run at the notice of its end)
+const CACHE_VERSION = 12
 
 type UsageCache = {
   version: number
@@ -312,13 +312,12 @@ type UsageCache = {
   pending: Record<string, PendingCall>
   events: HarnessEvent[]
   helpers: Record<string, HelperDay>
-  moments: Record<string, MomentDay>
   sessions: SessionDay
   known: string[]
 }
 
 /** What the transcripts say of each session: its main loop's last model, its helpers started and not yet back (by the Agent call's id). */
-export type SessionDay = { models: Record<string, string>; /** Its permission mode as the transcript last recorded it (`plan`: planning, anything else building). */ modes: Record<string, string>; open: Record<string, { session: string; type: string; at: number }>; /** The skills each session used today: loaded by the session (a `Skill` call) or typed by the user (`/name`), once each with the last time and a count. */ skills?: Record<string, SkillUse[]> }
+export type SessionDay = { models: Record<string, string>; /** Its permission mode as the transcript last recorded it (`plan`: planning, anything else building). */ modes: Record<string, string>; open: Record<string, { session: string; type: string; at: number; repo?: string | null; model?: string }>; /** The skills each session used today: loaded by the session (a `Skill` call) or typed by the user (`/name`), once each with the last time and a count. */ skills?: Record<string, SkillUse[]> }
 
 /** One skill a session used: `by` says who started it. */
 export type SkillUse = { name: string; by: 'user' | 'session'; at: number; count: number }
@@ -406,8 +405,6 @@ export type EventState = {
   pending: Record<string, PendingCall>
   events: HarnessEvent[]
   helpers: Record<string, HelperDay>
-  /** The Opus helpers' calls today by moment, counted as each starts. */
-  moments: Record<string, MomentDay>
   /** Each session's model and open helpers. */
   sessions: SessionDay
   /** Every event id seen today: the events keep only the last 40, a reread line must not come back as new. */
@@ -455,6 +452,32 @@ function addEvent(state: EventState, event: HarnessEvent): boolean {
 }
 
 /**
+ * A helper's run ended: its event once (by its call's id), and its day summed (the events keep only the
+ * last 40). From its result for one in the foreground, from the notice of its end for one in the background.
+ */
+function helperEnded(state: EventState, id: string, at: number, repo: string | null, type: string, status: string, model: string | undefined, tokens: number | undefined, ms: number | undefined) {
+  const isDone = status === 'completed'
+  const isNew = addEvent(state, {
+    id: `${id}:end`,
+    at,
+    source: 'helper',
+    tone: isDone ? 'ok' : 'fail',
+    repo,
+    text: `${type} ${isDone ? 'done' : status}`,
+    ...(model ? { model } : {}),
+    ...(typeof tokens === 'number' ? { tokens } : {}),
+    ...(typeof ms === 'number' ? { ms } : {}),
+  })
+  if (!isNew) return
+  const day = (state.helpers[type] ??= { runs: 0, tokens: 0, ms: 0, lastAt: 0, model: null })
+  day.runs += 1
+  day.tokens += tokens ?? 0
+  day.ms += ms ?? 0
+  day.lastAt = Math.max(day.lastAt, at)
+  day.model = model ?? day.model
+}
+
+/**
  * Finds the events in one transcript line of a family session: a helper
  * started (the Agent call) or finished (its result: model, tokens, time),
  * and a push or release whose prompt the user answered (`permissionDecision`
@@ -484,7 +507,7 @@ export function eventRow(row: Row, from: number, to: number, state: EventState) 
         const type = String(input.subagent_type ?? 'general-purpose')
         const model = typeof input.model === 'string' ? input.model : state.models[type]
         const brief = typeof input.description === 'string' ? input.description : ''
-        const isNew = addEvent(state, {
+        addEvent(state, {
           id: `${block.id}:start`,
           at,
           source: 'helper',
@@ -494,13 +517,7 @@ export function eventRow(row: Row, from: number, to: number, state: EventState) 
           ...(model ? { model } : {}),
         })
         // Open until its result comes back (a background one: until the notice of its end).
-        if (row.sessionId && !row.isSidechain) state.sessions.open[block.id] = { session: row.sessionId, type, at }
-        const moment = momentOf(type, brief)
-        if (isNew && moment) {
-          const day = (state.moments[moment] ??= { runs: 0, lastAt: 0 })
-          day.runs += 1
-          day.lastAt = Math.max(day.lastAt, at)
-        }
+        if (row.sessionId && !row.isSidechain) state.sessions.open[block.id] = { session: row.sessionId, type, at, repo: repoOf(state.root, cwd), ...(model ? { model } : {}) }
       } else if (block.name === 'Bash' && typeof input.command === 'string' && ASKED.test(input.command)) {
         state.pending[block.id] = { at, repo: repoOf(state.root, cwd, input.command), command: askedPart(input.command) }
       }
@@ -521,28 +538,7 @@ export function eventRow(row: Row, from: number, to: number, state: EventState) 
       } else if (result !== null && typeof result === 'object' && 'agentType' in result) {
         const r = result as { agentType?: string; status?: string; resolvedModel?: string; totalTokens?: number; totalDurationMs?: number }
         if (r.status === 'async_launched') continue
-        const isDone = r.status === 'completed'
-        const type = r.agentType ?? 'helper'
-        const isNew = addEvent(state, {
-          id: `${id}:end`,
-          at,
-          source: 'helper',
-          tone: isDone ? 'ok' : 'fail',
-          repo: repoOf(state.root, cwd),
-          text: `${type} ${isDone ? 'done' : (r.status ?? 'stopped')}`,
-          ...(r.resolvedModel ? { model: r.resolvedModel } : {}),
-          ...(typeof r.totalTokens === 'number' ? { tokens: r.totalTokens } : {}),
-          ...(typeof r.totalDurationMs === 'number' ? { ms: r.totalDurationMs } : {}),
-        })
-        // The events keep only the last 40: each helper's day is summed as its runs end.
-        if (isNew) {
-          const day = (state.helpers[type] ??= { runs: 0, tokens: 0, ms: 0, lastAt: 0, model: null })
-          day.runs += 1
-          day.tokens += r.totalTokens ?? 0
-          day.ms += r.totalDurationMs ?? 0
-          day.lastAt = Math.max(day.lastAt, at)
-          day.model = r.resolvedModel ?? day.model
-        }
+        helperEnded(state, id, at, repoOf(state.root, cwd), r.agentType ?? 'helper', r.status ?? 'stopped', r.resolvedModel, r.totalTokens, r.totalDurationMs)
       }
     }
   }
@@ -564,8 +560,23 @@ const RESULT_ID = /"tool_use_id":"([^"]+)"/g
 export function scanLine(line: string, from: number, to: number, seen: Set<string>, models: Record<string, ModelDay>, state: EventState) {
   // A background helper's end: the notice its session gets, naming the Agent call, wherever it lands (a user
   // row, or a queued_command attachment when it comes mid-turn): read off the line, unparsed.
+  // Its run ends there too (every helper runs in the background now: its result only says it was launched):
+  // the notice's status, tokens and time, the call's type, repository and model kept as it was opened.
   if (line.includes('<task-notification>')) {
-    for (const [, id] of line.matchAll(/<tool-use-id>([\w-]+)<\/tool-use-id>/g)) if (id) delete state.sessions.open[id]
+    const at = Date.parse(/"timestamp":"([^"]+)"/.exec(line)?.[1] ?? '')
+    for (const notice of line.split('<task-notification>').slice(1).map(n => n.split('</task-notification>')[0] ?? '')) {
+      const id = /<tool-use-id>([\w-]+)<\/tool-use-id>/.exec(notice)?.[1]
+      if (!id) continue
+      const call = state.sessions.open[id]
+      delete state.sessions.open[id]
+      if (!call || !(at >= from && at < to)) continue
+      const figure = (tag: string) => {
+        const n = Number(new RegExp(`<${tag}>(\\d+)</${tag}>`).exec(notice)?.[1])
+        return Number.isNaN(n) ? undefined : n
+      }
+      const status = /<status>(\w+)<\/status>/.exec(notice)?.[1] ?? 'stopped'
+      helperEnded(state, id, at, call.repo ?? null, call.type, status, call.model, figure('subagent_tokens'), figure('duration_ms'))
+    }
   }
   // The mode a session is in, the last one the transcript records (read off the line, unparsed): a
   // `permission-mode` row in an interactive session (written again most turns), and the field on a main-loop
@@ -583,8 +594,11 @@ export function scanLine(line: string, from: number, to: number, seen: Set<strin
     for (const [, id] of line.matchAll(RESULT_ID)) {
       if (!id) continue
       delete state.pending[id]
-      // A helper's result read no further (an interrupt, say): back all the same, unless only launched.
-      if (state.sessions.open[id] && !line.includes('async_launched')) delete state.sessions.open[id]
+      // A helper's result read no further (an interrupt, say): back all the same, unless only launched (its
+      // model resolved then, kept for the notice of its end).
+      const call = state.sessions.open[id]
+      if (call && !line.includes('async_launched')) delete state.sessions.open[id]
+      else if (call) call.model = /"resolvedModel":"([\w.-]+)"/.exec(line)?.[1] ?? call.model
     }
   }
   if (!isUsage && !isEvent) return
@@ -679,17 +693,17 @@ export async function readTranscripts(
   root: string,
   helpers: Record<string, string> = {},
   skillNames?: Set<string>,
-): Promise<{ usage: Snapshot['usage']; events: HarnessEvent[]; helperDay: Record<string, HelperDay>; moments: Record<string, MomentDay>; sessions: SessionDay }> {
+): Promise<{ usage: Snapshot['usage']; events: HarnessEvent[]; helperDay: Record<string, HelperDay>; sessions: SessionDay }> {
   const [from, to] = dayBounds(day)
   const cachePath = join(cacheDir, `usage-${day}.json`)
-  let cache: UsageCache = { version: CACHE_VERSION, day, files: {}, seen: [], models: {}, pending: {}, events: [], helpers: {}, moments: {}, sessions: { models: {}, modes: {}, open: {}, skills: {} }, known: [] }
+  let cache: UsageCache = { version: CACHE_VERSION, day, files: {}, seen: [], models: {}, pending: {}, events: [], helpers: {}, sessions: { models: {}, modes: {}, open: {}, skills: {} }, known: [] }
   try {
     const saved = JSON.parse(readFileSync(cachePath, 'utf8')) as UsageCache
     if (saved.day === day && saved.version === CACHE_VERSION) cache = saved
   } catch {}
 
   const seen = new Set(cache.seen)
-  const state: EventState = { root, models: helpers, pending: cache.pending, events: cache.events, helpers: cache.helpers, moments: cache.moments, sessions: cache.sessions, known: new Set(cache.known), skillNames }
+  const state: EventState = { root, models: helpers, pending: cache.pending, events: cache.events, helpers: cache.helpers, sessions: cache.sessions, known: new Set(cache.known), skillNames }
   const files = listTranscripts(projects, from)
   for (const { path, size } of files) {
     const known = cache.files[path]?.offset ?? 0
@@ -716,7 +730,7 @@ export async function readTranscripts(
   const models = Object.values(cache.models).sort(
     (a, b) => b.input + b.cacheRead + b.cacheWrite + b.output - (a.input + a.cacheRead + a.cacheWrite + a.output),
   )
-  return { usage: { day, models, files: files.length }, events: cache.events, helperDay: cache.helpers, moments: cache.moments, sessions: cache.sessions }
+  return { usage: { day, models, files: files.length }, events: cache.events, helperDay: cache.helpers, sessions: cache.sessions }
 }
 
 // --- the live sessions --------------------------------------------------------
@@ -898,7 +912,6 @@ if (import.meta.main) {
       events: [...log, ...transcripts.events].sort((a, b) => b.at - a.at).slice(0, MAX_EVENTS),
       helpers,
       helperDay: transcripts.helperDay,
-      moments: transcripts.moments,
       sessions: readSessions(join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'sessions'), root, transcripts.sessions),
       gates: eventsFile ? readGates(join(dirname(eventsFile), 'running')) : [],
     }

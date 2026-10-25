@@ -236,22 +236,20 @@ test('the pane draws the board, the checks and the day on every surface', async 
   on('session.surfaces', () => ({ value: ['desktop'] }))
 
   for (const surface of ['terminal', 'desktop'] as const) {
-    // The three layouts: the mock-up's three columns, two, one.
+    // Wide, medium and narrow: one column of boxes, the header's limits stacked when narrow.
     for (const bodyColumns of [110, 80, 48]) {
       const ui = await $.ui.mount({ plugin: 'harness-view', surface, ...PANE, props: { ...PANE.props, bodyColumns } })
       await ui.press({ key: 'refresh' })
       const at = `${surface} ${bodyColumns}`
-      const has = async (text: string | RegExp) => expect([at, text, (await ui.find({ text })) !== undefined]).toEqual([at, text, true])
+      const has = async (text: string | RegExp, isThere = true) => expect([at, text, (await ui.find({ text })) !== undefined]).toEqual([at, text, isThere])
       await has(bodyColumns >= 64 ? 'WOW-ADDONS HARNESS' : 'HARNESS')
-      // This session's phase and model, first thing: building here (no plan mode recorded), on Opus.
+      // This session's phase and model, its box's title: building here (no plan mode recorded), on Opus.
       await has('BUILDING')
-      await has('LIMITS')
       await has(/^GATES /)
       await has(/^back to /)
-      // The planner says what it is for, each moment who it calls.
-      await has('second opinions')
-      await has('◇ before a push')
-      // The helpers fanned out: the busiest today first, the planner's left to it.
+      // No planner: the Opus helpers fan out with the others, the busiest today first.
+      await has('second opinions', false)
+      await has('reviewer')
       await has('Explore')
       await has('The harness panel')
       await has(/^1 waiting on you$/)
@@ -292,11 +290,11 @@ test('planning or building, on which model: opusplan wants Opus planning, a wron
   expect(statusLine(snap, 0, 'me', { model: 'claude-sonnet-5-5', setting: 'opusplan' })).toStartWith('harness · planning sonnet 5.5 (want opus) · ')
 })
 
-test("the plan's limits are meters, the planner's moments say who, how often and their last word", async ($, on) => {
+test("the plan's limits are the header's meters, each with its reset, the fullest past 80% in the title", async ($, on) => {
   mock.env(on, { HOME: '/Users/someone' })
   const now = SNAPSHOT.at + 3000
   const clock = mock.clock(on, { now })
-  const snap: Snapshot = { ...SNAPSHOT, moments: { push: { runs: 2, lastAt: SNAPSHOT.at - 60_000 } } }
+  const snap: Snapshot = SNAPSHOT
   on('session.root', () => ({ value: '/Users/someone/code/wow-addons' }))
   on('session.surfaces', () => ({ value: ['desktop'] }))
   on('process.run', () => ({ value: { exitCode: 0, stdout: JSON.stringify(snap), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
@@ -326,22 +324,16 @@ test("the plan's limits are meters, the planner's moments say who, how often and
       await ui.press({ key: 'refresh' })
       const at = `${surface} ${bodyColumns}`
       const has = async (text: string | RegExp, isThere = true) => expect([at, text, (await ui.find({ text })) !== undefined]).toEqual([at, text, isThere])
-      // Each window a meter, its colour by how full; the worst past 80% in the title, with its reset.
-      await has('five hour')
+      // Each window a meter, its colour by how full, short names when narrow; the worst past 80% in the title.
+      const isShort = bodyColumns < 64
+      await has(isShort ? '5h' : 'five hour')
       await has('28%')
-      await has('seven day')
+      await has(isShort ? '7d' : 'seven day')
       await has('86%')
-      await has(/^ \[ 86% · 2h (9|10)m \]$/)
-      await has(/% used$/, false)
-      // A moment called today is filled, the others hollow; the counts by moment.
-      await has('◆ before a push')
-      await has('◇ before a plan')
-      if (bodyColumns >= 96) {
-        // Who each moment calls, and its last word: the newest verdict, or why the architect stays off.
-        await has('reviewer')
-        await has('no findings')
-        await has('architect off, opus builds')
-      }
+      await has(isShort ? ' · 7d at 86%' : ' · seven day at 86%')
+      // Its reset beside each one that says it.
+      await has(/^ · 2h (9|10)m$/)
+      await has('LIMITS', false)
       await ui.unmount()
     }
   }
@@ -617,6 +609,8 @@ test('the gates are at work only while a q.ts run goes on, not for a helper or t
       if (surface === 'terminal') expect([at, (await ui.find({ key: 'gates-top' })) !== undefined]).toEqual([at, isOn])
       // The run named where the stamp's note stands, the others counted.
       expect([at, (await ui.find({ text: 'q check' })) !== undefined, (await ui.find({ text: ' +1' })) !== undefined]).toEqual([at, isOn, isOn])
+      // The running reviewer's box says the moment it was called at.
+      expect([at, (await ui.find({ text: ' · before a push' })) !== undefined]).toEqual([at, true])
       await ui.unmount()
     }
   }

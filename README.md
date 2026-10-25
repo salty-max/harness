@@ -14,41 +14,33 @@ them, bars of block characters with a checkered rest, statuses ok green,
 waiting amber, failed red. The mock-up's "JEV router" is not ours: its place
 holds the gates, the part of the harness that runs in code.
 
-- **Header**: the harness, and what this session does now: `PLANNING` or
-  `BUILDING` and the model of its last call. The phase is the transcript's
-  permission mode, the last one its transcript records (`bin/snapshot.ts`): a
-  `permission-mode` row (written again most turns), or the `permissionMode` field
-  of a main-loop user record, whichever comes last; a mode naming `plan` is
-  planning, anything else building. A `claude -p --permission-mode plan`
-  probe (25 October 2026) wrote no row, only `"permissionMode":"plan"` on its user
-  record, hence both. Interactive plan mode (Shift+Tab, opusplan) has not
-  been caught in a transcript yet: it is read from the same row and field,
-  the one inference left. Under the settings' `opusplan` a session planning on another model
-  than Opus says `WANT OPUS` in red (`stance` in `hooks/format.ts`).
-  Building on Opus is not flagged, the plain model is there to read: the
-  settings can't tell a code session meant for Sonnet from a prose one
-  meant for Opus (`--model opus` never reaches them).
-- **Planner** (Opus, the tall box on the left): second opinions, eyes that
-  didn't write the change, at the family's four moments (CLAUDE.md,
-  "Helpers"). Each moment names who it calls (the architect before a plan,
-  when the same error comes back, before done; the reviewer before a
-  push), a bar of today's Opus calls by moment and their count (◆ once
-  called today, ◇ not yet), and its last word: the reviewer's newest
-  recorded verdict (its repository, how long ago), or the time of the
-  last call. The architect is for a Sonnet session: while Opus builds
-  (unless the settings' model is `opusplan`) the subtitle says "architect
-  off, opus builds". A running Opus helper lights its moment, its context
-  and calls live under it, the box's header saying who is at work. The
-  calls by moment are counted as each starts (`bin/snapshot.ts`,
-  `momentOf` in `hooks/format.ts`: the reviewer's is the push, the
-  architect's read from its brief).
-- **Main session** (dashed): planning or building and its model, context
-  fill, effort, cost, and the helpers running. **Limits**: the plan's rate
-  limits as meters (green, amber from 80%, red from 95%; past 80% the
-  title's mark gives the fullest window and when it resets). The settings'
-  model, mode, context window, ask rules and subagent model were rows here
-  until 25 October 2026: the header says the model, the settings are one
-  file away.
+- **Header** (no box, a rule under it, 25 October 2026): the harness's
+  name, when the numbers last changed and Refresh, then the plan's rate
+  limits as meters (green, amber from 80%, red from 95%), each with its
+  reset; past 80% the title names the fullest window (`· seven day at
+  86%`). Under 64 columns the limits stack, named `5h` and `7d`. The
+  settings' model, mode, context window, ask rules and subagent model were
+  rows of a box until 25 October 2026: the settings are one file away.
+- **Main session** (dashed, its model's colour), laid out as the other
+  boxes: `PLANNING` or `BUILDING` and the model of its last call, the
+  session's title after it (cut first), its state on the right (idle,
+  working, the helpers running); the context as a meter to the box's
+  edge; the effort, and the cost on the right. The phase is the
+  transcript's permission mode, the last one its transcript records
+  (`bin/snapshot.ts`): a `permission-mode` row (written again most turns),
+  or the `permissionMode` field of a main-loop user record, whichever comes
+  last; a mode naming `plan` is planning, anything else building. A
+  `claude -p --permission-mode plan` probe (25 October 2026) wrote no row,
+  only `"permissionMode":"plan"` on its user record, hence both.
+  Interactive plan mode (Shift+Tab, opusplan) has not been caught in a
+  transcript yet: it is read from the same row and field, the one
+  inference left. Under the settings' `opusplan` a session planning on
+  another model than Opus says `WANT OPUS` in red (`stance` in
+  `hooks/format.ts`). Building on Opus is not flagged, the plain model is
+  there to read: the settings can't tell a code session meant for Sonnet
+  from a prose one meant for Opus (`--model opus` never reaches them).
+  Until 25 October 2026 the phase sat in the header and the box was
+  narrower than the rest.
 - **Gates**: what waits to be pushed (the repositories with commits their
   upstream lacks, or no remote has on a branch never pushed, `to push 6`): how many of them are stamped (`fresh`,
   pre-push lets them through) and reviewed (`current`, a verdict on HEAD
@@ -59,13 +51,24 @@ holds the gates, the part of the harness that runs in code.
   `nothing to push`, no meters. At work only while a
   q.ts run goes on, in any session, the run named under the meters (`q
   check · yonder`, `+1` for more).
-- **Helpers**, fanned out from the gates: running ones first, then the
-  family's that worked today, the busiest first (by runs, then the
-  latest), the planner's left to it; a helper that never ran today isn't
+- **Helpers**, fanned out from the gates (up to four from 100 columns,
+  three from 66): running ones first, then the family's that worked today,
+  the busiest first (by runs, then the latest), the Opus ones (the
+  reviewer, the architect) among them; a helper that never ran today isn't
   drawn. Each with its model, status, runs and tokens (or its live context
-  and calls). With none running or worked, and nothing handing back, the
-  diagram ends at the gates.
-- **Back to lead** (dashed): the last helper's handback, tokens and time;
+  and calls). A running Opus helper says the moment it was called at
+  beside its name (`reviewer · before a push`: `momentOf` in
+  `hooks/format.ts`, the reviewer's the push, the architect's read from
+  its brief). A run is summed as it ends: its result for a helper in the
+  foreground, the notice of its end (`<task-notification>`: status,
+  tokens, time) for one in the background, which every helper is now (its
+  result only says `async_launched`; until 25 October 2026 those were
+  never summed and the fan-out stayed empty). With none running or
+  worked, and nothing handing back, the diagram ends at the gates.
+  The planner, a tall Opus box of today's calls by moment, went on 25
+  October 2026: two of its four moments were nearly always 0, and its one
+  live part, an Opus helper at work, is what the fan-out draws.
+- **Back to lead** (dashed, one row): the last helper's handback, tokens and time;
   "handing back" while a helper of this session has just finished and the
   shared numbers don't have its figures yet. Drawn with the helpers only.
 - **Repositories**: each family repository's newest check stamp
@@ -93,7 +96,7 @@ holds the gates, the part of the harness that runs in code.
   then idle: its status (a spinner while busy, amber while it waits on
   you, with what for: "permission prompt"), its title, its main loop's
   last model with `plan` or `build` before it (the mode its transcript
-  last recorded) and its helpers running, its newest open card's status,
+  last recorded) and its helpers running, its newest open card's status (else its newest done one, dim),
   how long since its status changed, and **Open** for a desktop session:
   the press hands the desktop app the session's own link
   (`/usr/bin/open claude://claude.ai/epitaxy/<its desktop id>`; the
@@ -180,8 +183,11 @@ sidechain): a log line, but not on its session's list, which says what the
 session itself used. And a line says a skill was loaded, never that
 its steps were followed.
 
-The layout follows the pane's width: the mock-up's three columns from 96
-columns, two from 64, one below; every column truncates rather than wraps.
+Every box of the diagram is the pane's width, one column at every width
+(the mock-up's three columns, then two, until 25 October 2026); the width
+decides only the header's limits (side by side from 64), the helpers'
+count, Today beside the Board from 80 and the repositories' two columns
+from 96. Every column truncates rather than wraps.
 Boxes side by side stand two columns apart, stacked ones a row apart,
 except where a line of the diagram joins them.
 
@@ -204,14 +210,13 @@ pane itself redraws only when a number moved. It moves when work does:
   (`HANDBACK_MS`: a helper of this session seen running, then not, and a
   `$.clock.after` that turns it off); never back before one is done, back
   and out at once when one is done and others still run. A dot on the
-  desktop, the line's heavy strokes in the terminal; the planner's arrow
-  while an Opus helper runs. Only the lines that are on make up the
+  desktop, the line's heavy strokes in the terminal. Only the lines that are on make up the
   pulse's cycle. On the desktop each line's pulse starts at the wall
   clock's phase of its cycle, so a redraw doesn't make it jump;
 - a box at work wears a running border: the main session's while its turn
   runs, the gates' while a q.ts run goes on (the turn's pulse comes down
   to them all the same, but a turn or a helper isn't theirs),
-  a helper's while it runs, the planner's while an Opus helper does, the
+  a helper's while it runs, the
   lead's while a handback comes in.
   On the desktop every box's border is four vector edges (rounded strips
   top and bottom cut to the box's width, sides the row stretches to its
@@ -228,10 +233,9 @@ pane itself redraws only when a number moved. It moves when work does:
   module draws them: the pane doesn't redraw for them (it did every 450 ms
   for the beat that blinked the whole border before, 21 October 2026);
 - the spinners (braille) turn while what they stand for works: the gates
-  while a q.ts run goes on, the session in a turn, a helper while it runs, the planner while an
-  Opus helper runs;
+  while a q.ts run goes on, the session in a turn, a helper while it runs;
 - bars and figures (Today, the context, the gates' meters, the helpers'
-  shares, the planner's runs and tokens) roll to a new value in half a
+  shares) roll to a new value in half a
   second, and up from nothing as the pane opens;
 - a new log line blinks its mark for six seconds;
 - the live beat in the log's header pulses always, and the header counts
