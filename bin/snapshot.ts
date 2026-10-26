@@ -18,7 +18,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, 
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 
-import type { BoardCard, GateRun, HarnessEvent, HelperDay, HelperDef, LiveSession, ModelDay, RepoRow, Snapshot } from '../types'
+import type { BoardCard, GateRun, HarnessEvent, HelperDay, HelperDef, LiveSession, LockCard, ModelDay, RepoLock, RepoRow, Slip, Snapshot } from '../types'
 
 const CHUNK = 16 * 1024 * 1024
 
@@ -230,6 +230,9 @@ const ORDER = ['waiting-test', 'waiting-review', 'ready-to-push', 'blocked', 'ru
 /** The cards as addon-kit's board.ts parses them (B), when it is there. */
 export type CardKit = {
   parseCard: (id: string, text: string) => Omit<BoardCard, 'summary'> & { body: string }
+  /** The lock's own rules (board.ts): who holds each repository, and whether a session may write one. */
+  holders?: (list: unknown[], only?: string[]) => { repo: string; card: BoardCard; kind: 'held' | 'pending' }[]
+  mayWrite?: (repo: string, list: unknown[], session: string) => string | undefined
 }
 
 /** The first line under `## Try`, else the body's first line before any section. */
@@ -301,8 +304,8 @@ export function readBoard(dir: string, today: string, kit?: CardKit): BoardCard[
 // Opus helpers' calls by moment, 7 each session's model and open helpers, 8 and 9 the
 // session's mode, 10 the skills each session used, 11 left the moments out again, 12 ends a
 // background helper's run at the notice of its end, 13 carries the sessions' skills, open helpers, events and
-// file offsets over midnight from the day before)
-const CACHE_VERSION = 13
+// file offsets over midnight from the day before, 14 each session's last Edit or Write by repository)
+const CACHE_VERSION = 14
 
 type UsageCache = {
   version: number
@@ -318,7 +321,7 @@ type UsageCache = {
 }
 
 /** What the transcripts say of each session: its main loop's last model, its helpers started and not yet back (by the Agent call's id). */
-export type SessionDay = { models: Record<string, string>; /** Its permission mode as the transcript last recorded it (`plan`: planning, anything else building). */ modes: Record<string, string>; open: Record<string, { session: string; type: string; at: number; repo?: string | null; model?: string }>; /** The skills each session used today: loaded by the session (a `Skill` call) or typed by the user (`/name`), once each with the last time and a count. */ skills?: Record<string, SkillUse[]> }
+export type SessionDay = { models: Record<string, string>; /** Its permission mode as the transcript last recorded it (`plan`: planning, anything else building). */ modes: Record<string, string>; open: Record<string, { session: string; type: string; at: number; repo?: string | null; model?: string }>; /** The skills each session used today: loaded by the session (a `Skill` call) or typed by the user (`/name`), once each with the last time and a count. */ skills?: Record<string, SkillUse[]>; /** The last time each session (or a helper of it) wrote a file under each family folder: an Edit, Write or NotebookEdit. */ writes?: Record<string, Record<string, number>> }
 
 /** One skill a session used: `by` says who started it. */
 export type SkillUse = { name: string; by: 'user' | 'session'; at: number; count: number }
@@ -485,6 +488,8 @@ function helperEnded(state: EventState, id: string, at: number, repo: string | n
   day.model = model ?? day.model
 }
 
+const WRITE_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit'])
+
 /**
  * Finds the events in one transcript line of a family session: a helper
  * started (the Agent call) or finished (its result: model, tokens, time),
@@ -526,6 +531,15 @@ export function eventRow(row: Row, from: number, to: number, state: EventState) 
         })
         // Open until its result comes back (a background one: until the notice of its end).
         if (row.sessionId && !row.isSidechain) state.sessions.open[block.id] = { session: row.sessionId, type, at, repo: repoOf(state.root, cwd), ...(model ? { model } : {}) }
+      } else if (WRITE_TOOLS.has(String(block.name))) {
+        // A file written under a family folder: the session's (a helper's rows carry its parent's id) last write there.
+        const path = input.file_path ?? input.notebook_path
+        const rest = typeof path === 'string' && path.startsWith(`${state.root}/`) ? path.slice(state.root.length + 1) : ''
+        const repo = rest.split('/')[0] ?? ''
+        if (row.sessionId && repo && rest.includes('/') && !/(^|\/)(\.cache|node_modules|\.git)\//.test(rest)) {
+          const writes = ((state.sessions.writes ??= {})[row.sessionId] ??= {})
+          writes[repo] = Math.max(writes[repo] ?? 0, at)
+        }
       } else if (block.name === 'Bash' && typeof input.command === 'string' && ASKED.test(input.command)) {
         state.pending[block.id] = { at, repo: repoOf(state.root, cwd, input.command), command: askedPart(input.command) }
       }
@@ -555,7 +569,7 @@ export function eventRow(row: Row, from: number, to: number, state: EventState) 
 // A line worth parsing for an event: an Agent or Bash call, or a result that is a helper's or a prompt's answer
 // (an Agent result names its agentType, a prompt's answer its user source or the rejection).
 const isEventLine = (line: string) =>
-  /"name":"(?:Agent|Task|Bash|Skill)"/.test(line) ||
+  /"name":"(?:Agent|Task|Bash|Skill|Edit|MultiEdit|Write|NotebookEdit)"/.test(line) ||
   (line.includes('<command-name>') && line.includes('"type":"user"')) ||
   (line.includes('"tool_use_id"') && (line.includes('"agentType"') || line.includes('"source":"user') || line.includes('User rejected tool use')))
 
@@ -733,7 +747,7 @@ function carriedOver(projects: string, cacheDir: string, day: string, fresh: Usa
     files,
     pending: Object.fromEntries(Object.entries(best.pending).filter(([, c]) => now - c.at < OPEN_MAX_MS)),
     events: best.events,
-    sessions: { models: only(best.sessions.models), modes: only(best.sessions.modes), open, skills },
+    sessions: { models: only(best.sessions.models), modes: only(best.sessions.modes), open, skills, writes: only(best.sessions.writes ?? {}) },
     known: best.known.slice(-KNOWN_MAX),
     },
   }
@@ -895,6 +909,7 @@ export function readSessions(dir: string, root: string, day: SessionDay, now = D
         entrypoint: r.entrypoint ?? '',
         // (not in the soundness check: a kind of another shape only means not a background one)
         background: r.kind === 'bg',
+        host: r.entrypoint === 'claude-desktop' && r.hostSessionId && /^[\w-]+$/.test(r.hostSessionId) ? r.hostSessionId : null,
         link: r.entrypoint === 'claude-desktop' && r.hostSessionId && /^[\w-]+$/.test(r.hostSessionId) ? `claude://claude.ai/epitaxy/${r.hostSessionId}` : null,
         model: day.models[id] ?? null,
         mode: day.modes[id] ?? null,
@@ -903,6 +918,127 @@ export function readSessions(dir: string, root: string, day: SessionDay, now = D
       }
     })
     .sort((a, b) => rank(a.status) - rank(b.status) || b.since - a.since)
+}
+
+// --- who works where ---------------------------------------------------------
+
+const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+/** A write older than this is history, not a slip in progress. */
+const SLIP_MS = 20 * 60_000
+
+/**
+ * Who works in each repository some card names, by the board's own lock
+ * (board.ts's `holders`, the order cards came to hold it): the session whose
+ * running card came first, the other sessions' running cards after it, and the
+ * cards stopped mid-task there. A session's own later cards hold with it:
+ * they are not queued. Undefined without board.ts (or cards its parser did
+ * not read): the panel falls back to its marks.
+ */
+export function readLocks(board: BoardCard[], sessions: LiveSession[] | undefined, kit: CardKit | undefined): RepoLock[] | undefined {
+  if (!kit?.holders || board.some(c => !c.since)) return undefined
+  const card = (c: BoardCard): LockCard => {
+    const live = sessions?.find(x => x.id === c.session)
+    return { id: c.id, title: c.title, status: c.status, session: c.session, who: live?.name ?? (c.session ? c.session.slice(0, 8) : ''), gone: c.status === 'running' && !!sessions && SESSION_ID.test(c.session) && !live }
+  }
+  const out = new Map<string, RepoLock>()
+  for (const h of kit.holders(board.map(c => ({ ...c, body: '' })))) {
+    const lock = out.get(h.repo) ?? { repo: h.repo, holder: null, later: [], stopped: [] }
+    out.set(h.repo, lock)
+    const lc = card(h.card)
+    if (h.kind === 'pending') lock.stopped.push(lc)
+    else if (!lock.holder) lock.holder = lc
+    // (another session's running card after the holder; its own cards hold with it)
+    else if (!(lc.session && lc.session === lock.holder.session)) lock.later.push(lc)
+  }
+  return [...out.values()].sort((a, b) => Number(!a.holder) - Number(!b.holder) || a.repo.localeCompare(b.repo))
+}
+
+/**
+ * The sessions that wrote lately where board.ts's `mayWrite` says they may
+ * not: no running card of theirs names the repository, or another session's
+ * came to hold it first. The writes are the transcripts' Edit, Write and
+ * NotebookEdit calls (a helper's rows carry its parent's session id, so a
+ * builder sent into a held repository is its session's slip).
+ */
+export function readSlips(writes: Record<string, Record<string, number>> | undefined, sessions: LiveSession[] | undefined, board: BoardCard[], repos: string[], kit: CardKit | undefined, now = Date.now()): Slip[] | undefined {
+  if (!kit?.mayWrite || board.some(c => !c.since)) return undefined
+  const list = board.map(c => ({ ...c, body: '' }))
+  const out: Slip[] = []
+  for (const x of sessions ?? []) {
+    for (const [repo, at] of Object.entries(writes?.[x.id] ?? {})) {
+      if (now - at > SLIP_MS || !repos.includes(repo)) continue
+      const why = kit.mayWrite(repo, list, x.id)
+      if (why) out.push({ session: x.id, who: x.name, repo, at, why })
+    }
+  }
+  return out.sort((a, b) => b.at - a.at)
+}
+
+/** A record `session.ts` kept of a child it opened (`.cache/harness/opened/<short id>.json`): the short id, the opener's session id. */
+export type Opened = { id: string; opener: string | null }
+
+export function readOpened(dir: string): Opened[] {
+  const out: Opened[] = []
+  try {
+    for (const n of readdirSync(dir).filter(n => n.endsWith('.json'))) {
+      try {
+        const r = JSON.parse(readFileSync(join(dir, n), 'utf8')) as Partial<Opened>
+        if (typeof r.id === 'string' && /^[0-9a-f]{6,}$/.test(r.id)) out.push({ id: r.id, opener: typeof r.opener === 'string' ? r.opener : null })
+      } catch {}
+    }
+  } catch {}
+  return out
+}
+
+/**
+ * The desktop's parent of a desktop session: the file the app keeps of it
+ * (`<base>/<account>/<org>/<local id>.json`, an internal format, read only)
+ * says which session spawned it (`spawnedFrom.sessionId`, a local id). Kept
+ * in `<cacheDir>/spawned.json`: what spawned a session does not change.
+ */
+export function desktopParent(base: string, cacheDir: string): (host: string) => string | undefined {
+  const path = join(cacheDir, 'spawned.json')
+  let known: Record<string, string> = {}
+  try {
+    known = JSON.parse(readFileSync(path, 'utf8')) as Record<string, string>
+  } catch {}
+  return host => {
+    if (!/^local_[\w-]+$/.test(host)) return undefined
+    if (host in known) return known[host] || undefined
+    let parent = ''
+    try {
+      for (const rel of new Bun.Glob(`*/*/${host}.json`).scanSync({ cwd: base, onlyFiles: true })) {
+        const from = (JSON.parse(readFileSync(join(base, rel), 'utf8')) as { spawnedFrom?: { sessionId?: unknown } }).spawnedFrom?.sessionId
+        if (typeof from === 'string' && /^local_[\w-]+$/.test(from)) parent = from
+        break
+      }
+    } catch {}
+    known[host] = parent
+    try {
+      mkdirSync(cacheDir, { recursive: true })
+      const tmp = `${path}.${process.pid}`
+      writeFileSync(tmp, JSON.stringify(known))
+      renameSync(tmp, path)
+    } catch {}
+    return parent || undefined
+  }
+}
+
+/**
+ * Each live session's opener, when that is live too: session.ts's record of
+ * a child (the short id it printed starts the child's session id, the
+ * record names the opener's), else the desktop's `spawnedFrom` (a local id,
+ * the live session with that host id). Never itself.
+ */
+export function parentsOf(live: Pick<LiveSession, 'id' | 'host'>[], opened: Opened[], spawnedBy: (host: string) => string | undefined): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const x of live) {
+    const rec = opened.find(r => x.id.startsWith(r.id))
+    const byHost = !rec && x.host ? spawnedBy(x.host) : undefined
+    const parent = rec?.opener ?? (byHost ? live.find(p => p.host === byHost)?.id : undefined)
+    if (parent && parent !== x.id && live.some(p => p.id === parent)) out.set(x.id, parent)
+  }
+  return out
 }
 
 // --- the gates at work -----------------------------------------------------
@@ -981,6 +1117,12 @@ if (import.meta.main) {
       sessions: readSessions(join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'sessions'), root, transcripts.sessions),
       gates: eventsFile ? readGates(join(dirname(eventsFile), 'running')) : [],
     }
+    if (snapshot.sessions) {
+      const parents = parentsOf(snapshot.sessions, readOpened(join(root, '.cache', 'harness', 'opened')), desktopParent(arg('desktop') ?? join(homedir(), 'Library', 'Application Support', 'Claude', 'claude-code-sessions'), cacheDir))
+      snapshot.sessions = snapshot.sessions.map(x => ({ ...x, parent: parents.get(x.id) ?? null }))
+    }
+    snapshot.locks = readLocks(snapshot.board, snapshot.sessions, cards)
+    snapshot.slips = readSlips(transcripts.sessions.writes, snapshot.sessions, snapshot.board, snapshot.repos.map(r => r.name), cards)
     const text = JSON.stringify(snapshot)
     const tmp = `${shared}.${process.pid}`
     writeFileSync(tmp, text)

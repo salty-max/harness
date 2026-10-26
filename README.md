@@ -127,6 +127,31 @@ holds the gates, the part of the harness that runs in code.
   card's name matches nothing) isn't live: it still holds its
   repositories until the user moves it. The status line counts the
   other sessions waiting on you.
+  Under a session's row sit the sessions it opened (26 October 2026), each
+  indented behind `└`: from `addon-kit/session.ts`'s records
+  (`.cache/harness/opened/<short id>.json`: the short id starts the child's
+  session id, the record names its opener), else the desktop's own file of
+  the session (`~/Library/Application Support/Claude/claude-code-sessions/
+  <account>/<org>/<local id>.json`, an internal format, read only, its
+  `spawnedFrom.sessionId` kept in `~/.cache/harness-view/spawned.json`). A
+  child whose opener isn't live stands alone.
+- **Locks** (26 October 2026): who works where, by the board's own lock. The
+  snapshot's `locks` (`readLocks` in `bin/snapshot.ts`) are `board.ts`'s
+  `holders`, not a copy of its rules: per repository the session whose
+  running card came first (cyan, `(session gone)` when it isn't live: it
+  still holds), the other sessions' running cards after it (`then …`, red:
+  told to wait), and the cards stopped mid-task there (`stopped …`, amber:
+  blocked, or waiting on the user). A session's own later cards hold with it
+  and are not queued. One row per held repository, the others (stopped cards
+  only) folded into one line. Without `board.ts` there is no `locks`: the
+  box says so and the Repositories' dots remain. **Off the lock** (red
+  `⚠`): the snapshot's `slips`, a session that wrote lately (20 minutes) in
+  a repository where `board.ts`'s `mayWrite` refuses it, its words kept: no
+  running card of its own names it, or another session's came to hold it
+  first. A write is an Edit, Write or NotebookEdit call in the transcripts
+  under a family repository (a helper's rows carry its session's id, so a
+  builder sent into a held repository is its session's slip). Not a dirty
+  tree: that can't say who wrote it.
 - **Today**: tokens by model from every transcript under
   `~/.claude/projects/**/*.jsonl` (each assistant message once, by its id,
   local day), with the share of cache reads. It counts on its own, not

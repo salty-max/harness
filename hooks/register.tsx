@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
-import type { AgentRow, AgentSteps, BoardCard, CheckStamp, HarnessEvent, LiveSession, ModelDay, RepoRow, SessionFacts, Snapshot } from '../types'
+import type { AgentRow, AgentSteps, BoardCard, CheckStamp, HarnessEvent, LiveSession, LockCard, ModelDay, RepoLock, RepoRow, SessionFacts, Snapshot } from '../types'
 import { ago, bar, FRESH_MS, type Moment, momentOf, stance, tokens } from './format'
 import type { MotionProps } from './motion'
 import { BAR_PX, barSvg, EDGE_PX, edgeSvg, LINE_PX, lineSvg, SIDE_PX } from './vector'
@@ -193,6 +193,35 @@ export function holds(board: BoardCard[]): Map<string, 'held' | 'pending'> {
     for (const r of reposOf(c)) if (kind === 'held' || !out.has(r)) out.set(r, kind)
   }
   return out
+}
+
+/**
+ * The sessions as the Sessions box lists them: each one's children right under it, indented a step. The rest keep
+ * the order they came in (waiting first, then busy, then idle). A child whose opener isn't live stands alone, and
+ * so does one in a cycle (a session never sits under itself).
+ */
+export function groupSessions(live: LiveSession[]): { session: LiveSession; depth: number }[] {
+  const ids = new Set(live.map(x => x.id))
+  const out: { session: LiveSession; depth: number }[] = []
+  const seen = new Set<string>()
+  const add = (x: LiveSession, depth: number) => {
+    if (seen.has(x.id)) return
+    seen.add(x.id)
+    out.push({ session: x, depth })
+    for (const kid of live.filter(k => k.parent === x.id)) add(kid, depth + 1)
+  }
+  for (const x of live) if (!x.parent || x.parent === x.id || !ids.has(x.parent)) add(x, 0)
+  // (whatever a cycle kept out of reach)
+  for (const x of live) add(x, 0)
+  return out
+}
+
+/** A card's session as the lock names it, once: the session's name, else the card. */
+const whoOf = (c: LockCard) => c.who || c.id
+
+/** The sessions waiting behind a lock, each named once. */
+export function lockNames(cards: LockCard[]): string {
+  return [...new Set(cards.map(whoOf))].join(', ')
 }
 
 /**
@@ -1504,6 +1533,64 @@ export const register: Register = on => {
       )
     }
 
+    // --- the locks: who works where ------------------------------------------------------
+    // board.ts's lock per repository, as the snapshot read it (its own rules, not copied here): the session whose
+    // running card holds a repository, who waits behind it, and the sessions that wrote where their cards don't hold.
+    const locksBox = (w: number) => {
+      const inner = w - 4
+      const locks = snap?.locks
+      const slips = snap?.slips ?? []
+      const held = (locks ?? []).filter(l => l.holder)
+      const quiet = (locks ?? []).filter(l => !l.holder)
+      const queued = held.reduce((n, l) => n + l.later.length, 0)
+      const nameW = Math.min(18, Math.max(10, ...held.map(l => l.repo.length + 3), ...slips.map(x => x.repo.length + 3)))
+      const row = (l: RepoLock) => {
+        const top = l.holder as LockCard
+        return (
+          <Box key={`lock-${l.repo}`}>
+            {cell(nameW, runs(`lock-${l.repo}-name`, [['● ', { color: PALETTE.ask, fixed: true }], [l.repo, { bold: true }]]))}
+            <Box flexGrow={1} flexShrink={1} minWidth={0}>
+              {runs(`lock-${l.repo}-who`, [
+                [whoOf(top), { color: PALETTE.ask, bold: true, fixed: true }],
+                top.gone ? [' (session gone)', { color: PALETTE.wait, fixed: true }] : null,
+                l.later.length > 0 ? [` · then ${lockNames(l.later)}`, { color: PALETTE.fail }] : null,
+                l.stopped.length > 0 ? [` · stopped ${lockNames(l.stopped)}`, { color: PALETTE.wait, dim: true }] : null,
+              ])}
+            </Box>
+          </Box>
+        )
+      }
+      return frame(
+        'locks',
+        w,
+        'inactive',
+        <>
+          <Box justifyContent="space-between">
+            {line(inner >= 40 ? 'LOCKS · who works where' : 'LOCKS', { bold: true })}
+            {runs('locks-counts', [
+              slips.length > 0 ? [`⚠ ${slips.length} off the lock`, { color: PALETTE.fail }] : null,
+              slips.length > 0 && held.length > 0 ? [' · ', { dim: true }] : null,
+              held.length > 0 ? [`${held.length} held`, { color: PALETTE.ask }] : null,
+              queued > 0 ? [` · ${queued} waiting`, { color: PALETTE.fail }] : null,
+            ])}
+          </Box>
+          <Box flexDirection="column">
+            {!snap ? line('reading…', { dim: true }) : !locks ? line("no lock data (needs addon-kit/board.ts)", { dim: true }) : held.length === 0 && slips.length === 0 ? line('nothing held', { dim: true }) : null}
+            {held.map(row)}
+            {slips.map(x => (
+              <Box key={`slip-${x.session}-${x.repo}`}>
+                {cell(nameW, runs(`slip-${x.session}-${x.repo}-name`, [['⚠ ', { color: PALETTE.fail, fixed: true }], [x.repo, { bold: true }]]))}
+                <Box flexGrow={1} flexShrink={1} minWidth={0}>
+                  {runs(`slip-${x.session}-${x.repo}-why`, [[`${x.who} wrote here ${ago(x.at, now)} ago: `, { color: PALETTE.fail }], [x.why, { dim: true }]])}
+                </Box>
+              </Box>
+            ))}
+            {quiet.length > 0 ? line(`${quiet.length} more with stopped cards only: ${quiet.map(l => l.repo).join(', ')}`, { dim: true }) : null}
+          </Box>
+        </>,
+      )
+    }
+
     const todayW = Math.floor((W - GAP_X) * 0.42)
     // --- the sessions: every one running in the family folder ---------------------------
     // Claude Code's registry of live sessions (the snapshot's `sessions`): what each
@@ -1522,7 +1609,7 @@ export const register: Register = on => {
         const mine = board.filter(c => c.session === x.id).sort((a, b) => b.updated.localeCompare(a.updated))
         return mine.find(c => c.status !== 'done') ?? mine[0]
       }
-      const row = (x: LiveSession) => {
+      const row = ({ session: x, depth }: { session: LiveSession; depth: number }) => {
         const isSelf = x.id === selfId
         const color = x.status === 'waiting' ? PALETTE.wait : x.status === 'busy' ? PALETTE.ask : 'inactive'
         const helping = x.helpers.map(h => h.type)
@@ -1540,7 +1627,7 @@ export const register: Register = on => {
               {x.status === 'busy' ? motion(`session-${x.id}-spin`, { kind: 'spin', on: true, color }) : line(x.status === 'waiting' ? '●' : '·', { color })}
               {line(` ${x.status}`, { color, bold: x.status === 'waiting' })}
             </Box>
-            {cell(titleW, line(x.name, { bold: isSelf || x.status === 'waiting' }))}
+            {cell(titleW, line(`${depth > 0 ? `${'  '.repeat(depth - 1)}└ ` : ''}${x.name}`, { bold: isSelf || x.status === 'waiting' }))}
             <Box width={1} flexShrink={0} />
             {whatW > 0 ? cell(whatW, what) : null}
             {cardW > 0 ? cell(cardW, card ? line(card.status, { color: cardColor(card.status), dim: card.status === 'done' }) : line('no card', { dim: true })) : null}
@@ -1572,7 +1659,7 @@ export const register: Register = on => {
             ])}
           </Box>
           <Box flexDirection="column">
-            {!snap?.sessions ? line(snap ? "can't read Claude Code's sessions (~/.claude/sessions)" : 'reading…', { dim: true }) : live.length === 0 ? line('none', { dim: true }) : live.map(row)}
+            {!snap?.sessions ? line(snap ? "can't read Claude Code's sessions (~/.claude/sessions)" : 'reading…', { dim: true }) : live.length === 0 ? line('none', { dim: true }) : groupSessions(live).map(row)}
           </Box>
         </>,
       )
@@ -1582,6 +1669,7 @@ export const register: Register = on => {
       tier === 'narrow' || W < 80 ? (
         <Box key="ledger" flexDirection="column" width={W} marginTop={gapY} gap={gapY}>
           {sessionsBox(W)}
+          {locksBox(W)}
           {todayBox(W)}
           {boardBox(W)}
           {reposBox(W)}
@@ -1589,6 +1677,7 @@ export const register: Register = on => {
       ) : (
         <Box key="ledger" flexDirection="column" width={W} marginTop={gapY} gap={gapY}>
           {sessionsBox(W)}
+          {locksBox(W)}
           <Box width={W}>
             {todayBox(todayW)}
             <Box marginLeft={GAP_X}>{boardBox(W - GAP_X - todayW)}</Box>

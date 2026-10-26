@@ -59,7 +59,25 @@ export type BoardCard = {
   repos?: string[]
   /** A blocked card's: the card it waits on. */
   waits?: string
+  /** A running card's place in each repository's queue (board.ts); absent when read by the fallback parser. */
+  since?: Record<string, string>
+  /** Its front matter unreadable: it holds nothing. */
+  broken?: boolean
 }
+
+/** A card named in a repository's lock: whose session runs it, as the Sessions box names it. */
+export type LockCard = { id: string; title: string; status: string; session: string; /** The live session's name, else the id's start. */ who: string; /** Its session is not live (a running card still holds). */ gone: boolean }
+
+/**
+ * Who works in one repository by the board's lock (board.ts's `holders`): the
+ * session whose running card came first, the other sessions' running cards
+ * after it (`later`: told to wait), and the cards stopped mid-task there
+ * (`stopped`: blocked, or waiting on the user, their commits go out with its next push).
+ */
+export type RepoLock = { repo: string; holder: LockCard | null; later: LockCard[]; stopped: LockCard[] }
+
+/** A session that wrote in a repository its cards don't hold: board.ts's `mayWrite` said why. */
+export type Slip = { session: string; who: string; repo: string; at: number; why: string }
 
 /** Today's tokens of one model, every transcript on this machine. */
 export type ModelDay = {
@@ -107,6 +125,10 @@ export type LiveSession = {
   mode: string | null
   /** Its helpers running: started, no result yet (a background one: no notice of its end yet). */
   helpers: { type: string; at: number }[]
+  /** The desktop's id for it (`local_…`), a desktop session's alone. */
+  host?: string | null
+  /** The session that opened it (its id), when it is live: a child shows under it. */
+  parent?: string | null
   /** The skills it used today, oldest first: `by` says whether the session loaded it (a `Skill` call) or the user typed it (`/name`), `at` the last time, `count` how often. */
   skills: { name: string; by: 'user' | 'session'; at: number; count: number }[]
 }
@@ -129,6 +151,10 @@ export type Snapshot = {
   sessions?: LiveSession[]
   /** The q.ts runs going on, the oldest first; absent in an older snapshot. */
   gates?: GateRun[]
+  /** Who works in each repository some card names (board.ts's lock); absent without board.ts or in an older snapshot. */
+  locks?: RepoLock[]
+  /** Sessions that wrote in a repository their cards don't hold, lately; absent like `locks`. */
+  slips?: Slip[]
 }
 
 /** The session the panel is drawn in. */

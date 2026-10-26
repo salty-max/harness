@@ -13,7 +13,9 @@ import {
   skillsText,
   eventText,
   fit,
+  groupSessions,
   holds,
+  lockNames,
   marks,
   modelColor,
   modelName,
@@ -489,6 +491,63 @@ test("the sessions: each live one's status, model, card and an Open that hands t
   expect(statusLine(snap, 0, 'self')).toStartWith('harness · 1 session waiting · ')
   // Its own prompt isn't another's: this session waiting says nothing of itself.
   expect(statusLine({ ...snap, sessions: [session('self', { status: 'waiting' })] }, 0, 'self')).not.toContain('session waiting')
+})
+
+test('children stand under the session that opened them, an orphan or a cycle stands alone', () => {
+  const x = (id: string, parent: string | null = null) => ({ id, parent, name: id }) as never
+  const live = [x('kid1', 'mother'), x('other'), x('mother'), x('kid2', 'mother'), x('grandkid', 'kid1'), x('orphan', 'gone'), x('a', 'b'), x('b', 'a')]
+  expect(groupSessions(live).map(g => `${g.depth}${(g.session as { id: string }).id}`)).toEqual(['0other', '0mother', '1kid1', '2grandkid', '1kid2', '0orphan', '0a', '1b'])
+  expect(lockNames([{ who: 'esMX', id: 'a' }, { who: '', id: 'card-b' }, { who: 'esMX', id: 'c' }] as never)).toBe('esMX, card-b')
+})
+
+test("the locks: who holds a repository and who waits, a session off the lock, the sessions' children", async ($, on) => {
+  const session = (id: string, extra: Partial<NonNullable<Snapshot['sessions']>[number]>) => ({
+    id,
+    pid: 1,
+    name: id,
+    status: 'idle',
+    waitingFor: null,
+    since: SNAPSHOT.at - 3_600_000,
+    entrypoint: 'cli',
+    link: null,
+    model: 'claude-opus-5-5',
+    helpers: [],
+    ...extra,
+  })
+  const lc = (id: string, who: string, status: string, extra = {}) => ({ id, title: id, status, session: id, who, gone: false, ...extra })
+  const snap: Snapshot = {
+    ...SNAPSHOT,
+    sessions: [session('mother', { name: 'The mother' }), session('kid', { name: 'The child session', parent: 'mother' })],
+    locks: [
+      { repo: 'addon-kit', holder: lc('esmx', 'esMX names', 'running', { gone: true }), later: [lc('view', 'Harness view', 'running')], stopped: [lc('skills', 'Four skills', 'blocked')] },
+      { repo: 'goodwill', holder: null, later: [], stopped: [lc('gw', 'Goodwill', 'ready-to-push')] },
+    ],
+    slips: [{ session: 'kid', who: 'The child session', repo: 'yonder', at: SNAPSHOT.at - 120_000, why: 'no running card of this session names yonder' }],
+  }
+  mock.env(on, { HOME: '/Users/someone' })
+  mock.clock(on)
+  on('process.run', () => ({ value: { exitCode: 0, stdout: JSON.stringify(snap), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('ui.status', () => ({ value: undefined }))
+  on('session.surfaces', () => ({ value: ['desktop'] }))
+  for (const surface of ['terminal', 'desktop'] as const) {
+    for (const bodyColumns of [110, 48]) {
+      const ui = await $.ui.mount({ plugin: 'harness-view', surface, ...PANE, props: { ...PANE.props, bodyColumns } })
+      await ui.press({ key: 'refresh' })
+      const at = `${surface} ${bodyColumns}`
+      const has = async (text: string | RegExp) => expect([at, text, (await ui.find({ text })) !== undefined]).toEqual([at, text, true])
+      await has(/^LOCKS/)
+      await has('esMX names')
+      await has(' · then Harness view')
+      await has(' · stopped Four skills')
+      await has(' (session gone)')
+      await has('1 held')
+      await has('⚠ 1 off the lock')
+      // The repository only a stopped card names is folded into a line, not a row.
+      await has('1 more with stopped cards only: goodwill')
+      await has('└ The child session')
+      await ui.unmount()
+    }
+  }
 })
 
 test('the gates count what waits to be pushed alone: stamped, reviewed, both', async () => {

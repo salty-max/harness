@@ -5,6 +5,7 @@ import { join } from 'node:path'
 
 import type { ModelDay } from '../types'
 import { momentOf } from '../hooks/format'
+import * as boardKit from '../../board'
 import {
   agentDefs,
   agentModels,
@@ -18,8 +19,13 @@ import {
   skillNames,
   failedCheck,
   parseCard,
+  desktopParent,
+  parentsOf,
   parseEventLine,
   readBoard,
+  readLocks,
+  readOpened,
+  readSlips,
   readEventLog,
   readGates,
   readRepo,
@@ -767,5 +773,101 @@ describe('the gates at work', () => {
     expect(readGates(join(dir, 'missing'), starts)).toEqual([])
     expect(readGates(temp(), () => { throw new Error('ps asked with nothing to ask') })).toEqual([])
     expect(readGates(dir, () => null)).toEqual([])
+  })
+})
+
+describe('who works where', () => {
+  const card = (id: string, status: string, session: string, repos: string, since = '2026-10-26T01:00:00.000+01:00') =>
+    `---\nrepo: ${repos.split(',')[0]}\ntitle: ${id}\nstatus: ${status}\nsession: ${session}\nupdated: 2026-10-26T01:00:00+01:00\nrepos: ${repos}\n${status === 'running' ? `since: ${repos.split(',').map(r => `${r}@${since}`).join(', ')}\n` : ''}---\n`
+  const board = (...cards: string[][]) =>
+    cards.map(([id, status, session, repos, since]) => {
+      const { body, ...c } = boardKit.parseCard(id as string, card(id as string, status as string, session as string, repos as string, since))
+      return { ...c, summary: body.trim() }
+    })
+  const live = (id: string, name: string, extra: Record<string, unknown> = {}) => ({ id, pid: 1, name, status: 'idle', waitingFor: null, since: 0, entrypoint: 'cli', link: null, model: null, mode: null, helpers: [], skills: [], ...extra })
+
+  test("the lock per repository: the first running card holds, another session's later one waits, stopped cards are listed once, a session's own cards hold with it", () => {
+    const a = '11111111-1111-1111-1111-111111111111'
+    const b = '22222222-2222-2222-2222-222222222222'
+    const cards = board(
+      ['esmx', 'running', a, 'wow-data,addon-kit', '2026-10-26T01:00:00.000+01:00'],
+      ['esmx-two', 'running', a, 'addon-kit', '2026-10-26T01:30:00.000+01:00'],
+      ['harness', 'running', b, 'addon-kit', '2026-10-26T01:10:00.000+01:00'],
+      ['skills', 'blocked', 'c', 'addon-kit'],
+      ['push', 'ready-to-push', 'd', 'wow-data'],
+      ['alone', 'ready-to-push', 'e', 'aaa-stopped-only'],
+    )
+    const locks = readLocks(cards as never, [live(a, 'wow-data session') as never], boardKit)!
+    const kit = locks.find(l => l.repo === 'addon-kit')!
+    expect(kit.holder).toMatchObject({ id: 'esmx', who: 'wow-data session', gone: false })
+    // (esmx-two is the holder's session's own: not queued; harness is another session's, after it, and its session is not live)
+    expect(kit.later.map(c => [c.id, c.who, c.gone])).toEqual([['harness', '22222222', true]])
+    expect(kit.stopped.map(c => c.id)).toEqual(['skills'])
+    expect(locks.find(l => l.repo === 'wow-data')).toMatchObject({ holder: { id: 'esmx' }, stopped: [{ id: 'push' }] })
+    // Held repositories first.
+    expect(locks.map(l => l.repo)).toEqual(['addon-kit', 'wow-data', 'aaa-stopped-only'])
+    // Without board.ts, or cards its parser did not read: no locks, the panel keeps its marks.
+    expect(readLocks(cards as never, [], undefined)).toBeUndefined()
+    expect(readLocks([{ id: 'x', since: undefined }] as never, [], boardKit)).toBeUndefined()
+  })
+
+  test("a write in a repository the session's cards don't hold is a slip, by board.ts's own words; old, held and unknown ones are not", () => {
+    const a = '11111111-1111-1111-1111-111111111111'
+    const b = '22222222-2222-2222-2222-222222222222'
+    const cards = board(['esmx', 'running', a, 'addon-kit'], ['mine', 'blocked', b, 'addon-kit'])
+    const now = Date.parse('2026-10-26T02:00:00+01:00')
+    const sessions = [live(a, 'holder') as never, live(b, 'builder host') as never]
+    const writes = { [a]: { 'addon-kit': now - 1000 }, [b]: { 'addon-kit': now - 60_000, yonder: now - 1000, board: now - 1000, hearthtale: now - 3 * 3600_000 } }
+    const slips = readSlips(writes, sessions, cards as never, ['addon-kit', 'yonder', 'hearthtale'], boardKit, now)!
+    // The holder is fine; b's blocked card holds nothing in addon-kit, and it has no card for yonder at all; a folder that is no repository (board) and an old write are left out.
+    expect(slips.map(x => [x.who, x.repo])).toEqual([['builder host', 'yonder'], ['builder host', 'addon-kit']])
+    expect(slips[1]?.why).toContain('no running card of this session names addon-kit')
+    expect(readSlips(writes, sessions, cards as never, ['addon-kit'], undefined, now)).toBeUndefined()
+  })
+
+  test("a session's Edit, Write or NotebookEdit under a family folder is noted by repository, a helper's too; .cache, node_modules and the folder's top are not", () => {
+    const from = new Date(2026, 9, 26).getTime()
+    const to = from + 86_400_000
+    const noon = new Date(2026, 9, 26, 12).toISOString()
+    const s: EventState = { root: '/f', models: {}, pending: {}, events: [], helpers: {}, sessions: { models: {}, modes: {}, open: {} }, known: new Set() }
+    const edit = (name: string, input: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+      JSON.stringify({ type: 'assistant', timestamp: noon, cwd: '/f', sessionId: 's1', ...extra, message: { content: [{ type: 'tool_use', id: `t${Math.random()}`, name, input }] } })
+    scanLine(edit('Edit', { file_path: '/f/addon-kit/a.ts' }), from, to, new Set(), {}, s)
+    scanLine(edit('Write', { file_path: '/f/yonder/b.lua' }, { isSidechain: true }), from, to, new Set(), {}, s)
+    scanLine(edit('NotebookEdit', { notebook_path: '/f/wow-data/n.ipynb' }), from, to, new Set(), {}, s)
+    for (const p of ['/f/addon-kit/.cache/x', '/f/yonder/node_modules/y/z.js', '/f/README.md', '/elsewhere/a.ts']) scanLine(edit('Edit', { file_path: p }), from, to, new Set(), {}, s)
+    expect(Object.keys(s.sessions.writes?.s1 ?? {}).sort()).toEqual(['addon-kit', 'wow-data', 'yonder'])
+  })
+
+  test("a child under its opener: session.ts's record by the short id, else the desktop's spawnedFrom; the opener must be live, never itself", () => {
+    const live3 = [
+      { id: 'aaaaaaaa-1', host: 'local_mother' },
+      { id: 'bbbbbbbb-2', host: 'local_kid' },
+      { id: 'cccccccc-3', host: null },
+      { id: 'dddddddd-4', host: 'local_orphan' },
+    ]
+    const spawned = (h: string) => ({ local_kid: 'local_mother', local_orphan: 'local_gone' })[h]
+    const parents = parentsOf(live3, [{ id: 'cccccccc', opener: 'aaaaaaaa-1' }, { id: 'aaaaaaaa', opener: 'aaaaaaaa-1' }], spawned)
+    expect([...parents]).toEqual([['bbbbbbbb-2', 'aaaaaaaa-1'], ['cccccccc-3', 'aaaaaaaa-1']])
+  })
+
+  test("the records of session.ts and the desktop's session files are read soft; what spawned a session is kept", () => {
+    const dir = temp()
+    writeFileSync(join(dir, 'abc12345.json'), JSON.stringify({ id: 'abc12345', opener: 'op-1' }))
+    writeFileSync(join(dir, 'bad.json'), 'nope')
+    expect(readOpened(dir)).toEqual([{ id: 'abc12345', opener: 'op-1' }])
+    expect(readOpened(join(dir, 'missing'))).toEqual([])
+    const base = temp()
+    mkdirSync(join(base, 'acct', 'org'), { recursive: true })
+    writeFileSync(join(base, 'acct', 'org', 'local_kid.json'), JSON.stringify({ spawnedFrom: { sessionId: 'local_mother' } }))
+    writeFileSync(join(base, 'acct', 'org', 'local_root.json'), JSON.stringify({}))
+    const cache = temp()
+    const find = desktopParent(base, cache)
+    expect(find('local_kid')).toBe('local_mother')
+    expect(find('local_root')).toBeUndefined()
+    expect(find('../../etc')).toBeUndefined()
+    // (kept: the file is not read again)
+    writeFileSync(join(base, 'acct', 'org', 'local_kid.json'), '{}')
+    expect(desktopParent(base, cache)('local_kid')).toBe('local_mother')
   })
 })
