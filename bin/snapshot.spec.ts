@@ -823,6 +823,11 @@ describe('who works where', () => {
     expect(slips.map(x => [x.who, x.repo])).toEqual([['builder host', 'yonder'], ['builder host', 'addon-kit']])
     expect(slips[1]?.why).toContain('no running card of this session names addon-kit')
     expect(readSlips(writes, sessions, cards as never, ['addon-kit'], undefined, now)).toBeUndefined()
+    // A write followed by a stop is its card's own: the card moved (updated 01:00) after a write at 00:50, not before one at 01:50.
+    const stopped = board(['done-card', 'ready-to-push', a, 'addon-kit'])
+    const edits = { [a]: { 'addon-kit': Date.parse('2026-10-26T00:50:00+01:00') } }
+    expect(readSlips(edits, sessions, stopped as never, ['addon-kit'], boardKit, now)).toEqual([])
+    expect(readSlips({ [a]: { 'addon-kit': Date.parse('2026-10-26T01:50:00+01:00') } }, sessions, stopped as never, ['addon-kit'], boardKit, now)).toHaveLength(1)
   })
 
   test("a session's Edit, Write or NotebookEdit under a family folder is noted by repository, a helper's too; .cache, node_modules and the folder's top are not", () => {
@@ -866,6 +871,17 @@ describe('who works where', () => {
     expect(find('local_kid')).toBe('local_mother')
     expect(find('local_root')).toBeUndefined()
     expect(find('../../etc')).toBeUndefined()
+    // (one not found yet is looked for again after a minute, not for good)
+    expect(find('local_late')).toBeUndefined()
+    writeFileSync(join(base, 'acct', 'org', 'local_late.json'), JSON.stringify({ spawnedFrom: { sessionId: 'local_mother' } }))
+    expect(find('local_late')).toBeUndefined()
+    const clock = Date.now
+    Date.now = () => clock() + 61_000
+    try {
+      expect(desktopParent(base, cache)('local_late')).toBe('local_mother')
+    } finally {
+      Date.now = clock
+    }
     // (kept: the file is not read again)
     writeFileSync(join(base, 'acct', 'org', 'local_kid.json'), '{}')
     expect(desktopParent(base, cache)('local_kid')).toBe('local_mother')

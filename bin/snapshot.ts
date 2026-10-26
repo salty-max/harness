@@ -965,8 +965,11 @@ export function readSlips(writes: Record<string, Record<string, number>> | undef
   const list = board.map(c => ({ ...c, body: '' }))
   const out: Slip[] = []
   for (const x of sessions ?? []) {
+    // A write is judged by the cards as they stood when it was made: one before the session's cards last moved (a
+    // change committed, the card set ready-to-push or done) was its card's own, so only a later one can be off the lock.
+    const moved = Math.max(0, ...board.filter(c => c.session === x.id).map(c => Date.parse(c.updated) || 0))
     for (const [repo, at] of Object.entries(writes?.[x.id] ?? {})) {
-      if (now - at > SLIP_MS || !repos.includes(repo)) continue
+      if (now - at > SLIP_MS || at <= moved || !repos.includes(repo)) continue
       const why = kit.mayWrite(repo, list, x.id)
       if (why) out.push({ session: x.id, who: x.name, repo, at, why })
     }
@@ -1004,7 +1007,10 @@ export function desktopParent(base: string, cacheDir: string): (host: string) =>
   } catch {}
   return host => {
     if (!/^local_[\w-]+$/.test(host)) return undefined
-    if (host in known) return known[host] || undefined
+    // (a parent is kept for good; none found is kept a minute: the app may not have written the file yet)
+    const was = known[host]
+    if (was && !was.startsWith('-')) return was
+    if (was && Date.now() - Number(was.slice(1)) < 60_000) return undefined
     let parent = ''
     try {
       for (const rel of new Bun.Glob(`*/*/${host}.json`).scanSync({ cwd: base, onlyFiles: true })) {
@@ -1013,7 +1019,7 @@ export function desktopParent(base: string, cacheDir: string): (host: string) =>
         break
       }
     } catch {}
-    known[host] = parent
+    known[host] = parent || `-${Date.now()}`
     try {
       mkdirSync(cacheDir, { recursive: true })
       const tmp = `${path}.${process.pid}`
