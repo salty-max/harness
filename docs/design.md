@@ -206,7 +206,7 @@ them is out of scope (the audit's change 5 is its own task).
 
 Slice 2 moves the tools and their tests together; the tests are the same
 files, run from `harness/`. Slice 3 runs the old `addon-kit` suite against
-the shims (the same assertions), addon-kit's own `check`, and the checks of
+the vendored files (the same assertions), addon-kit's own `check`, and the checks of
 two addons; `board.ts list`, `status.ts --no-fetch` and `hooks.ts status`
 output is diffed before and after on the real family (same text, same
 exit). The extension hooks are exercised with the family's own extension
@@ -271,3 +271,9 @@ modules, lifted verbatim from `packet.ts` and `status.ts`.
    (`init`, a card, `q check`, a refused trailer, an unstamped push refused,
    a packet and a review). Also a worktree of it, to prove one shared board.
    Nothing real is created.
+
+## 9. Decided (the user, 29 October 2026)
+
+Name `harness`; consumption a vendored, stamped copy; license MIT; a
+one-repository project's board in `.harness/board/`, git-ignored. Waiting:
+the user's approval of this design before slice 2.
