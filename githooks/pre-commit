@@ -1,0 +1,15 @@
+#!/bin/sh
+# The board as the lock, kept by git (harness.toml [hooks] lock): a Claude session's commit (its
+# CLAUDE_CODE_SESSION_ID set) goes in only while a running card of that
+# session names the repository and no other session's card came to hold it
+# first (board.ts may). A person's own commit, CI's, is never asked. Then
+# the repository's own pre-commit, if any.
+here=$(cd "$(dirname "$0")" && pwd)
+if [ -n "$CLAUDE_CODE_SESSION_ID" ] && [ -z "$CI" ] && [ "$(bun "$here/../config.ts" hook lock 2>/dev/null)" != off ]; then
+  repo=$(bun "$here/../config.ts" repo-name) || exit 1
+  bun "$here/../board.ts" may "$repo" || {
+    echo "pre-commit: the board is the lock (the $(bun "$here/../config.ts" term 2>/dev/null || echo project)'s rules file)." >&2
+    exit 1
+  }
+fi
+exec "$here/_chain" pre-commit "$@"

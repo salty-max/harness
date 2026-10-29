@@ -1,0 +1,15 @@
+[
+  "Bash(git push *)",
+  "Bash(git -C * push)",
+  "Bash(git -C * push *)",
+  "Bash(git *--no-verify*)",
+  "Bash(*core.hooksPath*)",
+  "Bash(gh release create *)",
+  "Bash(gh release delete *)",
+  "Bash(gh pr merge *)",
+  "Bash(gh workflow run *)",
+  "Bash(gh secret set *)",
+  "Bash(gh secret delete *)",
+  "Bash(*vercel deploy*)",
+  "Bash(*vercel --prod*)"
+]

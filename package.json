@@ -1,0 +1,8 @@
+{
+  "name": "harness",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "check": "bun test"
+  }
+}

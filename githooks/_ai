@@ -1,0 +1,19 @@
+#!/bin/sh
+# The project's rule on a commit message, read on stdin: prints each line that
+# names an AI as a co-author (any "<something>-by:" or "-with:" trailer:
+# Co-Authored-By, Signed-off-by, Reviewed-by, Helped-by, Made-with...) or
+# says the commit was generated, made or written with one, and exits 1 when
+# it found any. commit-msg runs it on the message, pre-push on every commit
+# it sends (a cherry-pick, a rebase or a merge never runs commit-msg).
+# (an AI's name as a word: a co-author called Claude is refused too, the
+# family has none; Cursor only as a co-author, the Codex is one of ours)
+word='(claude|anthropic|openai|chatgpt|gpt-?[0-9][[:alnum:].]*|copilot|gemini|aider|codeium|windsurf|devin ai|openai codex|codex cli)'
+edge='([^[:alnum:]_]|$)'
+bad=$(grep -v '^#' | grep -iE \
+  -e "^[[:space:]]*[[:alpha:]-]*-(by|with)[[:space:]]*:(.*[^[:alnum:]_])?($word|cursor)$edge" \
+  -e "^[^[:alnum:]]*(generated|made|written|built|created)[- ](with|by)(.*[^[:alnum:]_])?$word$edge" \
+  -e "^[^[:alnum:]]*generated[- ](with|by).*[]][(]https?://" \
+  -e '🤖')
+[ -z "$bad" ] && exit 0
+printf '%s\n' "$bad"
+exit 1

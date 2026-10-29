@@ -1,0 +1,17 @@
+#!/bin/sh
+# The repository's own hook of this name, where it had a hooks folder before
+# the harness's (husky's .husky/_, say): hooks.ts install keeps that folder
+# in harness.chain. Nothing to chain to is no failure.
+hook=$1
+shift
+dir=$(git config --get harness.chain) || exit 0
+case $dir in
+/*) ;;
+*) dir="$(git rev-parse --show-toplevel)/$dir" ;;
+esac
+[ -f "$dir/$hook" ] && [ -x "$dir/$hook" ] || exit 0
+# (never the harness's own hooks again, reached another way: a symlink, a
+# worktree of addon-kit, an old place still there; that would run forever)
+[ -f "$dir/_chain" ] && exit 0
+[ "$(cd "$dir" && pwd -P)" = "$(cd "$(dirname "$0")" && pwd -P)" ] && exit 0
+exec "$dir/$hook" "$@"

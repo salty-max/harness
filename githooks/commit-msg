@@ -1,0 +1,16 @@
+#!/bin/sh
+# The project's rule, kept by git (harness.toml [hooks] trailers): no AI co-author and no "generated with"
+# line in a commit message. Then the repository's own commit-msg, if any
+# (HARNESS_NO_CHAIN=1: this check alone, as packet.ts runs it on commits).
+here=$(cd "$(dirname "$0")" && pwd)
+bad=""
+[ "$(bun "$here/../config.ts" hook trailers 2>/dev/null)" != off ] && bad=$("$here/_ai" <"$1")
+if [ -n "$bad" ]; then
+  echo "commit-msg: the $(bun "$here/../config.ts" term 2>/dev/null || echo project)'s rule, no AI co-author or \"generated with\" line:" >&2
+  printf '%s\n' "$bad" | sed 's/^/  /' >&2
+  echo "Take it out and commit again (the message is kept in .git/COMMIT_EDITMSG)." >&2
+  "$here/_event" fail "commit-msg refused an AI trailer: $(printf '%s\n' "$bad" | head -1)"
+  exit 1
+fi
+[ -n "$HARNESS_NO_CHAIN" ] && exit 0
+exec "$here/_chain" commit-msg "$@"

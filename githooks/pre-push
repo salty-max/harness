@@ -1,0 +1,77 @@
+#!/bin/sh
+# Refuses a push whose trees have no passing check. q.ts stamps the tree a
+# check passed on (<git common dir>/harness/check-<tree>), and every branch
+# or tag this push sends must point at a commit with that tree. Refuses too
+# a commit it sends whose message breaks the project's rule (_ai: a
+# cherry-pick, a rebase or a merge never ran commit-msg). Refuses too a push
+# no review stands behind (review.ts --push: the review is recorded before
+# the commit, on the tree it holds; docs, TOCs and the kit's copies need
+# none). Then the
+# repository's own pre-push, if any.
+here=$(cd "$(dirname "$0")" && pwd)
+stamps="$(git rev-parse --path-format=absolute --git-common-dir)/harness"
+input=$(mktemp) || exit 1
+trap 'rm -f "$input"' EXIT
+cat >"$input"
+missing=""
+trailers=""
+unreviewed=""
+nl='
+'
+cfg() { bun "$here/../config.ts" hook "$1" 2>/dev/null; }
+t_on=$(cfg trailers); r_on=$(cfg review); s_on=$(cfg stamp)
+while read -r local_ref local_oid remote_ref remote_oid; do
+  case $local_oid in *[!0]*) ;; *) continue ;; esac # a deletion
+  # (the commits this ref sends: past what the remote had, else past every remote's)
+  case $remote_oid in
+  *[!0]*) sent=$(git rev-list "$remote_oid..$local_oid" 2>/dev/null) || sent=$(git rev-list "$local_oid" --not --remotes 2>/dev/null) ;;
+  *) sent=$(git rev-list "$local_oid" --not --remotes 2>/dev/null) ;;
+  esac
+  for c in $sent; do
+    [ "$t_on" = off ] || git log -1 --format=%B "$c" | "$here/_ai" >/dev/null || trailers="$trailers  $(git log -1 --format='%h %s' "$c")$nl"
+  done
+  # (a tag of a blob or a tree: no commit, nothing a check could have passed on)
+  tree=$(git rev-parse -q --verify "$local_oid^{tree}" 2>/dev/null) || {
+    missing="$missing  ${remote_ref#refs/*/} (not a commit: nothing a check stamps)$nl"
+    continue
+  }
+  [ "$r_on" = off ] || why=$(bun "$here/../review.ts" --push "$local_oid" "$remote_oid" 2>&1) || unreviewed="$unreviewed  ${remote_ref#refs/*/}: $why$nl"
+  [ "$s_on" = off ] || [ -f "$stamps/check-$tree" ] || missing="$missing  ${remote_ref#refs/*/} ($(git rev-parse --short "$local_oid"))$nl"
+done <"$input"
+if [ -n "$trailers" ]; then
+  {
+    echo "pre-push: the $(bun "$here/../config.ts" term 2>/dev/null || echo project)'s rule, no AI co-author or \"generated with\" line, in what this push sends:"
+    printf '%s' "$trailers"
+    echo "Reword them (git rebase -i, reword) and push again."
+  } >&2
+  "$here/_event" fail "pre-push refused an AI trailer in $(printf '%s' "$trailers" | head -1 | sed 's/^ *//')"
+  exit 1
+fi
+if [ -n "$unreviewed" ]; then
+  {
+    echo "pre-push: no review stands behind what this push sends:"
+    printf '%s' "$unreviewed"
+    echo "Make the packet and have the reviewer read it (before the commit is best), then record it:"
+    echo "  bun $(cd "$here/.." && pwd)/packet.ts <repo>  ...  bun $(cd "$here/.." && pwd)/review.ts <repo> \"<verdict>\""
+  } >&2
+  "$here/_event" fail "pre-push refused $(printf '%s' "$unreviewed" | head -1 | sed 's/^ *//'): no review"
+  exit 1
+fi
+if [ -n "$missing" ]; then
+  check=$(git config --get harness.check)
+  [ -n "$check" ] || check=$(bun "$here/../config.ts" check 2>/dev/null)
+  if [ -z "$check" ]; then
+    if [ -f package.json ] && grep -q '"check"[[:space:]]*:' package.json; then check="bun run check"; else check="<the repository's check>"; fi
+  fi
+  kit=$(cd "$here/.." && pwd)
+  {
+    echo "pre-push: no passing check for what this push sends:"
+    printf '%s' "$missing"
+    echo "Run the check on it, then push again:"
+    echo "  bun $kit/q.ts check -- $check"
+    echo "(a check run on uncommitted files counts for the commit that holds exactly them)"
+  } >&2
+  "$here/_event" fail "pre-push refused $(printf '%s' "$missing" | tr '\n' ' ' | sed 's/ *$//'): no passing check"
+  exit 1
+fi
+"$here/_chain" pre-push "$@" <"$input"

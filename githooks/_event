@@ -1,0 +1,13 @@
+#!/bin/sh
+# A hook's refusal in the harness's event log, the file events.ts writes and
+# the desktop panel reads: _event <tone> <text>. HARNESS_EVENTS names another
+# file, "off" none. Never a failure of the hook that calls it.
+here=$(cd "$(dirname "$0")" && pwd)
+# (the file and the repository's name are the config's: config.ts)
+file=$(bun "$here/../config.ts" events-path 2>/dev/null)
+[ -n "$file" ] || exit 0
+repo=$(bun "$here/../config.ts" repo-name 2>/dev/null) || repo=$(basename "$(pwd)")
+text=$(printf '%s' "$2" | tr '\t\r\n' '   ' | sed 's/  */ /g; s/^ //; s/ $//')
+mkdir -p "$(dirname "$file")" 2>/dev/null &&
+  printf '%s\thook\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$repo" "$text" >>"$file" 2>/dev/null
+exit 0

@@ -20,7 +20,7 @@ already generic. Per file:
 
 | File | Verdict | What changes |
 |---|---|---|
-| `q.ts` | generic | none: it already reads `harness.check` (git config) or `package.json`. Config's `check` is a third source |
+| `q.ts` | generic | none: it already reads `harness.check` (git config) or `package.json` |
 | `events.ts` | generic | log path from config instead of `familyPath` |
 | `board.ts` | generic | board dir from config; `repo` names come from config |
 | `githooks/*` | generic | messages say the project's name; `_event` finds the root by walking up to `harness.toml`; `pre-commit` takes the repo's name from config, not `basename` |
@@ -68,7 +68,7 @@ dir = "harness"                   # where the vendored copy lives (the family: a
 # hearthtale = { path = "hearthtale", check = "bun run check", rules = "CLAUDE.md" }
 # any key a repo omits falls back to [defaults]
 [defaults]
-check = "bun run check"           # else package.json's check, else git config harness.check
+check = "bun run check"           # the fallback: q.ts takes git config harness.check, then a repo's own check here, then package.json's check, then this
 rules = "CLAUDE.md"               # the file the reviewer's standard is; packet names it
 
 [groups]                          # for each.ts: --kit, --addons ...

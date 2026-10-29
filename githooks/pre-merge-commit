@@ -1,0 +1,3 @@
+#!/bin/sh
+# Nothing of the harness's here: the repository's own pre-merge-commit, if any.
+exec "$(dirname "$0")/_chain" pre-merge-commit "$@"
