@@ -20,7 +20,7 @@ import { isAbsolute, join } from "node:path";
 import { cards, lines } from "./board";
 import { hooksWant, state } from "./hooks";
 import { checkCommand, headTree, stampOf } from "./q";
-import { loadConfig, repoDir, repoNames, toolCmd } from "./config";
+import { loadConfig, repoDir, repoNames, toolCmdIn } from "./config";
 import { lastSummary, line as usageLine } from "./usage";
 
 // the family folder, from a worktree too (root.ts); found when first asked,
@@ -86,7 +86,7 @@ export function attention(r: Repo): string[] {
   if (!r.upstream) out.push("no upstream (local only)");
   if (r.ahead) out.push(`${r.ahead} commit${r.ahead > 1 ? "s" : ""} to push`);
   if (r.behind) out.push(`${r.behind} commit${r.behind > 1 ? "s" : ""} to pull`);
-  if (r.ahead && r.checked === false) out.push(`no passing check on HEAD's tree (${toolCmd("q")} check -- ${r.check ?? "bun run check"})`);
+  if (r.ahead && r.checked === false) out.push(`no passing check on HEAD's tree (${toolCmdIn("q", r.name)} check -- ${r.check ?? "bun run check"})`);
   for (const run of r.runs ?? []) {
     if (run.status === "completed" && !["success", "skipped", "cancelled"].includes(run.conclusion))
       out.push(`${run.workflow}: ${run.conclusion} (${run.sha.slice(0, 7)})`);

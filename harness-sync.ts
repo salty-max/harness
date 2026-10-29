@@ -5,6 +5,7 @@
  *   bun harness-sync.ts <project folder>            write the copies into harness.toml's [tools] dir
  *   bun harness-sync.ts --dirty <project folder>    a trial copy of uncommitted harness code ("<sha>+")
  *   bun harness-sync.ts --check <project folder>    fail if a copy isn't the harness's at its stamp
+ *   --tools-only / --hooks-only                     half of the copies (a project whose hooks every repository runs swaps them last)
  *
  * (run from the harness repository: the sources are the files beside this one)
  *
@@ -61,13 +62,15 @@ function stampNow(dirty: boolean): string | { error: string } {
   return unclean ? `${head}+` : head;
 }
 
-export function sync(project: string, dirty = false): string[] | { error: string } {
+export function sync(project: string, dirty = false, only?: "tools" | "hooks"): string[] | { error: string } {
   const conf = loadConfig(project);
   const sha = stampNow(dirty);
   if (typeof sha !== "string") return sha;
   const out: string[] = [];
   const dest = join(conf.root, conf.toolsDir);
   for (const f of VENDORED) {
+    if (only === "tools" && shell(f)) continue;
+    if (only === "hooks" && !shell(f)) continue;
     const to = join(dest, f);
     const text = stamped(f, readFileSync(join(SRC, f), "utf8"), sha);
     mkdirSync(dirname(to), { recursive: true });
@@ -148,7 +151,8 @@ if (import.meta.main) {
     if (problems.length) process.exit(1);
     console.log("the harness copies are the harness's");
   } else {
-    const res = sync(project, dirty);
+    const only = args.includes("--tools-only") ? "tools" : args.includes("--hooks-only") ? "hooks" : undefined;
+    const res = sync(project, dirty, only);
     if ("error" in res) {
       console.error(res.error);
       process.exit(1);

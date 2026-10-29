@@ -57,7 +57,7 @@ export function parse(argv: string[]): Options | string {
 }
 
 /** Whether a repository is in a group of harness.toml [groups]: a list of names, a package.json script, or a file glob. */
-function inGroup(name: string, group: string): boolean {
+function inGroup(group: string, name: string): boolean {
   const g = loadConfig().groups[group];
   if (!g) return false;
   const dir = repoDir(name);

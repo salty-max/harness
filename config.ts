@@ -24,7 +24,7 @@
  * is one repository (docs/design.md, section 2).
  */
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 export const CONFIG_FILE = "harness.toml";
 
@@ -237,6 +237,13 @@ function checkHint(dir: string): string | undefined {
     if (JSON.parse(readFileSync(join(dir, "package.json"), "utf8")).scripts?.check) return undefined;
   } catch {}
   return loadConfig(dir).defaults.check;
+}
+
+/** A tool as a command to type inside a repository: its path from the repository's folder (`bun ../addon-kit/q.ts` from a family repository). */
+export function toolCmdIn(tool: string, repo: string): string {
+  const c = loadConfig();
+  const rel = relative(repoDir(repo), join(c.root, c.toolsDir)) || ".";
+  return `bun ${rel}/${tool}.ts`;
 }
 
 /** The event log's file: HARNESS_EVENTS, "off" for none, else the project's cache folder. */
