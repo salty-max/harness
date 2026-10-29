@@ -4,7 +4,10 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { argvOf, parse, pick, unknown } from "./each";
+import { scopedRoot, useBoardGuard } from "./testing";
 import { attention, latestPerWorkflow, slugOf, type Repo, type Run } from "./status";
+
+useBoardGuard();
 
 describe("status", () => {
   test("a GitHub remote, ssh or https", () => {
@@ -79,14 +82,12 @@ describe("hints", () => {
     const root = mkdtempSync(join(tmpdir(), "hint-test-"));
     mkdirSync(join(root, "palaver", ".git"), { recursive: true });
     writeFileSync(join(root, "harness.toml"), '[tools]\ndir = "addon-kit"\n');
-    const prev = process.env.HARNESS_ROOT;
-    process.env.HARNESS_ROOT = root;
+    const restore = scopedRoot(root);
     try {
       const r: Repo = { name: "palaver", branch: "main", upstream: "origin/main", ahead: 1, behind: 0, dirty: 0, head: "", checked: false, check: "bun run check" };
       expect(attention(r)).toEqual(["1 commit to push", "no passing check on HEAD's tree (bun ../addon-kit/q.ts check -- bun run check)"]);
     } finally {
-      if (prev === undefined) delete process.env.HARNESS_ROOT;
-      else process.env.HARNESS_ROOT = prev;
+      restore();
     }
   });
 });

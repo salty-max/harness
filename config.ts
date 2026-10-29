@@ -9,7 +9,8 @@
  *
  * The root, in this order:
  *   1. HARNESS_ROOT, or WOW_ADDONS_ROOT as its alias (the family's name for
- *      it, which the existing tests and tools set): that folder, config or not
+ *      it): that folder, which must hold a harness.toml. Both set to different
+ *      folders is an error, never a silent pick
  *   2. up from the working directory to a folder holding harness.toml
  *   3. up from the repository's main checkout (git's common dir: a worktree
  *      anywhere on the disk still belongs to its main checkout)
@@ -78,7 +79,11 @@ export function findUp(from: string): string | undefined {
 }
 
 export function projectRoot(from: string = process.cwd()): string {
-  const env = process.env.HARNESS_ROOT || process.env.WOW_ADDONS_ROOT;
+  const given = [process.env.HARNESS_ROOT, process.env.WOW_ADDONS_ROOT].filter(Boolean) as string[];
+  // (an inherited variable must not quietly win over the one a caller set on purpose, and the board of a real project is no place to find out)
+  if (given.length === 2 && realpath(given[0]) !== realpath(given[1]))
+    throw new Error(`HARNESS_ROOT=${given[0]} and WOW_ADDONS_ROOT=${given[1]} name different projects: unset one`);
+  const env = given[0];
   if (env) {
     if (!isDir(env)) throw new Error(`HARNESS_ROOT=${env} is no folder`);
     if (!existsSync(join(env, CONFIG_FILE))) throw new Error(`HARNESS_ROOT=${env} holds no ${CONFIG_FILE}`);

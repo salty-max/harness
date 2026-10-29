@@ -4,11 +4,9 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { baseline, commitCount, commitRuns, commitSegments, costOf, gitCommits, type CommitRun, family, line, projectDirs, sessionFiles, spend, spendOf, summarise, turns, units, zero } from "./usage";
-import { writeFamilyConfig } from "./testing";
-// (a family-shaped root for the parts that ask the config without making a root of their own)
-const FIXTURE = mkdtempSync(join(tmpdir(), "harness-fixture-"));
-writeFamilyConfig(FIXTURE);
-process.env.WOW_ADDONS_ROOT ??= FIXTURE;
+import { useBoardGuard, useFixtureRoot, writeFamilyConfig } from "./testing";
+useFixtureRoot();
+useBoardGuard();
 
 
 let tmp: string;

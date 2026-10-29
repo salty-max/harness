@@ -2,7 +2,7 @@
 // packet.ts and board.ts (bun test). Each test makes its repositories in a
 // family folder of its own under the system's temp folder, git kept from the
 // user's own configuration.
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,7 +13,7 @@ import { packet, sizeLine, packetRange, range, subjectProblem, trailerProblem } 
 import { clean, headTree, matters, parse, stampDir, stampOf, verdict, workTree } from "./q";
 import { parseReview, pushProblem, record, reviewOf, waived } from "./review";
 import { loadConfig, projectRoot, repoDir, repoName } from "./config";
-import { writeFamilyConfig } from "./testing";
+import { useBoardGuard, writeFamilyConfig } from "./testing";
 
 const KIT = import.meta.dir;
 const GIT_ENV = {
@@ -26,14 +26,28 @@ const GIT_ENV = {
 };
 const saved: Record<string, string | undefined> = {};
 let tmp: string;
+let defaultRoot = "";
+/** HARNESS_ROOT back to the default fixture, the alias cleared. */
+const resetRoot = () => {
+  process.env.HARNESS_ROOT = defaultRoot;
+  delete process.env.WOW_ADDONS_ROOT;
+};
+/** Names `root` as the project for in-process calls until resetRoot(). */
+const setRoot = (root: string) => {
+  process.env.HARNESS_ROOT = root;
+  delete process.env.WOW_ADDONS_ROOT;
+};
+useBoardGuard();
 // Every tool's event line goes here, never into the family folder's log.
 let events: string;
 
 beforeAll(() => {
   for (const k of [...Object.keys(GIT_ENV), "WOW_ADDONS_ROOT", "HARNESS_ROOT", "HARNESS_EVENTS", "CLAUDE_CODE_SESSION_ID", "CI"]) saved[k] = process.env[k];
   Object.assign(process.env, GIT_ENV);
-  delete process.env.WOW_ADDONS_ROOT;
-  delete process.env.HARNESS_ROOT;
+  // (a root for everything no test scopes by hand: an unscoped call falls on a fixture, never on the real family folder this checkout may sit in)
+  defaultRoot = join(realpathSync(mkdtempSync(join(tmpdir(), "harness-default-"))));
+  writeFamilyConfig(defaultRoot);
+  resetRoot();
   // (the tests' commits are a person's: the lock's gate is tested on its own)
   delete process.env.CLAUDE_CODE_SESSION_ID;
   delete process.env.CI;
@@ -53,10 +67,14 @@ afterAll(() => {
   for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k];
   else process.env[k] = v;
   rmSync(tmp, { recursive: true, force: true });
+  rmSync(defaultRoot, { recursive: true, force: true });
 });
 
 function run(cwd: string, cmd: string[], env: Record<string, string> = {}) {
-  const p = Bun.spawnSync(cmd, { cwd, env: { ...process.env, ...env }, stdout: "pipe", stderr: "pipe" });
+  // (a root given as the alias is given as HARNESS_ROOT too: the default fixture's must not win or clash)
+  const named = env.HARNESS_ROOT ?? env.WOW_ADDONS_ROOT;
+  const roots = named ? { HARNESS_ROOT: named, WOW_ADDONS_ROOT: named } : {};
+  const p = Bun.spawnSync(cmd, { cwd, env: { ...process.env, ...env, ...roots }, stdout: "pipe", stderr: "pipe" });
   return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() };
 }
 const git = (cwd: string, ...args: string[]) => run(cwd, ["git", ...args]);
@@ -218,7 +236,7 @@ describe("events", () => {
     const { root, repo } = family();
     try {
       delete process.env.HARNESS_EVENTS;
-      process.env.WOW_ADDONS_ROOT = root;
+      setRoot(root);
       expect(eventsPath()).toBe(join(root, ".cache", "harness", "events.log"));
       logEvent("board", "wait", "yonder", "a card");
       expect(readFileSync(join(root, ".cache", "harness", "events.log"), "utf8")).toContain("\tboard\twait\tyonder\ta card\n");
@@ -226,7 +244,7 @@ describe("events", () => {
       expect(eventsPath()).toBeUndefined();
       logEvent("board", "wait", "yonder", "nothing written");
     } finally {
-      delete process.env.WOW_ADDONS_ROOT;
+      resetRoot();
       process.env.HARNESS_EVENTS = events;
     }
     expect(repoOf(repo)).toBe("repo");
@@ -281,13 +299,13 @@ describe("events", () => {
     ]);
     record(repo, "2 findings");
     expect(newEvents()).toEqual([["review", "", "repo", `${git(repo, "rev-parse", "--short=7", "HEAD").out.trim()} 2 findings`]]);
-    process.env.WOW_ADDONS_ROOT = root;
+    setRoot(root);
     try {
       const card = add("yonder", "Eight riddles", { status: "waiting-test" });
       set(card.id, { try: "nothing moved" });
       set(card.id, { status: "done" });
     } finally {
-      delete process.env.WOW_ADDONS_ROOT;
+      resetRoot();
     }
     expect(newEvents()).toEqual([
       ["board", "wait", "yonder", "Eight riddles added, waiting-test"],
@@ -436,7 +454,7 @@ describe("git hooks", () => {
 
   test("the board as the lock: a session's commit wants its running card", () => {
     const { root, repo } = hooked();
-    const env = { WOW_ADDONS_ROOT: root, CLAUDE_CODE_SESSION_ID: "s-lock", CI: "" };
+    const env = { HARNESS_ROOT: root, WOW_ADDONS_ROOT: root, CLAUDE_CODE_SESSION_ID: "s-lock", CI: "" };
     const commit = () => run(repo, ["git", "commit", "-q", "--allow-empty", "-m", "chore: locked"], env);
     const refused = commit();
     expect(refused.code).not.toBe(0);
@@ -449,7 +467,7 @@ describe("git hooks", () => {
     run(root, ["bun", join(KIT, "board.ts"), "add", "repo", "another task"], other);
     expect(run(repo, ["git", "commit", "-q", "--allow-empty", "-m", "chore: other"], other).err).toContain("is held by");
     // a person's commit is never asked
-    expect(run(repo, ["git", "commit", "-q", "--allow-empty", "-m", "chore: mine"], { WOW_ADDONS_ROOT: root }).code).toBe(0);
+    expect(run(repo, ["git", "commit", "-q", "--allow-empty", "-m", "chore: mine"], { HARNESS_ROOT: root, WOW_ADDONS_ROOT: root }).code).toBe(0);
     newEvents();
   });
 
@@ -469,6 +487,13 @@ describe("git hooks", () => {
 });
 
 describe("config", () => {
+  // (the root is what these tests discover or name themselves: no default fixture under them)
+  beforeEach(() => {
+    delete process.env.HARNESS_ROOT;
+    delete process.env.WOW_ADDONS_ROOT;
+  });
+  afterEach(resetRoot);
+
   test("the root from a worktree anywhere, and WOW_ADDONS_ROOT as HARNESS_ROOT's alias", () => {
     const { root, repo } = family();
     const outside = join(tmp, `elsewhere-${n}`, "wt");
@@ -477,16 +502,17 @@ describe("config", () => {
     expect(projectRoot(outside)).toBe(root);
     expect(run(outside, ["bun", join(KIT, "config.ts"), "root"]).out.trim()).toBe(root);
     expect(run(outside, ["bun", join(KIT, "config.ts"), "repo-name"]).out.trim()).toBe("repo");
+    delete process.env.HARNESS_ROOT;
     process.env.WOW_ADDONS_ROOT = root;
     try {
       expect(projectRoot("/")).toBe(root);
       process.env.WOW_ADDONS_ROOT = join(tmp, "no-such-folder");
       expect(() => projectRoot()).toThrow("is no folder");
+      delete process.env.WOW_ADDONS_ROOT;
       process.env.HARNESS_ROOT = root;
       expect(projectRoot("/")).toBe(root);
     } finally {
-      delete process.env.WOW_ADDONS_ROOT;
-      delete process.env.HARNESS_ROOT;
+      resetRoot();
     }
   });
 
@@ -519,7 +545,6 @@ describe("config", () => {
     git(kit, "init", "-q", "-b", "main");
     writeFileSync(join(kit, "harness.family.toml"), '[project]\nname = "fam"\n[state]\nboard = "board"\n');
     writeFileSync(join(root, "harness.toml"), 'include = "kit/harness.family.toml"\n');
-    const prev = [process.env.HARNESS_ROOT, process.env.WOW_ADDONS_ROOT];
     delete process.env.HARNESS_ROOT;
     delete process.env.WOW_ADDONS_ROOT;
     try {
@@ -528,8 +553,21 @@ describe("config", () => {
       expect(repoName(kit)).toBe("kit");
       expect(loadConfig(kit).boardDir).toBe(join(root, "board"));
     } finally {
-      if (prev[0]) process.env.HARNESS_ROOT = prev[0];
-      if (prev[1]) process.env.WOW_ADDONS_ROOT = prev[1];
+      resetRoot();
+    }
+  });
+
+  test("two different roots in the environment are an error, never a silent pick", () => {
+    const { root } = family();
+    const { root: other } = family();
+    process.env.HARNESS_ROOT = root;
+    process.env.WOW_ADDONS_ROOT = other;
+    try {
+      expect(() => projectRoot()).toThrow("name different projects");
+      process.env.WOW_ADDONS_ROOT = root;
+      expect(projectRoot()).toBe(root);
+    } finally {
+      resetRoot();
     }
   });
 
@@ -540,7 +578,7 @@ describe("config", () => {
     try {
       expect(() => projectRoot()).toThrow("holds no harness.toml");
     } finally {
-      delete process.env.HARNESS_ROOT;
+      resetRoot();
     }
   });
 
@@ -557,7 +595,7 @@ describe("config", () => {
       expect(run(root, ["bun", join(KIT, "config.ts"), "hook", "review"]).out.trim()).toBe("off");
       expect(run(root, ["bun", join(KIT, "config.ts"), "hook", "stamp"]).out.trim()).toBe("on");
     } finally {
-      delete process.env.HARNESS_ROOT;
+      resetRoot();
     }
   });
 });
@@ -857,7 +895,7 @@ describe("board", () => {
     const { root } = family();
     const procs = Array.from({ length: 6 }, (_, i) =>
       Bun.spawn(["bun", join(KIT, "board.ts"), "add", "yonder", "Yonder: the riddles of the Barrens"], {
-        env: { ...process.env, WOW_ADDONS_ROOT: root, CLAUDE_CODE_SESSION_ID: `s${i}` },
+        env: { ...process.env, HARNESS_ROOT: root, WOW_ADDONS_ROOT: root, CLAUDE_CODE_SESSION_ID: `s${i}` },
         stdout: "pipe",
         stderr: "pipe",
       }),
@@ -881,7 +919,7 @@ describe("board", () => {
 
   test("add, set, list", () => {
     const { root } = family();
-    process.env.WOW_ADDONS_ROOT = root;
+    setRoot(root);
     try {
       const a = add("yonder", "Eight riddles", { status: "waiting-test", try: "Freewind at night" });
       expect(a.id).toBe("yonder-eight-riddles");
@@ -926,7 +964,7 @@ describe("board", () => {
       expect(strangers(["yonder", "yondr"])).toEqual(["yondr"]);
       expect(existsSync(join(root, "board", "yonder-eight-riddles.md"))).toBe(true);
     } finally {
-      delete process.env.WOW_ADDONS_ROOT;
+      resetRoot();
     }
   });
 });

@@ -3,13 +3,11 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { writeFamilyConfig } from "./testing";
+import { useBoardGuard, useFixtureRoot, writeFamilyConfig } from "./testing";
 import { type Live, cleanEnv, command, idOf, openerOf, parse, prompt, registry, verdict } from "./session";
 
-// (a family-shaped root for the parts that ask the config without making a root of their own)
-const FIXTURE = mkdtempSync(join(tmpdir(), "harness-fixture-"));
-writeFamilyConfig(FIXTURE);
-process.env.WOW_ADDONS_ROOT ??= FIXTURE;
+useFixtureRoot();
+useBoardGuard();
 
 
 describe("session: its parts", () => {
@@ -267,6 +265,7 @@ console.log("backgrounded · abc12345 · " + name + "\\n  claude agents         
       env: {
         PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`,
         HOME: process.env.HOME ?? tmp,
+        HARNESS_ROOT: root,
         WOW_ADDONS_ROOT: root,
         HARNESS_EVENTS: events,
         STUB_SEEN: seen,

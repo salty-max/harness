@@ -6,6 +6,9 @@ import { join } from "node:path";
 import { check, stamped, sync, unstamped, VENDORED } from "./harness-sync";
 import { detectCheck, parseArgs, renderToml, withAsks, withIgnore, withSection } from "./init";
 import { parseConfig } from "./config";
+import { scopedRoot, useBoardGuard } from "./testing";
+
+useBoardGuard();
 
 const temp = () => realpathSync(mkdtempSync(join(tmpdir(), "init-test-")));
 
@@ -31,8 +34,7 @@ describe("harness-sync", () => {
   test("a copy's stamp has a + exactly while the harness has uncommitted code, and the copies are in step", () => {
     const dir = temp();
     writeFileSync(join(dir, "harness.toml"), '[tools]\ndir = "tools/h"\n');
-    const prev = process.env.HARNESS_ROOT;
-    process.env.HARNESS_ROOT = dir;
+    const restore = scopedRoot(dir);
     try {
       const first = sync(dir, true);
       if (!Array.isArray(first)) throw new Error(first.error);
@@ -45,16 +47,14 @@ describe("harness-sync", () => {
       expect(sync(dir, true)).toEqual([]);
       chmodSync(join(dir, "tools/h/githooks/pre-push"), 0o755);
     } finally {
-      if (prev === undefined) delete process.env.HARNESS_ROOT;
-      else process.env.HARNESS_ROOT = prev;
+      restore();
     }
   });
 
   test("the check refuses a trial copy and finds a hand edit, on any tree", () => {
     const dir = temp();
     writeFileSync(join(dir, "harness.toml"), '[tools]\ndir = "tools/h"\n');
-    const prev = process.env.HARNESS_ROOT;
-    process.env.HARNESS_ROOT = dir;
+    const restore = scopedRoot(dir);
     try {
       sync(dir, true);
       const head = Bun.spawnSync(["git", "rev-parse", "--short=9", "HEAD"], { cwd: import.meta.dir }).stdout.toString().trim();
@@ -65,8 +65,7 @@ describe("harness-sync", () => {
       expect(problems.some((p) => p.includes("each.ts") && p.includes("a trial copy"))).toBe(true);
       expect(problems.some((p) => p.includes("board.ts") && p.includes("a hand edit"))).toBe(true);
     } finally {
-      if (prev === undefined) delete process.env.HARNESS_ROOT;
-      else process.env.HARNESS_ROOT = prev;
+      restore();
     }
   });
 });
