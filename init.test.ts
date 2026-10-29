@@ -28,21 +28,46 @@ describe("harness-sync", () => {
     expect(VENDORED.some((f) => f.includes("test") || f === "init.ts" || f === "harness-sync.ts" || f === "doctor.ts")).toBe(false);
   });
 
-  test("a trial copy is made, kept in step, and refused by the check; a hand edit is found", () => {
+  test("a copy's stamp has a + exactly while the harness has uncommitted code, and the copies are in step", () => {
     const dir = temp();
     writeFileSync(join(dir, "harness.toml"), '[tools]\ndir = "tools/h"\n');
-    // (other test files leave WOW_ADDONS_ROOT set in this process: the project is named by HARNESS_ROOT here)
+    const prev = process.env.HARNESS_ROOT;
     process.env.HARNESS_ROOT = dir;
-    const first = sync(dir, true);
-    if (!Array.isArray(first)) throw new Error(first.error);
-    expect(first.length).toBe(VENDORED.length);
-    expect(readFileSync(join(dir, "tools/h/board.ts"), "utf8").split("\n")[0]).toMatch(/^\/\/ harness [0-9a-f]+\+: a copy/);
-    expect(sync(dir, true)).toEqual([]);
-    chmodSync(join(dir, "tools/h/githooks/pre-push"), 0o755);
-    const c = check(dir);
-    expect(c.problems.length).toBe(VENDORED.length);
-    expect(c.problems[0]).toContain("a trial copy");
-    delete process.env.HARNESS_ROOT;
+    try {
+      const first = sync(dir, true);
+      if (!Array.isArray(first)) throw new Error(first.error);
+      expect(first.length).toBe(VENDORED.length);
+      // (the expected state is worked out here, from git, not from the stamp under test)
+      const dirty = Bun.spawnSync(["git", "status", "--porcelain", "--", ...VENDORED], { cwd: import.meta.dir }).stdout.toString().trim().length > 0;
+      const stamp = readFileSync(join(dir, "tools/h/board.ts"), "utf8").split("\n")[0];
+      expect(stamp).toMatch(/^\/\/ harness [0-9a-f]+\+?: a copy; edit it in the harness repository instead$/);
+      expect(stamp.includes("+: a copy")).toBe(dirty);
+      expect(sync(dir, true)).toEqual([]);
+      chmodSync(join(dir, "tools/h/githooks/pre-push"), 0o755);
+    } finally {
+      if (prev === undefined) delete process.env.HARNESS_ROOT;
+      else process.env.HARNESS_ROOT = prev;
+    }
+  });
+
+  test("the check refuses a trial copy and finds a hand edit, on any tree", () => {
+    const dir = temp();
+    writeFileSync(join(dir, "harness.toml"), '[tools]\ndir = "tools/h"\n');
+    const prev = process.env.HARNESS_ROOT;
+    process.env.HARNESS_ROOT = dir;
+    try {
+      sync(dir, true);
+      const head = Bun.spawnSync(["git", "rev-parse", "--short=9", "HEAD"], { cwd: import.meta.dir }).stdout.toString().trim();
+      // a trial copy of one file, and a committed stamp over text the harness never had in another
+      writeFileSync(join(dir, "tools/h/each.ts"), stamped("each.ts", "export {};\n", `${head}+`));
+      writeFileSync(join(dir, "tools/h/board.ts"), stamped("board.ts", "export const edited = true;\n", head));
+      const problems = check(dir).problems;
+      expect(problems.some((p) => p.includes("each.ts") && p.includes("a trial copy"))).toBe(true);
+      expect(problems.some((p) => p.includes("board.ts") && p.includes("a hand edit"))).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.HARNESS_ROOT;
+      else process.env.HARNESS_ROOT = prev;
+    }
   });
 });
 

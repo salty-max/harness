@@ -30,9 +30,10 @@ let tmp: string;
 let events: string;
 
 beforeAll(() => {
-  for (const k of [...Object.keys(GIT_ENV), "WOW_ADDONS_ROOT", "HARNESS_EVENTS", "CLAUDE_CODE_SESSION_ID", "CI"]) saved[k] = process.env[k];
+  for (const k of [...Object.keys(GIT_ENV), "WOW_ADDONS_ROOT", "HARNESS_ROOT", "HARNESS_EVENTS", "CLAUDE_CODE_SESSION_ID", "CI"]) saved[k] = process.env[k];
   Object.assign(process.env, GIT_ENV);
   delete process.env.WOW_ADDONS_ROOT;
+  delete process.env.HARNESS_ROOT;
   // (the tests' commits are a person's: the lock's gate is tested on its own)
   delete process.env.CLAUDE_CODE_SESSION_ID;
   delete process.env.CI;
