@@ -139,22 +139,22 @@ export function readRepo(dir: string, kit?: StampKit): RepoRow | null {
   const sent = upstreamAhead !== null ? ['@{u}'] : git(dir, ['remote']) ? ['--remotes'] : null
   const ahead = upstreamAhead ?? (sent ? git(dir, ['rev-list', '--count', 'HEAD', '--not', ...sent]) : null)
 
-  // HEAD's own verdict, else the newest (an older one); a packet alone says one was asked.
-  const own = `review-${head}`
-  const verdict = existsSync(join(harness, own)) ? { name: own, at: statSync(join(harness, own)).mtimeMs } : newest(harness, 'review-')
+  // The verdict of HEAD's tree (recorded before the commit; an old one by HEAD's sha), else the newest (an older one); a packet alone says one was asked.
+  const own = [`review-tree-${tree}`, `review-${head}`].find(n => existsSync(join(harness, n)))
+  const verdict = own ? { name: own, at: statSync(join(harness, own)).mtimeMs } : newest(harness, 'review-')
   const packet = newest(join(dir, '.cache', 'review'), '')
   let review: RepoRow['review'] = null
   if (verdict) {
-    const sha = verdict.name.slice('review-'.length)
-    const isCurrent = head.startsWith(sha) || sha.startsWith(head)
+    const isCurrent = own !== undefined
+    const sha = isCurrent ? head : (/^head:\s*([0-9a-f]{40})/m.exec(readFileSync(join(harness, verdict.name), 'utf8'))?.[1] ?? '')
     const read = isCurrent ? reviewRange(join(harness, verdict.name)) : null
-    // It reached all a push sends when its packet's base is already there and
-    // its tip isn't (the commits after the tip: its findings' fixes; a packet
-    // of an earlier push read none of this one).
+    // It reached all a push sends when its packet's base is already there.
     // (a commit this clone doesn't know counts for nothing: no count)
     const unsent = (sha: string) => (sent ? git(dir, ['rev-list', '--count', sha, '--not', ...sent]) : null)
+    // (an old verdict by HEAD's sha also wants its tip unpushed: a packet of an earlier push read none of this one)
     const tipUnsent = read?.tip ? unsent(read.tip) : null
-    const covers = read !== null && (read.base === EMPTY_TREE || unsent(read.base) === '0') && tipUnsent !== null && tipUnsent !== '0'
+    const tipFine = own?.startsWith('review-tree-') || (tipUnsent !== null && tipUnsent !== '0')
+    const covers = read !== null && (read.base === EMPTY_TREE || unsent(read.base) === '0') && !!tipFine
     review = { sha, at: verdict.at, verdict: firstLine(join(harness, verdict.name)), isCurrent, base: read?.base ?? null, covers }
   } else if (packet) {
     const sha = packet.name.replace(/\.md$/, '')
