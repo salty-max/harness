@@ -13,6 +13,7 @@ with `bun init.ts <project>`.
 | The config and the root finder (every tool reads it) | `config.ts` |
 | The tools | `board.ts q.ts hooks.ts review.ts packet.ts each.ts status.ts usage.ts session.ts events.ts`, `githooks/` |
 | Adopting, copying, checking | `init.ts`, `harness-sync.ts`, `doctor.ts`, `templates/` |
+| The adopt procedure as a skill (link `skills/harness-init` into `~/.claude/skills/`) | `skills/harness-init/SKILL.md` |
 | Tests (not vendored) | `*.test.ts`, `testing.ts` (a family-shaped fixture) |
 
 ## Hard rules

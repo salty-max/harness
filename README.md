@@ -38,3 +38,7 @@ repository's commit; `bun harness-sync.ts <project>` brings them up to date,
 (`bun board.ts list`) or through `bun harness.ts <tool>`. Edit a tool here,
 commit, then sync the projects: a copy in a project is never edited.
 `testing.ts` and the `*.test.ts` files stay here and are not vendored.
+
+As a Claude Code skill: link `skills/harness-init` into `~/.claude/skills/`
+(`ln -s "$PWD/skills/harness-init" ~/.claude/skills/harness-init`) and ask
+for the harness in a project; it follows the steps above and checks them.
