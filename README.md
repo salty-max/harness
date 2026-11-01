@@ -14,9 +14,14 @@ the family first, whatever the order named:
 1. `--root <dir>` (repeat it), else
 2. `HARNESS_ROOTS`, colon-separated, else
 3. `~/.config/wow-addons/harness-roots`, one folder a line (`#` comments, `~`), else
-4. the family (`WOW_ADDONS_ROOT` or `~/code/wow-addons`) and, when nothing
-   named the family and the folder is a repository, `~/code/warcraft-puzzles`.
-   A `WOW_ADDONS_ROOT` is the family alone.
+4. **discovery** (2 November 2026): the family (`WOW_ADDONS_ROOT` or
+   `~/code/wow-addons`) and every folder next to it (its parent's children,
+   `~/code`) that holds a `harness.toml`, by name (hidden folders and folders
+   without the file ignored). A new project needs nothing but its
+   `harness.toml`, no bootstrap and no list to edit. A `WOW_ADDONS_ROOT` is
+   the family alone.
+
+Any of 1 to 3, or a `WOW_ADDONS_ROOT`, overrides discovery whole.
 
 A **family** root (it has `addon-kit/q.ts`) is a folder of repositories: its
 tools are `addon-kit/`, its board `board/`, its log
@@ -37,11 +42,21 @@ gates, the board, the repositories, the log): a standalone project's repository
 and its cards already say its name. Each project's lock is its own board's.
 The family's own parts (the kit, the addons) are the family's repositories
 and appear as before; nothing in the pane is drawn for a project that
-has no such thing. Each read keeps the folders in `~/.cache/harness-view/roots.json`
-(`snapshot.ts --roots` prints them too): the mod reads it with `cat` to know which
-sessions show the pane and which logs and boards to watch, so a session outside
-every project starts no bun. A root added during the day makes that day's
-transcripts read again (the cache is keyed by the roots).
+has no such thing. Which sessions show the pane is decided by the mod without a snapshot and
+without bun: the session folder is under the family, or under a folder next
+to it holding a `harness.toml` (one `/bin/test -f`; a worktree,
+`<project>/.claude/worktrees/…`, is under its project, so it counts as it).
+Under an explicit list (which overrides discovery) the decision is the list the
+last snapshot kept. A sibling git worktree (a `.git` file) is not a project. A session outside every project starts no
+process of consequence (a `test` and a `cat`, never a bun) and never a bun.
+
+`~/.cache/harness-view/roots.json` stays as a **cache**, not the truth: each
+read writes the resolved folders there (`snapshot.ts --roots` prints them
+too) with each project's board and log, which the mod reads with `cat` for the
+pane. It carries the explicit list's decision, and when it lacks a project
+found beside the family the mod runs `snapshot.ts --roots`, which writes it
+again. Deleting it loses nothing. A root added during the day makes that
+day's transcripts read again (the cache is keyed by the roots).
 
 ## What it shows
 

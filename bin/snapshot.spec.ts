@@ -33,6 +33,7 @@ import {
   readTranscripts,
   repoMarks,
   repoOf,
+  discoverRoots,
   resolveRoots,
   projectOf,
   tomlStrings,
@@ -915,7 +916,7 @@ describe('several projects', () => {
     return { home, family, puzzles, yonder }
   }
 
-  test('the roots: flags, then HARNESS_ROOTS, then the config file, then the family and the puzzles folder beside it', () => {
+  test('the roots: flags, then HARNESS_ROOTS, then the config file, then the family and the projects beside it', () => {
     const { home, family, puzzles } = world()
     const config = join(home, 'roots')
     expect(resolveRoots([], {}, home, config).map(r => r.dir)).toEqual([family, puzzles])
@@ -925,8 +926,25 @@ describe('several projects', () => {
     expect(resolveRoots([], {}, home, config).map(r => [r.name, r.isFamily])).toEqual([['wow-addons', true], ['warcraft-puzzles', false]])
     expect(resolveRoots([], { HARNESS_ROOTS: puzzles }, home, config).map(r => r.dir)).toEqual([puzzles])
     expect(resolveRoots([family], { HARNESS_ROOTS: puzzles }, home, config).map(r => r.dir)).toEqual([family])
-    // (without the puzzles folder there is nothing to add)
+    // (without a project beside it there is nothing to add)
     expect(resolveRoots([], {}, temp(), join(home, 'none')).map(r => r.name)).toHaveLength(1)
+  })
+
+  test('discovery: the folders beside the family holding a harness.toml, a worktree of one nothing new', () => {
+    const { home, family, puzzles, yonder } = world()
+    const code = join(home, 'code')
+    mkdirSync(join(code, 'plain'))
+    mkdirSync(join(code, '.hidden'))
+    writeFileSync(join(code, '.hidden', 'harness.toml'), '')
+    const later = join(code, 'aaa-later')
+    mkdirSync(join(later, '.claude', 'worktrees', 'w'), { recursive: true })
+    writeFileSync(join(later, 'harness.toml'), '')
+    expect(discoverRoots(family)).toEqual([later, puzzles])
+    // (a repository inside the family, a folder without the file, a hidden one: none)
+    expect(discoverRoots(family)).not.toContain(yonder)
+    expect(resolveRoots([], {}, home, join(home, 'none')).map(r => r.dir)).toEqual([family, later, puzzles])
+    // (a missing parent is no projects)
+    expect(discoverRoots(join(home, 'nowhere', 'wow-addons'))).toEqual([])
   })
 
   test('a standalone project keeps its tools, board and events where its harness.toml says', () => {

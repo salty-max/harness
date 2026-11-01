@@ -1158,14 +1158,27 @@ export function projectOf(dir: string): ProjectRoot {
   }
 }
 
+/** The projects beside the family: every folder next to it (its parent's children) holding a `harness.toml`, by name. */
+export function discoverRoots(family: string): string[] {
+  const parent = dirname(family)
+  let names: string[] = []
+  try {
+    names = readdirSync(parent)
+  } catch {}
+  return names
+    .filter(n => !n.startsWith('.') && join(parent, n) !== family && existsSync(join(parent, n, 'harness.toml')) && !statSync(join(parent, n, '.git'), { throwIfNoEntry: false })?.isFile())
+    .sort()
+    .map(n => join(parent, n))
+}
+
 const expand = (path: string, home: string) => (path === '~' ? home : path.startsWith('~/') ? join(home, path.slice(2)) : path)
 
 /**
  * The folders the pane reads, the family first. In order of what names them:
  * `--root` (each repeat one), `HARNESS_ROOTS` (a colon-separated list), the
  * config file (one folder a line, `#` comments, `~` for home), else the
- * family (`WOW_ADDONS_ROOT` or ~/code/wow-addons) and, when its folder is
- * there and nothing named the family, ~/code/warcraft-puzzles.
+ * family (`WOW_ADDONS_ROOT` or ~/code/wow-addons) and, when nothing named the
+ * family, every folder beside it holding a `harness.toml` (`discoverRoots`).
  */
 export function resolveRoots(flags: string[], env: Record<string, string | undefined>, home: string, configFile: string): ProjectRoot[] {
   const clean = (list: string[]) => [...new Set(list.map(x => x.trim()).filter(Boolean).map(x => resolve(expand(x, home))))]
@@ -1173,9 +1186,8 @@ export function resolveRoots(flags: string[], env: Record<string, string | undef
   if (dirs.length === 0) dirs = clean((env.HARNESS_ROOTS ?? '').split(':'))
   if (dirs.length === 0 && existsSync(configFile)) dirs = clean(readFileSync(configFile, 'utf8').split('\n').map(l => l.replace(/#.*/, '')))
   if (dirs.length === 0) {
-    dirs = clean([env.WOW_ADDONS_ROOT ?? join(home, 'code', 'wow-addons')])
-    const puzzles = join(home, 'code', 'warcraft-puzzles')
-    if (!env.WOW_ADDONS_ROOT && existsSync(join(puzzles, '.git'))) dirs.push(puzzles)
+    dirs = clean([env.WOW_ADDONS_ROOT || join(home, 'code', 'wow-addons')])
+    if (!env.WOW_ADDONS_ROOT && dirs[0]) dirs.push(...discoverRoots(dirs[0]))
   }
   // (the family leads, whatever the order named)
   return dirs.map(projectOf).sort((a, b) => Number(b.isFamily) - Number(a.isFamily))

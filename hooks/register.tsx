@@ -436,35 +436,83 @@ function isChanged(key: string, value: unknown): boolean {
 
 async function familyRoot($: EngineInterface): Promise<{ home: string; root: string }> {
   const home = (await $.env.get('HOME')) ?? ''
-  return { home, root: (await $.env.get('WOW_ADDONS_ROOT')) ?? `${home}/code/wow-addons` }
+  return { home, root: (await $.env.get('WOW_ADDONS_ROOT')) || `${home}/code/wow-addons` }
 }
 
 const isUnder = (dir: string, path: string) => path === dir || path.startsWith(`${dir}/`)
 
-/** The other projects' folders (`snapshot.ts --roots`: the config file, HARNESS_ROOTS, the default), read at most every half minute. */
+const run = async ($: EngineInterface, argv: string[]) => {
+  try {
+    return await $.process.run(argv, { timeoutMs: 3_000 })
+  } catch {
+    return null
+  }
+}
+
+/** Whether the user named the projects (HARNESS_ROOTS, the config file, a named family): then the list the snapshot kept is the only one. */
+async function hasExplicitRoots($: EngineInterface): Promise<boolean> {
+  const { home } = await familyRoot($)
+  if ((await $.env.get('HARNESS_ROOTS')) || (await $.env.get('WOW_ADDONS_ROOT'))) return true
+  return (await run($, ['/bin/test', '-f', `${home}/.config/wow-addons/harness-roots`]))?.exitCode === 0
+}
+
+/** The projects beside the family, found as the snapshot finds them (a harness.toml in a folder next to the family's), no snapshot needed. */
+async function siblingProjects($: EngineInterface): Promise<string[]> {
+  const { root } = await familyRoot($)
+  const ran = await run($, ['/bin/sh', '-c', 'for f in "$1"/*/harness.toml; do [ -f "$f" ] && echo "${f%/harness.toml}"; done; exit 0', 'sh', root.replace(/\/[^/]*$/, '')])
+  if (ran?.exitCode !== 0) return []
+  return ran.stdout.split('\n').filter(d => d && d !== root && !d.split('/').pop()!.startsWith('.'))
+}
+
+/** Whether a session folder sits in a project beside the family (the project's folder or any folder under it, a worktree included), without starting bun. */
+async function isInSibling($: EngineInterface, project: string): Promise<boolean> {
+  const { root } = await familyRoot($)
+  const parent = root.replace(/\/[^/]*$/, '')
+  if (!project.startsWith(`${parent}/`)) return false
+  const name = project.slice(parent.length + 1).split('/')[0]
+  if (!name || name.startsWith('.') || `${parent}/${name}` === root) return false
+  if ((await run($, ['/bin/test', '-f', `${parent}/${name}/harness.toml`]))?.exitCode !== 0) return false
+  return !(await hasExplicitRoots($))
+}
+
+/** The other projects' folders (the sibling discovery, else `snapshot.ts --roots` for their board and log), read at most every half minute. */
 type ProjectDirs = { dir: string; board?: string; events?: string }
 let otherRoots: { at: number; dirs: ProjectDirs[] } = { at: 0, dirs: [] }
+const parseRoots = (text: string): ProjectDirs[] => {
+  const found = (JSON.parse(text) as { roots?: Partial<ProjectDirs>[] }).roots
+  return (Array.isArray(found) ? found : []).flatMap(r => (typeof r.dir === 'string' ? [{ dir: r.dir, board: r.board, events: r.events }] : []))
+}
+
+/** The list the last snapshot kept (cat), or null when there is none: no bun starts for it. */
+async function keptRoots($: EngineInterface): Promise<ProjectDirs[] | null> {
+  const { home } = await familyRoot($)
+  const ran = await run($, ['/bin/cat', `${home}/.cache/harness-view/roots.json`])
+  if (ran?.exitCode !== 0) return null
+  try {
+    return parseRoots(ran.stdout)
+  } catch {
+    return null
+  }
+}
+
 async function projectRoots($: EngineInterface): Promise<ProjectDirs[]> {
   if (Date.now() - otherRoots.at < 30_000) return otherRoots.dirs
   otherRoots = { at: Date.now(), dirs: [] }
   const { home } = await familyRoot($)
-  const parse = (text: string) => {
-    const found = (JSON.parse(text) as { roots?: Partial<ProjectDirs>[] }).roots
-    return (Array.isArray(found) ? found : []).flatMap(r => (typeof r.dir === 'string' ? [{ dir: r.dir, board: r.board, events: r.events }] : []))
-  }
-  // The list the last snapshot kept (cat: no bun starts in a session outside the projects); bun only when no snapshot has run yet.
-  try {
-    const ran = await $.process.run(['/bin/cat', `${home}/.cache/harness-view/roots.json`], { timeoutMs: 3_000 })
-    if (ran.exitCode === 0) {
-      otherRoots.dirs = parse(ran.stdout)
+  // The kept list serves while it holds every project found beside the family; bun otherwise (it writes the list again).
+  const kept = await keptRoots($)
+  if (kept) {
+    const found = (await hasExplicitRoots($)) ? [] : await siblingProjects($)
+    if (found.every(d => kept.some(k => k.dir === d))) {
+      otherRoots.dirs = kept
       return otherRoots.dirs
     }
-  } catch {}
+  }
   for (const candidate of bun ? [bun] : ['bun', `${home}/.volta/bin/bun`, `${home}/.bun/bin/bun`, '/opt/homebrew/bin/bun']) {
     try {
       const ran = await $.process.run([candidate, `${$.plugin.root}/bin/snapshot.ts`, '--roots'], { timeoutMs: 10_000 })
       if (ran.exitCode !== 0) continue
-      otherRoots.dirs = parse(ran.stdout)
+      otherRoots.dirs = parseRoots(ran.stdout)
       break
     } catch {}
   }
@@ -475,7 +523,10 @@ async function projectRoots($: EngineInterface): Promise<ProjectDirs[]> {
 async function isFamilySession($: EngineInterface): Promise<boolean> {
   const [{ root }, project] = await Promise.all([familyRoot($), $.session.root()])
   if (isUnder(root, project)) return true
-  return (await projectRoots($)).some(p => isUnder(p.dir, project))
+  if (await isInSibling($, project)) return true
+  // (a named list the last snapshot kept: read, never a bun started to learn it)
+  const inKept = ((await keptRoots($)) ?? []).some(p => isUnder(p.dir, project))
+  return inKept && (await hasExplicitRoots($))
 }
 
 async function runSnapshot($: EngineInterface, isFresh: boolean): Promise<Snapshot> {

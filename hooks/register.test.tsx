@@ -728,7 +728,54 @@ test('the pane opens in another project the snapshot reads, and nowhere else', a
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   await $.session.start({ cwd: '/Users/someone/code/warcraft-puzzles/web', surface: 'desktop', isInteractive: true })
   expect(opened).toEqual(['harness'])
-  expect(runs[0]).toEqual(['/bin/cat', '/Users/someone/.cache/harness-view/roots.json'])
+  expect(runs[0]).toEqual(['/bin/test', '-f', '/Users/someone/code/warcraft-puzzles/harness.toml'])
+})
+
+// Discovery: a folder beside the family holding a harness.toml is a project, no snapshot needed first.
+for (const [where, project, env, withToml, isShown] of [
+  ['a project beside the family', '/Users/someone/code/newcomer', {}, ['newcomer'], true],
+  ['a worktree of such a project', '/Users/someone/code/newcomer/.claude/worktrees/w1/web', {}, ['newcomer'], true],
+  ['a folder beside the family without a harness.toml', '/Users/someone/code/plain/x', {}, ['newcomer'], false],
+  ['a project beside the family, the projects named by HARNESS_ROOTS', '/Users/someone/code/newcomer', { HARNESS_ROOTS: '/Users/someone/code/wow-addons' }, ['newcomer'], false],
+] as const) {
+  test(`the pane opens by discovery in ${where}: ${isShown}`, async ($, on) => {
+    mock.env(on, { HOME: '/Users/someone', ...env })
+    mock.clock(on)
+    on('process.run', ($, e) => {
+      const [cmd, flag, path] = e.argv
+      const ok = cmd === '/bin/test' && flag === '-f' && withToml.some(n => path === `/Users/someone/code/${n}/harness.toml`)
+      // (no kept list, no home config: only the test of the file answers)
+      return { value: { exitCode: ok ? 0 : 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    })
+    const opened: string[] = []
+    on('session.root', () => ({ value: project }))
+    on('ui.open', ($, e) => {
+      opened.push(e.id)
+      return { value: { isPlaced: true } }
+    })
+    on('ui.status', () => ({ value: undefined }))
+    on('command.register', ($, e) => ({ value: { command: e.name } }))
+    on('session.start', ($, e) => ({ cwd: e.cwd }))
+    await $.session.start({ cwd: project, surface: 'desktop', isInteractive: true })
+    expect(opened).toEqual(isShown ? ['harness'] : [])
+  })
+}
+
+test('a session outside every project starts no bun, and none at all far from it', async ($, on) => {
+  mock.env(on, { HOME: '/Users/someone' })
+  mock.clock(on)
+  const runs: string[][] = []
+  on('process.run', ($, e) => {
+    runs.push([...e.argv])
+    return { value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('session.root', () => ({ value: '/Users/someone/elsewhere/app' }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.status', () => ({ value: undefined }))
+  on('command.register', ($, e) => ({ value: { command: e.name } }))
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/Users/someone/elsewhere/app', surface: 'desktop', isInteractive: true })
+  expect(runs.filter(r => r[0] !== '/bin/cat')).toEqual([])
 })
 
 for (const [moment, move] of [
