@@ -398,8 +398,10 @@ version is read again whole). A new day's cache starts from the newest older one
 
 ## Checks
 
-All three run in addon-kit's `bun run check` (`bun test` there leaves out
-`hooks/`, whose tests need Claude Code's own runtime):
+All three run in the harness's `bun run check` (`bun test` there leaves out
+`hooks/`, whose tests need Claude Code's own runtime; the two plugin checks
+go through `bin/plugin-check.sh`, which skips them where `claude` isn't on
+PATH, as on CI, so CI never validates the manifest):
 
 ```bash
 bun test bin/
