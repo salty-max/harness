@@ -126,6 +126,13 @@ describe("init", () => {
     expect(t).not.toMatch(/wow|addon|family/i);
   });
 
+  test("the template has no line over 88 columns once filled (Prettier's printWidth in a project that wraps prose)", () => {
+    const t = readFileSync(join(import.meta.dir, "templates", "rules-section.md"), "utf8").replaceAll("{{TOOLS}}", "harness").replaceAll("{{RULES}}", "CLAUDE.md");
+    // only a line that is one unbreakable code span may pass the width
+    const over = t.split("\n").filter((l) => l.length > 88 && !/^\s*`[^`]*`[.,]?$/.test(l));
+    expect(over).toEqual([]);
+  });
+
   test("--section-only writes the block alone, with the tools dir of an existing config", () => {
     const dir = temp();
     writeFileSync(join(dir, "harness.toml"), '[tools]\ndir = "kit"\n');
