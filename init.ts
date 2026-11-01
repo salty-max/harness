@@ -1,7 +1,7 @@
 /**
  * Adopts the harness in a project, in one command, from the harness repository:
  *
- *   bun init.ts [project folder] [--name n] [--check "<cmd>"] [--tools dir] [--dry-run] [--dirty]
+ *   bun init.ts [project folder] [--name n] [--check "<cmd>"] [--tools dir] [--dry-run] [--dirty] [--section-only]
  *
  * It prints what it writes, then (idempotent: what is there is kept, a second
  * run only brings the copies up to date):
@@ -17,24 +17,27 @@
  *      <!-- harness:end --> markers, so a later run replaces only that block
  *   7. .gitignore: .harness/ and .cache/
  * Commits nothing: review the diff. --dirty is harness-sync.ts's trial copy.
+ * --section-only does step 6 alone, for a folder that already has its harness.toml
+ * (the WoW family's root, no repository, tools vendored elsewhere).
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { sync } from "./harness-sync";
-import { parseConfig } from "./config";
+import { loadConfig, parseConfig } from "./config";
 
 const SRC = dirname(new URL(import.meta.url).pathname);
 const read = (p: string) => readFileSync(p, "utf8");
 
-type Opts = { dir: string; name?: string; check?: string; tools: string; dry: boolean; dirty: boolean };
+type Opts = { dir: string; name?: string; check?: string; tools: string; dry: boolean; dirty: boolean; section: boolean };
 
 export function parseArgs(argv: string[]): Opts | string {
-  const o: Opts = { dir: process.cwd(), tools: "harness", dry: false, dirty: false };
+  const o: Opts = { dir: process.cwd(), tools: "harness", dry: false, dirty: false, section: false };
   let dirSet = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--dry-run") o.dry = true;
     else if (a === "--dirty") o.dirty = true;
+    else if (a === "--section-only") o.section = true;
     else if (a === "--name" || a === "--check" || a === "--tools") {
       const v = argv[++i];
       if (!v) return `${a} takes a value`;
@@ -113,7 +116,7 @@ export function withIgnore(current: string | undefined, lines: string[]): string
 if (import.meta.main) {
   const o = parseArgs(process.argv.slice(2));
   if (typeof o === "string") {
-    console.error(`init: ${o}\nusage: bun init.ts [project folder] [--name n] [--check "<cmd>"] [--tools dir] [--dry-run] [--dirty]`);
+    console.error(`init: ${o}\nusage: bun init.ts [project folder] [--name n] [--check "<cmd>"] [--tools dir] [--dry-run] [--dirty] [--section-only]`);
     process.exit(2);
   }
   if (!existsSync(o.dir)) {
@@ -128,6 +131,25 @@ if (import.meta.main) {
       writeFileSync(path, text);
     }
   };
+  if (o.section) {
+    if (!existsSync(join(o.dir, "harness.toml"))) {
+      console.error("init: --section-only wants an existing harness.toml");
+      process.exit(2);
+    }
+    const c = loadConfig(resolve(o.dir));
+    if (realpathSync(c.root) !== realpathSync(resolve(o.dir))) {
+      console.error(`init: the config found is ${c.root}'s, not ${resolve(o.dir)}'s (HARNESS_ROOT or WOW_ADDONS_ROOT set?)`);
+      process.exit(2);
+    }
+    const path = join(o.dir, "CLAUDE.md");
+    const next = withSection(existsSync(path) ? read(path) : undefined, fill(read(join(SRC, "templates", "rules-section.md")), c.toolsDir, c.defaults.rules));
+    if (existsSync(path) && next === read(path)) console.log("CLAUDE.md: the harness section is current");
+    else {
+      say("put the Harness section into CLAUDE.md");
+      put("CLAUDE.md", next);
+    }
+    process.exit(0);
+  }
   const name = o.name ?? basename(o.dir);
   const check = o.check ?? detectCheck(o.dir);
   const tomlPath = join(o.dir, "harness.toml");

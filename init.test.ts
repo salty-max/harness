@@ -1,6 +1,6 @@
 // harness-sync.ts's stamps and checks, and init.ts's pieces (bun test).
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { check, stamped, sync, unstamped, VENDORED } from "./harness-sync";
@@ -117,5 +117,25 @@ describe("init", () => {
     expect(withIgnore("node_modules/\n.cache/\n", [".harness/", ".cache/"])).toBe("node_modules/\n.cache/\n\n# the harness's local state\n.harness/\n");
     expect(withIgnore(".harness/\n.cache/\n", [".harness/", ".cache/"])).toBe(".harness/\n.cache/\n");
     expect(withIgnore(undefined, [".harness/"])).toBe("# the harness's local state\n.harness/\n");
+  });
+
+  test("the template carries the session rules, with the project's own placeholders left to fill", () => {
+    const t = readFileSync(join(import.meta.dir, "templates", "rules-section.md"), "utf8");
+    for (const w of ["question tool", "belongs to the session that asks it", "Close a finished child", "fixed now", "Review your own work"]) expect(t.toLowerCase()).toContain(w.toLowerCase());
+    expect(t.indexOf("{{RULES}}")).toBeLessThan(t.indexOf("How sessions work together"));
+    expect(t).not.toMatch(/wow|addon|family/i);
+  });
+
+  test("--section-only writes the block alone, with the tools dir of an existing config", () => {
+    const dir = temp();
+    writeFileSync(join(dir, "harness.toml"), '[tools]\ndir = "kit"\n');
+    expect(parseArgs(["--section-only"])).toMatchObject({ section: true });
+    const p = Bun.spawnSync(["bun", join(import.meta.dir, "init.ts"), dir, "--section-only"], { env: { ...process.env, HARNESS_ROOT: dir, WOW_ADDONS_ROOT: dir } });
+    expect(p.exitCode).toBe(0);
+    const text = readFileSync(join(dir, "CLAUDE.md"), "utf8");
+    expect(text).toContain("bun kit/board.ts add");
+    expect(text).toContain("kit/session.ts check");
+    expect(existsSync(join(dir, ".gitignore"))).toBe(false);
+    expect(existsSync(join(dir, ".claude"))).toBe(false);
   });
 });
