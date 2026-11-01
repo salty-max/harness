@@ -1,6 +1,6 @@
 # harness-view
 
-Piece D of the family's harness (`addon-kit/docs/harness.md`): a live pane
+Piece D of the harness (`../docs/design.md`; the family's account is `addon-kit/docs/harness.md`): a live pane
 and one status line showing the harness at work. A Claude Code mod (function
 hooks), no router, nothing sent anywhere.
 
@@ -356,14 +356,17 @@ new start, so `/harness` and the pane come with the first prompt there.
 
 ## Where it loads from
 
-`~/.claude/skills/harness-view` is a link to this folder, `addon-kit/harness-view`
+`~/.claude/skills/harness-view` is a link to this folder, `harness/pane`
 (the user's pick, 20 October 2026; moved from the root's `.claude/mods/` into
-addon-kit in E, for commits and checks): Claude Code adopts a plugin from the
+addon-kit in E, for commits and checks, then into the harness repository on
+1 November 2026, history kept: the user was not comfortable with the harness's
+core living in the family's kit; addon-kit's last commits of it are f9419b2 and
+24f4470): Claude Code adopts a plugin from the
 user's skills folder, never from a project's `.claude/skills`. Edits here
 reach each new session. A fresh machine links it again:
 
 ```bash
-ln -sfn ~/code/wow-addons/addon-kit/harness-view ~/.claude/skills/harness-view
+ln -sfn ~/code/wow-addons/harness/pane ~/.claude/skills/harness-view
 ```
 
 ## How it works

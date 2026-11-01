@@ -3,6 +3,6 @@
   "private": true,
   "license": "MIT",
   "scripts": {
-    "check": "bun test"
+    "check": "bun test && claude plugin test pane && claude plugin validate pane"
   }
 }

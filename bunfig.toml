@@ -1,0 +1,3 @@
+[test]
+# (the pane's hook tests need Claude Code's runtime: bun run check leaves them out)
+pathIgnorePatterns = ["pane/hooks/**"]

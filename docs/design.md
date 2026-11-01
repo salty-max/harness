@@ -39,8 +39,7 @@ Not in the harness, stays in addon-kit: `Kit.lua` and everything the kit syncs,
 `regional.ts`, `locales-lib.ts`, `package-lib.ts`, `ids.ts`, `secret.ts`,
 `glossary.py`, `subzones.py`, `coldread.ts` (languages), all `wow-*` skills,
 the `child` skill (it carries the desktop path), `data-scout`, `prose-reader`,
-`harness-view` (the panel: frozen by the audit; it keeps reading the same
-files, see 6), the family's CLAUDE.md rules.
+the family's CLAUDE.md rules.
 
 The harness's own prose rules (what it enforces) live in the project's rules
 file; the harness has no opinion about them. The reviewer enforces "the rules
@@ -222,7 +221,8 @@ modules, lifted verbatim from `packet.ts` and `status.ts`.
   project without the desktop simply doesn't use them. If this proves too
   tangled in slice 2 the whole of `session.ts` stays out of v1 and is listed
   as not extracted. (Decide when the code is open.)
-- **The panel** (`harness-view`) stays in addon-kit, frozen. It reads the
+- **The panel** (`harness-view`) moved into this repository as `pane/` on 1
+  November 2026 (it was addon-kit's, frozen by the audit). It reads the
   board, stamps and the event log by path; after slice 3 those paths are the
   same files, so it works unchanged.
 - **Skills.** The harness ships no skills in v1 (the family's are procedures

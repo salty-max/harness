@@ -1,3 +1,6 @@
 .cache/
 .harness/
 node_modules/
+
+# a desktop-paint dump left behind by a killed run (pane/bin/desktop-paint.sh)
+pane/hooks/zz-*.test.tsx
