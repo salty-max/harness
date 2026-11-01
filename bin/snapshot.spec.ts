@@ -33,6 +33,9 @@ import {
   readTranscripts,
   repoMarks,
   repoOf,
+  resolveRoots,
+  projectOf,
+  tomlStrings,
   summaryOf,
 } from './snapshot'
 
@@ -307,8 +310,8 @@ describe('events in the transcripts', () => {
       s,
     )
     expect(s.events).toEqual([
-      { id: 't1:start', at: Date.parse(noon), source: 'helper', tone: 'info', repo: 'yonder', text: 'reviewer started: Review the riddles', model: 'opus' },
-      { id: 't1:end', at: Date.parse(noon), source: 'helper', tone: 'ok', repo: 'yonder', text: 'reviewer done', model: 'claude-opus-5-5', tokens: 106_689, ms: 503_770 },
+      { id: 't1:start', at: Date.parse(noon), source: 'helper', tone: 'info', repo: 'yonder', project: 'f', text: 'reviewer started: Review the riddles', model: 'opus' },
+      { id: 't1:end', at: Date.parse(noon), source: 'helper', tone: 'ok', repo: 'yonder', project: 'f', text: 'reviewer done', model: 'claude-opus-5-5', tokens: 106_689, ms: 503_770 },
     ])
     // Its own model wins over the definition's; a failure is red; a background start has no end yet.
     eventRow(call('t2', 'Agent', { subagent_type: 'Explore', model: 'haiku' }), from, to, s)
@@ -885,5 +888,101 @@ describe('who works where', () => {
     // (kept: the file is not read again)
     writeFileSync(join(base, 'acct', 'org', 'local_kid.json'), '{}')
     expect(desktopParent(base, cache)('local_kid')).toBe('local_mother')
+  })
+})
+
+describe('several projects', () => {
+  const sh = (dir: string, ...args: string[]) => Bun.spawnSync(['git', '-C', dir, ...args], { stderr: 'ignore' })
+  /** A family folder (addon-kit beside one repository) and a standalone project with its own harness and board. */
+  const world = () => {
+    const home = temp()
+    const family = join(home, 'code', 'wow-addons')
+    mkdirSync(join(family, 'addon-kit'), { recursive: true })
+    writeFileSync(join(family, 'addon-kit', 'q.ts'), '')
+    mkdirSync(join(family, 'board'))
+    writeFileSync(join(family, 'board', 'a.md'), CARD)
+    const yonder = join(family, 'yonder')
+    mkdirSync(yonder)
+    sh(yonder, 'init', '-q')
+    sh(yonder, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'a')
+    const puzzles = join(home, 'code', 'warcraft-puzzles')
+    mkdirSync(join(puzzles, '.harness', 'board'), { recursive: true })
+    mkdirSync(join(puzzles, 'harness'))
+    writeFileSync(join(puzzles, 'harness.toml'), '[project]\nname = "warcraft-puzzles"\n[tools]\ndir = "harness"\n')
+    writeFileSync(join(puzzles, '.harness', 'board', 'p.md'), CARD.replace('repo: yonder', 'repo: warcraft-puzzles').replace('Eight riddles', 'Grid engine'))
+    sh(puzzles, 'init', '-q')
+    sh(puzzles, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'b')
+    return { home, family, puzzles, yonder }
+  }
+
+  test('the roots: flags, then HARNESS_ROOTS, then the config file, then the family and the puzzles folder beside it', () => {
+    const { home, family, puzzles } = world()
+    const config = join(home, 'roots')
+    expect(resolveRoots([], {}, home, config).map(r => r.dir)).toEqual([family, puzzles])
+    // a named family folder is the family alone: nothing is added to what the user named
+    expect(resolveRoots([], { WOW_ADDONS_ROOT: family }, home, config).map(r => r.dir)).toEqual([family])
+    writeFileSync(config, '# the projects\n~/code/warcraft-puzzles\n~/code/wow-addons # first\n')
+    expect(resolveRoots([], {}, home, config).map(r => [r.name, r.isFamily])).toEqual([['wow-addons', true], ['warcraft-puzzles', false]])
+    expect(resolveRoots([], { HARNESS_ROOTS: puzzles }, home, config).map(r => r.dir)).toEqual([puzzles])
+    expect(resolveRoots([family], { HARNESS_ROOTS: puzzles }, home, config).map(r => r.dir)).toEqual([family])
+    // (without the puzzles folder there is nothing to add)
+    expect(resolveRoots([], {}, temp(), join(home, 'none')).map(r => r.name)).toHaveLength(1)
+  })
+
+  test('a standalone project keeps its tools, board and events where its harness.toml says', () => {
+    expect(tomlStrings('[tools]\ndir = "h"\n# x = "no"\n[state]\nboard = "cards"')).toEqual({ tools: { dir: 'h' }, state: { board: 'cards' } })
+    const { family, puzzles } = world()
+    expect(projectOf(family)).toMatchObject({ isFamily: true, board: join(family, 'board'), events: join(family, '.cache', 'harness', 'events.log') })
+    expect(projectOf(puzzles)).toEqual({ name: 'warcraft-puzzles', dir: puzzles, isFamily: false, tools: join(puzzles, 'harness'), board: join(puzzles, '.harness', 'board'), events: join(puzzles, '.harness', 'cache', 'events.log') })
+  })
+
+  test('a standalone project is one repository row, named as its folder', () => {
+    const { puzzles, family } = world()
+    expect(repoMarks(puzzles)).toContain('warcraft-puzzles:')
+    const rows = cachedRepos(puzzles, temp(), undefined, true)
+    expect(rows.map(r => r.name)).toEqual(['warcraft-puzzles'])
+    expect(cachedRepos(family, temp(), undefined, true).map(r => r.name)).toEqual(['yonder'])
+  })
+
+  test('a transcript line under either root is read, the standalone one as its project', () => {
+    const from = new Date(2026, 9, 20).getTime()
+    const to = new Date(2026, 9, 21).getTime()
+    const noon = new Date(2026, 9, 20, 12).toISOString()
+    const s: EventState = { root: '/f', others: ['/p/warcraft-puzzles'], models: {}, pending: {}, events: [], helpers: {}, sessions: { models: {}, modes: {}, open: {} }, known: new Set() }
+    const loaded = (id: string, cwd: string) => ({ type: 'assistant', timestamp: noon, cwd, message: { content: [{ type: 'tool_use', id, name: 'Skill', input: { skill: 'dispatch' } }] } })
+    eventRow(loaded('a', '/f/yonder'), from, to, s)
+    eventRow(loaded('b', '/p/warcraft-puzzles/web'), from, to, s)
+    eventRow(loaded('c', '/elsewhere'), from, to, s)
+    expect(s.events.map(e => e.repo).sort()).toEqual(['warcraft-puzzles', 'yonder'])
+    // a write anywhere in a standalone project counts, at its root too
+    const write = (path: string) => ({ type: 'assistant', timestamp: noon, cwd: '/p/warcraft-puzzles', sessionId: 'x', message: { content: [{ type: 'tool_use', id: path, name: 'Write', input: { file_path: path } }] } })
+    eventRow(write('/p/warcraft-puzzles/CLAUDE.md'), from, to, s)
+    eventRow(write('/p/warcraft-puzzles/.harness/board/x.md'), from, to, s)
+    expect(Object.keys(s.sessions.writes?.x ?? {})).toEqual(['warcraft-puzzles'])
+  })
+
+  test('a standalone project alone as the first root: its repository is the folder, its events tagged', () => {
+    const from = new Date(2026, 9, 20).getTime()
+    const to = new Date(2026, 9, 21).getTime()
+    const noon = new Date(2026, 9, 20, 12).toISOString()
+    const s: EventState = { root: '/p/warcraft-puzzles', isFamily: false, models: {}, pending: {}, events: [], helpers: {}, sessions: { models: {}, modes: {}, open: {} }, known: new Set() }
+    eventRow({ type: 'assistant', timestamp: noon, cwd: '/p/warcraft-puzzles/web', message: { content: [{ type: 'tool_use', id: 'a', name: 'Skill', input: { skill: 'dispatch' } }] } }, from, to, s)
+    expect(s.events.map(e => [e.repo, e.project])).toEqual([['warcraft-puzzles', 'warcraft-puzzles']])
+  })
+
+  test('one command reads both projects, each row tagged with its own', () => {
+    const { home, family, puzzles } = world()
+    const cache = temp()
+    const run = Bun.spawnSync(['bun', join(import.meta.dir, 'snapshot.ts'), '--root', family, '--root', puzzles, '--cache', cache, '--projects', temp(), '--day', '2026-10-20', '--fresh'], {
+      env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: join(home, 'claude') },
+      stderr: 'pipe',
+    })
+    expect(run.stderr.toString()).toBe('')
+    const snap = JSON.parse(run.stdout.toString())
+    expect(snap.projects).toEqual([{ name: 'wow-addons', isFamily: true }, { name: 'warcraft-puzzles', isFamily: false }])
+    expect(snap.repos.map((r: { name: string; project: string }) => [r.name, r.project])).toEqual([['yonder', 'wow-addons'], ['warcraft-puzzles', 'warcraft-puzzles']])
+    expect(snap.board.map((c: { project: string }) => c.project).sort()).toEqual(['warcraft-puzzles', 'wow-addons'])
+    const listed = JSON.parse(Bun.spawnSync(['bun', join(import.meta.dir, 'snapshot.ts'), '--roots', '--cache', temp(), '--root', puzzles]).stdout.toString())
+    expect(listed.roots.map((r: { dir: string }) => r.dir)).toEqual([puzzles])
   })
 })

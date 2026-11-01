@@ -19,6 +19,8 @@ export type ReviewMark = {
 
 export type RepoRow = {
   name: string
+  /** The project it belongs to (the pane shows several: the family and standalone repositories); absent in an older snapshot. */
+  project?: string
   head: string
   check: CheckStamp | null
   /** The last check run when it failed after the newest stamp (`.cache/logs/check.log`). */
@@ -35,6 +37,8 @@ export type RepoRow = {
  */
 export type HarnessEvent = {
   id?: string
+  /** The project it belongs to (the pane shows several: the family and standalone repositories); absent in an older snapshot. */
+  project?: string
   at: number
   source: string
   tone: 'ok' | 'wait' | 'fail' | 'info' | ''
@@ -49,6 +53,8 @@ export type HarnessEvent = {
 /** One card of the task board (`board/<id>.md`). */
 export type BoardCard = {
   id: string
+  /** The project it belongs to (the pane shows several: the family and standalone repositories); absent in an older snapshot. */
+  project?: string
   repo: string
   title: string
   status: string
@@ -74,10 +80,10 @@ export type LockCard = { id: string; title: string; status: string; session: str
  * after it (`later`: told to wait), and the cards stopped mid-task there
  * (`stopped`: blocked, or waiting on the user, their commits go out with its next push).
  */
-export type RepoLock = { repo: string; holder: LockCard | null; later: LockCard[]; stopped: LockCard[] }
+export type RepoLock = { project?: string; repo: string; holder: LockCard | null; later: LockCard[]; stopped: LockCard[] }
 
 /** A session that wrote in a repository its cards don't hold: board.ts's `mayWrite` said why. */
-export type Slip = { session: string; who: string; repo: string; at: number; why: string }
+export type Slip = { project?: string; session: string; who: string; repo: string; at: number; why: string }
 
 /** Today's tokens of one model, every transcript on this machine. */
 export type ModelDay = {
@@ -103,6 +109,8 @@ export type HelperDay = { runs: number; tokens: number; ms: number; lastAt: numb
  * model and helpers from today's transcripts.
  */
 export type LiveSession = {
+  /** The project it belongs to (the pane shows several: the family and standalone repositories); absent in an older snapshot. */
+  project?: string
   /** Its session id: the transcript's, and the board cards' `session`. */
   id: string
   pid: number
@@ -134,7 +142,7 @@ export type LiveSession = {
 }
 
 /** A q.ts run going on now (addon-kit's events.ts, `running/<pid>.json`): the gates at work. */
-export type GateRun = { pid: number; name: string; repo: string; at: number }
+export type GateRun = { project?: string; pid: number; name: string; repo: string; at: number }
 
 /** What `bin/snapshot.ts` prints: the numbers every session shares. */
 export type Snapshot = {
@@ -155,6 +163,8 @@ export type Snapshot = {
   locks?: RepoLock[]
   /** Sessions that wrote in a repository their cards don't hold, lately; absent like `locks`. */
   slips?: Slip[]
+  /** The projects read, the family first; absent with one (or in an older snapshot). */
+  projects?: { name: string; isFamily: boolean }[]
 }
 
 /** The session the panel is drawn in. */

@@ -16,7 +16,7 @@
 
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 
 import type { BoardCard, GateRun, HarnessEvent, HelperDay, HelperDef, LiveSession, LockCard, ModelDay, RepoLock, RepoRow, Slip, Snapshot } from '../types'
 
@@ -164,10 +164,13 @@ export function readRepo(dir: string, kit?: StampKit): RepoRow | null {
   return { name: basename(dir), head: head.slice(0, 7), check, failed: failedCheck(dir, check?.at ?? 0), review, ahead: ahead === null ? null : Number(ahead) }
 }
 
+/** The repositories of a root: a folder of them (the family), else the root itself when it is one (a standalone project). */
 const repoDirs = (root: string) =>
-  readdirSync(root, { withFileTypes: true })
-    .filter(e => e.isDirectory() && existsSync(join(root, e.name, '.git', 'HEAD')))
-    .map(e => join(root, e.name))
+  existsSync(join(root, '.git', 'HEAD'))
+    ? [root]
+    : readdirSync(root, { withFileTypes: true })
+        .filter(e => e.isDirectory() && existsSync(join(root, e.name, '.git', 'HEAD')))
+        .map(e => join(root, e.name))
 
 export function readRepos(root: string, kit?: StampKit): RepoRow[] {
   return repoDirs(root)
@@ -206,8 +209,8 @@ export function repoMarks(root: string): string {
 const REPOS_MS = 20_000
 
 /** The rows again when nothing of the repositories moved since their last read, else read anew. */
-export function cachedRepos(root: string, cacheDir: string, kit: StampKit | undefined, isFresh: boolean): RepoRow[] {
-  const path = join(cacheDir, 'repos.json')
+export function cachedRepos(root: string, cacheDir: string, kit: StampKit | undefined, isFresh: boolean, file = 'repos.json'): RepoRow[] {
+  const path = join(cacheDir, file)
   const marks = repoMarks(root)
   if (!isFresh && existsSync(path)) {
     try {
@@ -305,10 +308,12 @@ export function readBoard(dir: string, today: string, kit?: CardKit): BoardCard[
 // session's mode, 10 the skills each session used, 11 left the moments out again, 12 ends a
 // background helper's run at the notice of its end, 13 carries the sessions' skills, open helpers, events and
 // file offsets over midnight from the day before, 14 each session's last Edit or Write by repository)
-const CACHE_VERSION = 14
+const CACHE_VERSION = 15
 
 type UsageCache = {
   version: number
+  /** The roots it read under (see `rootsKey`); absent: the family alone. */
+  roots?: string
   day: string
   files: Record<string, { offset: number }>
   seen: string[]
@@ -410,6 +415,12 @@ type PendingCall = { at: number; repo: string; command: string }
 /** What the transcript scan keeps between lines: the family folder, the helpers' models, calls, events and each helper's day. */
 export type EventState = {
   root: string
+  /** The other projects' roots (standalone repositories): a line under one is read too, its repository the root's own name. */
+  others?: string[]
+  /** The first root is the family (a folder of repositories); false: a standalone repository, the repository named as its folder (default: the family). */
+  isFamily?: boolean
+  /** The project the row being read belongs to: set by eventRow, tagged on each event. */
+  project?: string
   models: Record<string, string>
   pending: Record<string, PendingCall>
   events: HarnessEvent[]
@@ -458,7 +469,7 @@ function noteSkill(state: EventState, session: string | undefined, name: string,
 function addEvent(state: EventState, event: HarnessEvent): boolean {
   if (event.id === undefined || state.known.has(event.id)) return false
   state.known.add(event.id)
-  state.events.push(event)
+  state.events.push(state.project ? { ...event, project: state.project } : event)
   return true
 }
 
@@ -499,12 +510,18 @@ const WRITE_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit'])
 export function eventRow(row: Row, from: number, to: number, state: EventState) {
   const at = Date.parse(row.timestamp ?? '')
   const cwd = row.cwd
-  if (!(at >= from && at < to) || (cwd !== state.root && !cwd?.startsWith(`${state.root}/`))) return
+  const under = (dir: string, path: string | undefined) => path === dir || !!path?.startsWith(`${dir}/`)
+  const dir = [state.root, ...(state.others ?? [])].find(d => under(d, cwd))
+  if (!(at >= from && at < to) || dir === undefined) return
+  // A standalone project is one repository, named as its folder; the family's are the folders in it.
+  state.project = basename(dir)
+  const isFolder = dir === state.root && state.isFamily !== false
+  const repoIn = (command = '') => (isFolder ? repoOf(dir, cwd, command) : basename(dir))
   const content = row.message?.content
   // A skill the user typed: a user row whose text is the command (`/name`), a skill when it is one installed.
   if (row.type === 'user' && typeof content === 'string' && content.includes('<command-name>')) {
     const typed = /<command-name>\/?([\w:.-]+)<\/command-name>/.exec(content)?.[1]
-    if (typed && state.skillNames?.has(typed) && row.uuid && addEvent(state, { id: `${row.uuid}:skill`, at, source: 'skill', tone: 'ok', repo: repoOf(state.root, cwd), text: `${typed} typed` })) {
+    if (typed && state.skillNames?.has(typed) && row.uuid && addEvent(state, { id: `${row.uuid}:skill`, at, source: 'skill', tone: 'ok', repo: repoIn(), text: `${typed} typed` })) {
       noteSkill(state, row.sessionId, typed, 'user', at)
     }
     return
@@ -515,7 +532,7 @@ export function eventRow(row: Row, from: number, to: number, state: EventState) 
       const input = block.input ?? {}
       if (block.name === 'Skill' && typeof input.skill === 'string') {
         // The session loaded a skill itself.
-        if (addEvent(state, { id: `${block.id}:skill`, at, source: 'skill', tone: 'ok', repo: repoOf(state.root, cwd), text: `${input.skill} loaded` })) { if (!row.isSidechain) noteSkill(state, row.sessionId, input.skill, 'session', at) }
+        if (addEvent(state, { id: `${block.id}:skill`, at, source: 'skill', tone: 'ok', repo: repoIn(), text: `${input.skill} loaded` })) { if (!row.isSidechain) noteSkill(state, row.sessionId, input.skill, 'session', at) }
       } else if (block.name === 'Agent' || block.name === 'Task') {
         const type = String(input.subagent_type ?? 'general-purpose')
         const model = typeof input.model === 'string' ? input.model : state.models[type]
@@ -525,23 +542,24 @@ export function eventRow(row: Row, from: number, to: number, state: EventState) 
           at,
           source: 'helper',
           tone: 'info',
-          repo: repoOf(state.root, cwd),
+          repo: repoIn(),
           text: `${type} started${brief ? `: ${brief}` : ''}`,
           ...(model ? { model } : {}),
         })
         // Open until its result comes back (a background one: until the notice of its end).
-        if (row.sessionId && !row.isSidechain) state.sessions.open[block.id] = { session: row.sessionId, type, at, repo: repoOf(state.root, cwd), ...(model ? { model } : {}) }
+        if (row.sessionId && !row.isSidechain) state.sessions.open[block.id] = { session: row.sessionId, type, at, repo: repoIn(), ...(model ? { model } : {}) }
       } else if (WRITE_TOOLS.has(String(block.name))) {
         // A file written under a family folder: the session's (a helper's rows carry its parent's id) last write there.
         const path = input.file_path ?? input.notebook_path
-        const rest = typeof path === 'string' && path.startsWith(`${state.root}/`) ? path.slice(state.root.length + 1) : ''
-        const repo = rest.split('/')[0] ?? ''
-        if (row.sessionId && repo && rest.includes('/') && !/(^|\/)(\.cache|node_modules|\.git)\//.test(rest)) {
+        const home = typeof path === 'string' ? [state.root, ...(state.others ?? [])].find(d => path.startsWith(`${d}/`)) : undefined
+        const rest = home ? (path as string).slice(home.length + 1) : ''
+        const repo = home === undefined ? '' : home === state.root && state.isFamily !== false ? (rest.split('/')[0] ?? '') : basename(home)
+        if (row.sessionId && repo && (rest.includes('/') || !(home === state.root && state.isFamily !== false)) && !/(^|\/)(\.cache|\.harness|node_modules|\.git)\//.test(rest)) {
           const writes = ((state.sessions.writes ??= {})[row.sessionId] ??= {})
           writes[repo] = Math.max(writes[repo] ?? 0, at)
         }
       } else if (block.name === 'Bash' && typeof input.command === 'string' && ASKED.test(input.command)) {
-        state.pending[block.id] = { at, repo: repoOf(state.root, cwd, input.command), command: askedPart(input.command) }
+        state.pending[block.id] = { at, repo: repoIn(input.command), command: askedPart(input.command) }
       }
     } else if (row.type === 'user' && block?.type === 'tool_result' && typeof block.tool_use_id === 'string') {
       const id = block.tool_use_id
@@ -560,7 +578,7 @@ export function eventRow(row: Row, from: number, to: number, state: EventState) 
       } else if (result !== null && typeof result === 'object' && 'agentType' in result) {
         const r = result as { agentType?: string; status?: string; resolvedModel?: string; totalTokens?: number; totalDurationMs?: number }
         if (r.status === 'async_launched') continue
-        helperEnded(state, id, at, repoOf(state.root, cwd), r.agentType ?? 'helper', r.status ?? 'stopped', r.resolvedModel, r.totalTokens, r.totalDurationMs)
+        helperEnded(state, id, at, repoIn(), r.agentType ?? 'helper', r.status ?? 'stopped', r.resolvedModel, r.totalTokens, r.totalDurationMs)
       }
     }
   }
@@ -761,15 +779,19 @@ export async function readTranscripts(
   root: string,
   helpers: Record<string, string> = {},
   skillNames?: Set<string>,
+  others: string[] = [],
+  isFamily = true,
 ): Promise<{ usage: Snapshot['usage']; events: HarnessEvent[]; helperDay: Record<string, HelperDay>; sessions: SessionDay }> {
   const [dayFrom, to] = dayBounds(day)
   // The rows and events read a little before the day starts: a line written across midnight is read once, by its id.
   let from = dayFrom - EDGE_MS
+  // (a root added today: what was read before never looked under it, so the day is read again)
+  const rootsKey = [isFamily ? '' : 'standalone', ...others].join('|')
   const cachePath = join(cacheDir, `usage-${day}.json`)
   let cache: UsageCache = { version: CACHE_VERSION, day, files: {}, seen: [], models: {}, pending: {}, events: [], helpers: {}, sessions: { models: {}, modes: {}, open: {}, skills: {} }, known: [] }
   try {
     const saved = JSON.parse(readFileSync(cachePath, 'utf8')) as UsageCache
-    if (saved.day === day && saved.version === CACHE_VERSION) cache = saved
+    if (saved.day === day && saved.version === CACHE_VERSION && (saved.roots ?? '') === rootsKey) cache = saved
     else throw new Error('not today')
   } catch {
     const carried = carriedOver(projects, cacheDir, day, cache)
@@ -778,7 +800,7 @@ export async function readTranscripts(
   }
 
   const seen = new Set(cache.seen)
-  const state: EventState = { root, models: helpers, pending: cache.pending, events: cache.events, helpers: cache.helpers, sessions: cache.sessions, known: new Set(cache.known), skillNames, dayFrom }
+  const state: EventState = { root, models: helpers, pending: cache.pending, events: cache.events, helpers: cache.helpers, sessions: cache.sessions, known: new Set(cache.known), skillNames, dayFrom, others, isFamily }
   const files = listTranscripts(projects, from)
   for (const { path, size } of files) {
     const known = cache.files[path]?.offset ?? 0
@@ -796,6 +818,7 @@ export async function readTranscripts(
   cache.seen = [...seen]
   cache.events = state.events.sort((a, b) => b.at - a.at).slice(0, MAX_EVENTS)
   cache.known = [...state.known]
+  cache.roots = rootsKey
   mkdirSync(cacheDir, { recursive: true })
   // A week of days is plenty: older day caches go.
   for (const name of readdirSync(cacheDir)) {
@@ -1084,13 +1107,129 @@ function arg(name: string): string | undefined {
   return i === -1 ? undefined : process.argv[i + 1]
 }
 
+// --- the projects --------------------------------------------------------
+
+/** One project the pane shows: the family (a folder of repositories, addon-kit beside them) or a standalone repository with its own harness. */
+export type ProjectRoot = {
+  /** The folder's name: how the pane tags the project. */
+  name: string
+  dir: string
+  /** The family: a folder of repositories with addon-kit's tools; else a repository that is the root itself. */
+  isFamily: boolean
+  /** The tools (q.ts, board.ts), the board and the events log, where this project keeps them. */
+  tools: string
+  board: string
+  events: string
+}
+
+/** The strings of a harness.toml's tables, `[section] key = "value"` (all the roots need of it). */
+export function tomlStrings(text: string): Record<string, Record<string, string>> {
+  const out: Record<string, Record<string, string>> = {}
+  let section = ''
+  for (const raw of text.split('\n')) {
+    const line = raw.trim()
+    const head = /^\[([\w.-]+)\]$/.exec(line)
+    if (head) section = head[1]
+    else if (!line.startsWith('#')) {
+      const kv = /^([\w-]+)\s*=\s*"([^"]*)"/.exec(line)
+      if (kv) (out[section] ??= {})[kv[1]] = kv[2]
+    }
+  }
+  return out
+}
+
+/** A root's tools, board and events where its kind keeps them (harness.toml's [tools] and [state] for a standalone repository). */
+export function projectOf(dir: string): ProjectRoot {
+  const name = basename(dir)
+  if (existsSync(join(dir, 'addon-kit', 'q.ts'))) return { name, dir, isFamily: true, tools: join(dir, 'addon-kit'), board: join(dir, 'board'), events: join(dir, '.cache', 'harness', 'events.log') }
+  let toml: Record<string, Record<string, string>> = {}
+  try {
+    toml = tomlStrings(readFileSync(join(dir, 'harness.toml'), 'utf8'))
+  } catch {}
+  const state = toml.state ?? {}
+  const stateDir = state.dir ?? '.harness'
+  return {
+    name,
+    dir,
+    isFamily: false,
+    tools: join(dir, toml.tools?.dir ?? 'harness'),
+    board: join(dir, state.board ?? join(stateDir, 'board')),
+    events: join(dir, state.cache ? join(state.cache, 'events.log') : join(stateDir, 'cache', 'events.log')),
+  }
+}
+
+const expand = (path: string, home: string) => (path === '~' ? home : path.startsWith('~/') ? join(home, path.slice(2)) : path)
+
+/**
+ * The folders the pane reads, the family first. In order of what names them:
+ * `--root` (each repeat one), `HARNESS_ROOTS` (a colon-separated list), the
+ * config file (one folder a line, `#` comments, `~` for home), else the
+ * family (`WOW_ADDONS_ROOT` or ~/code/wow-addons) and, when its folder is
+ * there and nothing named the family, ~/code/warcraft-puzzles.
+ */
+export function resolveRoots(flags: string[], env: Record<string, string | undefined>, home: string, configFile: string): ProjectRoot[] {
+  const clean = (list: string[]) => [...new Set(list.map(x => x.trim()).filter(Boolean).map(x => resolve(expand(x, home))))]
+  let dirs = clean(flags)
+  if (dirs.length === 0) dirs = clean((env.HARNESS_ROOTS ?? '').split(':'))
+  if (dirs.length === 0 && existsSync(configFile)) dirs = clean(readFileSync(configFile, 'utf8').split('\n').map(l => l.replace(/#.*/, '')))
+  if (dirs.length === 0) {
+    dirs = clean([env.WOW_ADDONS_ROOT ?? join(home, 'code', 'wow-addons')])
+    const puzzles = join(home, 'code', 'warcraft-puzzles')
+    if (!env.WOW_ADDONS_ROOT && existsSync(join(puzzles, '.git'))) dirs.push(puzzles)
+  }
+  // (the family leads, whatever the order named)
+  return dirs.map(projectOf).sort((a, b) => Number(b.isFamily) - Number(a.isFamily))
+}
+
+/** Every `--name value` of the command line. */
+const argAll = (name: string) => process.argv.flatMap((a, i) => (a === `--${name}` && process.argv[i + 1] ? [process.argv[i + 1]] : []))
+
+/** A project's rows, each tagged with its project (the names of a project's repositories belong to it). */
+async function readProject(
+  p: ProjectRoot,
+  o: { day: string; cacheDir: string; isFresh: boolean; isFirst: boolean; sessionsDir: string; transcripts: Awaited<ReturnType<typeof readTranscripts>>; eventsFile: string | null; since: number},
+) {
+  let stamps: StampKit | undefined
+  let cards: CardKit | undefined
+  try {
+    const kit = (await import(join(p.tools, 'q.ts'))) as Partial<StampKit>
+    // (a tools folder without the readers is none: the rows fall back to HEAD alone)
+    if (typeof kit.lastStamp === 'function' && typeof kit.stampOf === 'function') stamps = kit as StampKit
+  } catch {}
+  try {
+    const kit = (await import(join(p.tools, 'board.ts'))) as Partial<CardKit>
+    if (typeof kit.parseCard === 'function') cards = kit as CardKit
+  } catch {}
+  const tag = <T extends object>(x: T): T & { project: string } => ({ ...x, project: p.name })
+  const repos = (existsSync(p.dir) ? cachedRepos(p.dir, o.cacheDir, stamps, o.isFresh, o.isFirst ? 'repos.json' : `repos-${p.name}.json`) : []).map(tag)
+  const board = readBoard(p.board, o.day, cards).map(tag)
+  const sessions = readSessions(o.sessionsDir, p.dir, o.transcripts.sessions)?.map(tag)
+  const log = o.eventsFile ? readEventLog(o.eventsFile, o.since).map(tag) : []
+  const gates = o.eventsFile ? readGates(join(dirname(o.eventsFile), 'running')).map(tag) : []
+  return { repos, board, sessions, log, gates, cards, opened: join(dirname(p.events), 'opened') }
+}
+
 // The pane reads every two seconds while shown: what one session read is the others' for as long.
 const SHARED_MS = 2_000
 
 if (import.meta.main) {
-  const root = arg('root') ?? process.env.WOW_ADDONS_ROOT ?? join(homedir(), 'code', 'wow-addons')
-  const projects = arg('projects') ?? join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'projects')
-  const cacheDir = arg('cache') ?? join(homedir(), '.cache', 'harness-view')
+  const home = homedir()
+  const flagged = argAll('root')
+  const roots = resolveRoots(flagged, process.env, home, join(home, '.config', 'wow-addons', 'harness-roots'))
+  const listed = JSON.stringify({ roots: roots.map(r => ({ name: r.name, dir: r.dir, isFamily: r.isFamily, board: r.board, events: r.events })) })
+  const rootsFile = join(arg('cache') ?? join(home, '.cache', 'harness-view'), 'roots.json')
+  // (kept beside the snapshot: the mod reads it with cat, and starts no bun in a session outside the projects)
+  try {
+    mkdirSync(dirname(rootsFile), { recursive: true })
+    if (!existsSync(rootsFile) || readFileSync(rootsFile, 'utf8') !== listed) writeFileSync(rootsFile, listed)
+  } catch {}
+  if (process.argv.includes('--roots')) {
+    process.stdout.write(listed)
+    process.exit(0)
+  }
+  const root = roots[0].dir
+  const projects = arg('projects') ?? join(process.env.CLAUDE_CONFIG_DIR ?? join(home, '.claude'), 'projects')
+  const cacheDir = arg('cache') ?? join(home, '.cache', 'harness-view')
   const day = arg('day') ?? localDay(Date.now())
   const shared = join(cacheDir, 'snapshot.json')
 
@@ -1098,37 +1237,71 @@ if (import.meta.main) {
   if (!isFresh && existsSync(shared) && Date.now() - statSync(shared).mtimeMs < SHARED_MS) {
     process.stdout.write(readFileSync(shared, 'utf8'))
   } else {
-    // B's readers when the kit has them, so the panel and the gates agree.
-    let stamps: StampKit | undefined
-    let cards: CardKit | undefined
-    try {
-      stamps = (await import(join(root, 'addon-kit', 'q.ts'))) as StampKit
-    } catch {}
-    try {
-      cards = (await import(join(root, 'addon-kit', 'board.ts'))) as CardKit
-    } catch {}
-    const helpers = agentDefs([join(root, '.claude', 'agents'), join(homedir(), '.claude', 'agents')])
-    const transcripts = await readTranscripts(projects, cacheDir, day, root, agentModels(helpers), skillNames([join(root, '.claude', 'skills'), join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'skills')]))
-    const eventsFile = process.env.HARNESS_EVENTS === 'off' ? null : process.env.HARNESS_EVENTS || join(root, '.cache', 'harness', 'events.log')
+    const claudeDir = process.env.CLAUDE_CONFIG_DIR ?? join(home, '.claude')
+    const helpers = agentDefs([...roots.map(r => join(r.dir, '.claude', 'agents')), join(home, '.claude', 'agents')])
+    const transcripts = await readTranscripts(
+      projects,
+      cacheDir,
+      day,
+      root,
+      agentModels(helpers),
+      skillNames([...roots.map(r => join(r.dir, '.claude', 'skills')), join(claudeDir, 'skills')]),
+      roots.slice(1).map(r => r.dir),
+      roots[0].isFamily,
+    )
     const since = logSince(day, Date.now())
-    const log = eventsFile ? readEventLog(eventsFile, since) : []
+    const out = await Promise.all(
+      roots.map((p, i) =>
+        readProject(p, {
+          day,
+          cacheDir,
+          isFresh,
+          isFirst: i === 0,
+          sessionsDir: join(claudeDir, 'sessions'),
+          transcripts,
+          // (HARNESS_EVENTS names the family's file, or none for every project)
+          eventsFile: process.env.HARNESS_EVENTS === 'off' ? null : i === 0 && process.env.HARNESS_EVENTS ? process.env.HARNESS_EVENTS : p.events,
+          since,
+        }),
+      ),
+    )
+    const sessions = out.some(o => o.sessions) ? out.flatMap(o => o.sessions ?? []) : undefined
+    const board = out.flatMap(o => o.board)
     const snapshot: Snapshot = {
       at: Date.now(),
-      repos: cachedRepos(root, cacheDir, stamps, isFresh),
-      board: readBoard(join(root, 'board'), day, cards),
+      repos: out.flatMap(o => o.repos),
+      board,
       usage: transcripts.usage,
-      events: [...log, ...transcripts.events.filter(e => e.at >= since)].sort((a, b) => b.at - a.at).slice(0, MAX_EVENTS),
+      events: [...out.flatMap(o => o.log), ...transcripts.events.filter(e => e.at >= since)].sort((a, b) => b.at - a.at).slice(0, MAX_EVENTS),
       helpers,
       helperDay: transcripts.helperDay,
-      sessions: readSessions(join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'sessions'), root, transcripts.sessions),
-      gates: eventsFile ? readGates(join(dirname(eventsFile), 'running')) : [],
+      sessions,
+      gates: out.flatMap(o => o.gates),
     }
+    if (roots.length > 1 || !roots[0].isFamily) snapshot.projects = roots.map(r => ({ name: r.name, isFamily: r.isFamily }))
     if (snapshot.sessions) {
-      const parents = parentsOf(snapshot.sessions, readOpened(join(root, '.cache', 'harness', 'opened')), desktopParent(arg('desktop') ?? join(homedir(), 'Library', 'Application Support', 'Claude', 'claude-code-sessions'), cacheDir))
+      const opened = out.flatMap(o => readOpened(o.opened))
+      const parents = parentsOf(snapshot.sessions, opened, desktopParent(arg('desktop') ?? join(home, 'Library', 'Application Support', 'Claude', 'claude-code-sessions'), cacheDir))
       snapshot.sessions = snapshot.sessions.map(x => ({ ...x, parent: parents.get(x.id) ?? null }))
     }
-    snapshot.locks = readLocks(snapshot.board, snapshot.sessions, cards)
-    snapshot.slips = readSlips(transcripts.sessions.writes, snapshot.sessions, snapshot.board, snapshot.repos.map(r => r.name), cards)
+    // (each project's lock is its own board's)
+    const locks: RepoLock[] = []
+    const slips: Slip[] = []
+    let isLocked = true
+    let isSlipped = true
+    roots.forEach((p, i) => {
+      const mine = out[i]
+      // (every live session: one started in another project may hold a card here)
+      const l = readLocks(mine.board, snapshot.sessions, mine.cards)
+      if (l) locks.push(...l.map(x => ({ ...x, project: p.name })))
+      else isLocked = false
+      const repoNames = mine.repos.map(r => r.name)
+      const sl = readSlips(transcripts.sessions.writes, snapshot.sessions, mine.board, repoNames, mine.cards)
+      if (sl) slips.push(...sl.map(x => ({ ...x, project: p.name })))
+      else isSlipped = false
+    })
+    snapshot.locks = isLocked ? locks : undefined
+    snapshot.slips = isSlipped ? slips : undefined
     const text = JSON.stringify(snapshot)
     const tmp = `${shared}.${process.pid}`
     writeFileSync(tmp, text)

@@ -4,6 +4,45 @@ Piece D of the family's harness (`addon-kit/docs/harness.md`): a live pane
 and one status line showing the harness at work. A Claude Code mod (function
 hooks), no router, nothing sent anywhere.
 
+## Projects
+
+The pane reads one or more projects (2 November 2026): the family folder
+and standalone repositories with their own harness, today
+`~/code/warcraft-puzzles`. `bin/snapshot.ts` resolves the folders (`resolveRoots`),
+the family first, whatever the order named:
+
+1. `--root <dir>` (repeat it), else
+2. `HARNESS_ROOTS`, colon-separated, else
+3. `~/.config/wow-addons/harness-roots`, one folder a line (`#` comments, `~`), else
+4. the family (`WOW_ADDONS_ROOT` or `~/code/wow-addons`) and, when nothing
+   named the family and the folder is a repository, `~/code/warcraft-puzzles`.
+   A `WOW_ADDONS_ROOT` is the family alone.
+
+A **family** root (it has `addon-kit/q.ts`) is a folder of repositories: its
+tools are `addon-kit/`, its board `board/`, its log
+`.cache/harness/events.log`. Any other root is **one repository**, the root
+itself (a row named as the folder), its tools, board and log where its
+`harness.toml` says (`[tools] dir`, default `harness`; `[state] dir`, `board`,
+`cache`, default `.harness`, `.harness/board`, `.harness/cache/events.log`).
+Its q.ts and board.ts must export the readers the pane needs, else the rows
+fall back to HEAD alone and the plain card parser. The repository names are
+the pane's keys: two projects never share one.
+
+Every row of the snapshot (repository, card, event, session, gate, lock,
+slip) carries its `project`; `projects` lists them when there are several.
+What the pane draws of it: the title (`HARNESS · WOW-ADDONS + WARCRAFT-PUZZLES`),
+`SESSIONS · 5 live in 2 projects`, and a session of another project than
+the family's is prefixed with it. The rest is one list across projects (the
+gates, the board, the repositories, the log): a standalone project's repository
+and its cards already say its name. Each project's lock is its own board's.
+The family's own parts (the kit, the addons) are the family's repositories
+and appear as before; nothing in the pane is drawn for a project that
+has no such thing. Each read keeps the folders in `~/.cache/harness-view/roots.json`
+(`snapshot.ts --roots` prints them too): the mod reads it with `cat` to know which
+sessions show the pane and which logs and boards to watch, so a session outside
+every project starts no bun. A root added during the day makes that day's
+transcripts read again (the cache is keyed by the roots).
+
 ## What it shows
 
 The flow diagram of the mock-up the user shared (an "opusplan" dashboard in
@@ -159,7 +198,7 @@ holds the gates, the part of the harness that runs in code.
   card or a commit cost, in dollars, from one session's transcripts and
   too slow to run each two seconds; this is a live figure by model. Both
   read the same transcripts and count each message once by its id.
-- **Board**: the cards in `~/code/wow-addons/board/*.md`, written by
+- **Board**: the cards in `~/code/wow-addons/board/*.md` (and each other project's board), written by
   `addon-kit/board.ts` and read with its own parser. Waiting and
   ready-to-push cards first, then blocked ones, then running, done cards
   only the newest three (the rest a count). Each card's repositories (`wow-data+yonder`), its status
@@ -293,7 +332,7 @@ when none waits), today's tokens by model family. One line, beside claude-hud, w
 untouched. `/harness` opens the pane again once closed.
 
 The mod stays silent in a session whose project root is outside
-`~/code/wow-addons` (or `WOW_ADDONS_ROOT`), and reads nothing in a run
+`~/code/wow-addons` (or `WOW_ADDONS_ROOT`) and every other project above, and reads nothing in a run
 that draws nowhere (`claude -p`) until a surface attaches. The root is read
 again when a surface attaches and at each prompt, not only at the start:
 the desktop starts a session in a spare folder of its own

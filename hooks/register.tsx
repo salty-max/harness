@@ -439,20 +439,55 @@ async function familyRoot($: EngineInterface): Promise<{ home: string; root: str
   return { home, root: (await $.env.get('WOW_ADDONS_ROOT')) ?? `${home}/code/wow-addons` }
 }
 
-/** Only a session working in the family folder shows the harness. */
+const isUnder = (dir: string, path: string) => path === dir || path.startsWith(`${dir}/`)
+
+/** The other projects' folders (`snapshot.ts --roots`: the config file, HARNESS_ROOTS, the default), read at most every half minute. */
+type ProjectDirs = { dir: string; board?: string; events?: string }
+let otherRoots: { at: number; dirs: ProjectDirs[] } = { at: 0, dirs: [] }
+async function projectRoots($: EngineInterface): Promise<ProjectDirs[]> {
+  if (Date.now() - otherRoots.at < 30_000) return otherRoots.dirs
+  otherRoots = { at: Date.now(), dirs: [] }
+  const { home } = await familyRoot($)
+  const parse = (text: string) => {
+    const found = (JSON.parse(text) as { roots?: Partial<ProjectDirs>[] }).roots
+    return (Array.isArray(found) ? found : []).flatMap(r => (typeof r.dir === 'string' ? [{ dir: r.dir, board: r.board, events: r.events }] : []))
+  }
+  // The list the last snapshot kept (cat: no bun starts in a session outside the projects); bun only when no snapshot has run yet.
+  try {
+    const ran = await $.process.run(['/bin/cat', `${home}/.cache/harness-view/roots.json`], { timeoutMs: 3_000 })
+    if (ran.exitCode === 0) {
+      otherRoots.dirs = parse(ran.stdout)
+      return otherRoots.dirs
+    }
+  } catch {}
+  for (const candidate of bun ? [bun] : ['bun', `${home}/.volta/bin/bun`, `${home}/.bun/bin/bun`, '/opt/homebrew/bin/bun']) {
+    try {
+      const ran = await $.process.run([candidate, `${$.plugin.root}/bin/snapshot.ts`, '--roots'], { timeoutMs: 10_000 })
+      if (ran.exitCode !== 0) continue
+      otherRoots.dirs = parse(ran.stdout)
+      break
+    } catch {}
+  }
+  return otherRoots.dirs
+}
+
+/** Only a session working in the family folder, or in another project the pane reads, shows the harness. */
 async function isFamilySession($: EngineInterface): Promise<boolean> {
   const [{ root }, project] = await Promise.all([familyRoot($), $.session.root()])
-  return project === root || project.startsWith(`${root}/`)
+  if (isUnder(root, project)) return true
+  return (await projectRoots($)).some(p => isUnder(p.dir, project))
 }
 
 async function runSnapshot($: EngineInterface, isFresh: boolean): Promise<Snapshot> {
-  const { home, root } = await familyRoot($)
+  const { home } = await familyRoot($)
+  // (the projects are the snapshot's to resolve: --root here would name the family alone)
+  const named = await $.env.get('WOW_ADDONS_ROOT')
   const script = `${$.plugin.root}/bin/snapshot.ts`
   const candidates = bun ? [bun] : ['bun', `${home}/.volta/bin/bun`, `${home}/.bun/bin/bun`, '/opt/homebrew/bin/bun']
   let lastError = 'bun not found'
   for (const candidate of candidates) {
     try {
-      const argv = [candidate, script, '--root', root, ...(isFresh ? ['--fresh'] : [])]
+      const argv = [candidate, script, ...(named ? ['--root', named] : []), ...(isFresh ? ['--fresh'] : [])]
       const ran = await $.process.run(argv, { timeoutMs: 60_000 })
       bun = candidate
       if (ran.exitCode !== 0) throw new Error(ran.stderr.trim().split('\n').slice(-1)[0] || `exit ${ran.exitCode}`)
@@ -526,7 +561,10 @@ async function watch($: EngineInterface) {
   const [{ root }, events] = await Promise.all([familyRoot($), $.env.get('HARNESS_EVENTS')])
   if (events === 'off') return
   const log = events || `${root}/.cache/harness/events.log`
-  const paths = [log, `${log.slice(0, log.lastIndexOf('/'))}/running`, `${root}/board`]
+  const watching = (file: string) => [file, `${file.slice(0, file.lastIndexOf('/'))}/running`]
+  // (the other projects' own logs and boards, once their folders are known: `--roots`, read when the pane opens)
+  const others = (await projectRoots($)).filter(p => p.dir !== root)
+  const paths = [log, `${log.slice(0, log.lastIndexOf('/'))}/running`, `${root}/board`, ...others.flatMap(p => [...watching(p.events ?? `${p.dir}/.harness/cache/events.log`), p.board ?? `${p.dir}/.harness/board`])]
   const seen = (await Promise.all(paths.map(path => $.fs.stat(path).then(s => `${s.size}:${s.mtimeMs}`, () => '-')))).join('|')
   if (seen === watched) return
   const isFirst = watched === ''
@@ -929,6 +967,8 @@ export const register: Register = on => {
     // a text is a box of its own, off the line's baseline. A `fixed` run keeps
     // its width, the others are cut first.
     type Run = [text: string, style: { color?: string; bold?: boolean; dim?: boolean; inverse?: boolean; fixed?: boolean }]
+    /** Where an item of a project other than the family's says so, once the pane reads several projects (the family's own are the pane's default). */
+    const projectChip = (project: string | undefined): Run | null => (snap?.projects && project && !snap.projects.find(p => p.name === project)?.isFamily ? [`${project} · `, { color: PALETTE.ask, fixed: true }] : null)
     const runs = (key: string, parts: (Run | null)[]) => (
       <Box key={key} minWidth={0}>
         {parts
@@ -1055,7 +1095,7 @@ export const register: Register = on => {
       <Box key="header" flexDirection="column" width={W}>
         <Box justifyContent="space-between" alignItems="center" width={W}>
           {runs('title', [
-            [isShort ? 'HARNESS' : 'WOW-ADDONS HARNESS', { bold: true, fixed: true }],
+            [isShort ? 'HARNESS' : snap?.projects ? 'HARNESS · ' + snap.projects.map(p => p.name.toUpperCase()).join(' + ') : 'WOW-ADDONS HARNESS', { bold: true, fixed: true }],
             worst && worst.percentUsed >= 80 ? [` · ${limitName(worst.kind, isShort)} at ${Math.round(worst.percentUsed)}%`, { color: limitColor(worst.percentUsed), bold: true }] : null,
           ])}
           <Box flexShrink={0} alignItems="center">
@@ -1547,7 +1587,7 @@ export const register: Register = on => {
       const row = (l: RepoLock) => {
         const top = l.holder as LockCard
         return (
-          <Box key={`lock-${l.repo}`}>
+          <Box key={`lock-${l.project ?? ''}-${l.repo}`}>
             {cell(nameW, runs(`lock-${l.repo}-name`, [['● ', { color: PALETTE.ask, fixed: true }], [l.repo, { bold: true }]]))}
             <Box flexGrow={1} flexShrink={1} minWidth={0}>
               {runs(`lock-${l.repo}-who`, [
@@ -1575,7 +1615,7 @@ export const register: Register = on => {
             ])}
           </Box>
           <Box flexDirection="column">
-            {!snap ? line('reading…', { dim: true }) : !locks ? line("no lock data (needs addon-kit/board.ts)", { dim: true }) : held.length === 0 && slips.length === 0 ? line('nothing held', { dim: true }) : null}
+            {!snap ? line('reading…', { dim: true }) : !locks ? line("no lock data (needs the project's board.ts)", { dim: true }) : held.length === 0 && slips.length === 0 ? line('nothing held', { dim: true }) : null}
             {held.map(row)}
             {slips.map(x => (
               <Box key={`slip-${x.session}-${x.repo}`}>
@@ -1585,7 +1625,7 @@ export const register: Register = on => {
                 </Box>
               </Box>
             ))}
-            {quiet.length > 0 ? line(`${quiet.length} more with stopped cards only: ${quiet.map(l => l.repo).join(', ')}`, { dim: true }) : null}
+            {quiet.length > 0 ? line(`${new Set(quiet.map(l => l.repo)).size} more with stopped cards only: ${[...new Set(quiet.map(l => l.repo))].join(', ')}`, { dim: true }) : null}
           </Box>
         </>,
       )
@@ -1627,7 +1667,7 @@ export const register: Register = on => {
               {x.status === 'busy' ? motion(`session-${x.id}-spin`, { kind: 'spin', on: true, color }) : line(x.status === 'waiting' ? '●' : '·', { color })}
               {line(` ${x.status}`, { color, bold: x.status === 'waiting' })}
             </Box>
-            {cell(titleW, line(`${depth > 0 ? `${'  '.repeat(depth - 1)}└ ` : ''}${x.name}`, { bold: isSelf || x.status === 'waiting' }))}
+            {cell(titleW, runs(`session-${x.id}-title`, [[`${depth > 0 ? `${'  '.repeat(depth - 1)}└ ` : ''}`, { fixed: true }], projectChip(x.project), [x.name, { bold: isSelf || x.status === 'waiting' }]]))}
             <Box width={1} flexShrink={0} />
             {whatW > 0 ? cell(whatW, what) : null}
             {cardW > 0 ? cell(cardW, card ? line(card.status, { color: cardColor(card.status), dim: card.status === 'done' }) : line('no card', { dim: true })) : null}
@@ -1651,7 +1691,7 @@ export const register: Register = on => {
         'inactive',
         <>
           <Box justifyContent="space-between">
-            {line(inner >= 40 ? `SESSIONS · ${live.length} live in the family folder` : `SESSIONS · ${live.length}`, { bold: true })}
+            {line(inner >= 40 ? `SESSIONS · ${live.length} live in ${snap?.projects ? (snap.projects.length > 1 ? `${snap.projects.length} projects` : snap.projects[0].name) : 'the family folder'}` : `SESSIONS · ${live.length}`, { bold: true })}
             {runs('sessions-counts', [
               asking > 0 ? [`${asking} waiting on you`, { color: PALETTE.wait }] : null,
               asking > 0 && busy > 0 ? [' · ', { dim: true }] : null,

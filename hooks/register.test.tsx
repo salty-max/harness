@@ -276,7 +276,7 @@ test('the pane draws the board, the checks and the day on every surface', async 
     }
   }
   expect(runs[0]?.[0]).toBe('bun')
-  expect(runs[0]?.slice(2)).toEqual(['--root', '/Users/someone/code/wow-addons', '--fresh'])
+  expect(runs[0]?.slice(2)).toEqual(['--fresh'])
   expect(statuses.at(-1)).toBe('harness · board 1 waiting · ready to push 0/2 · today opus 109M haiku 735k')
 })
 
@@ -708,6 +708,28 @@ for (const [where, project, isShown] of [
     expect(opened).toEqual(isShown ? ['harness'] : [])
   })
 }
+
+test('the pane opens in another project the snapshot reads, and nowhere else', async ($, on) => {
+  mock.env(on, { HOME: '/Users/someone' })
+  mock.clock(on)
+  const runs: string[][] = []
+  on('process.run', ($, e) => {
+    runs.push([...e.argv])
+    return { value: { exitCode: 0, stdout: JSON.stringify({ roots: [{ dir: '/Users/someone/code/wow-addons' }, { dir: '/Users/someone/code/warcraft-puzzles' }] }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  const opened: string[] = []
+  on('session.root', () => ({ value: '/Users/someone/code/warcraft-puzzles/web' }))
+  on('ui.open', ($, e) => {
+    opened.push(e.id)
+    return { value: { isPlaced: true } }
+  })
+  on('ui.status', () => ({ value: undefined }))
+  on('command.register', ($, e) => ({ value: { command: e.name } }))
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/Users/someone/code/warcraft-puzzles/web', surface: 'desktop', isInteractive: true })
+  expect(opened).toEqual(['harness'])
+  expect(runs[0]).toEqual(['/bin/cat', '/Users/someone/.cache/harness-view/roots.json'])
+})
 
 for (const [moment, move] of [
   ['the next prompt', ($: Parameters<Parameters<typeof test>[1]>[0]) => $.prompt.submit({ text: 'hi' })],
