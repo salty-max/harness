@@ -96,13 +96,17 @@ describe("init", () => {
 
   test("the rules section is replaced between its markers and the rest kept", () => {
     const a = withSection("# Mine\n\ntext\n", "## Harness\none\n");
-    expect(a).toBe("# Mine\n\ntext\n\n<!-- harness:start -->\n## Harness\none\n<!-- harness:end -->\n");
+    expect(a).toBe("# Mine\n\ntext\n\n<!-- harness:start -->\n\n## Harness\none\n\n<!-- harness:end -->\n");
     const b = withSection(a + "\nafter\n", "## Harness\ntwo\n");
     expect(b).toContain("two");
     expect(b).not.toContain("one");
     expect(b).toContain("# Mine");
     expect(b.endsWith("after\n")).toBe(true);
-    expect(withSection(undefined, "x")).toBe("<!-- harness:start -->\nx\n<!-- harness:end -->\n");
+    const old = "# M\n<!-- harness:start -->\nold\n<!-- harness:end -->\n\nafter\n";
+    const moved = withSection(old, "x");
+    expect(moved).toBe("# M\n<!-- harness:start -->\n\nx\n\n<!-- harness:end -->\n\nafter\n");
+    expect(withSection(moved, "x")).toBe(moved);
+    expect(withSection(undefined, "x")).toBe("<!-- harness:start -->\n\nx\n\n<!-- harness:end -->\n");
   });
 
   test("the asks are merged, never replacing a key", () => {

@@ -87,7 +87,7 @@ const END = "<!-- harness:end -->";
 
 /** CLAUDE.md with the harness section put in, or replaced between its markers. */
 export function withSection(current: string | undefined, section: string): string {
-  const block = `${START}\n${section.trimEnd()}\n${END}\n`;
+  const block = `${START}\n\n${section.trimEnd()}\n\n${END}\n`; // blank lines inside the markers: Markdown formatters (Prettier) put them there
   if (current === undefined) return block;
   const a = current.indexOf(START);
   const b = current.indexOf(END);
