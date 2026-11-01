@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { useBoardGuard, useFixtureRoot, writeFamilyConfig } from "./testing";
+import { scopedRoot, useBoardGuard, useFixtureRoot, writeFamilyConfig } from "./testing";
 import { type Live, cleanEnv, command, idOf, openerOf, parse, prompt, registry, verdict } from "./session";
 
 useFixtureRoot();
@@ -131,6 +131,24 @@ describe("session: its parts", () => {
     expect(prompt(a, { socket: "/tmp/s.sock" })).toContain("Another session opened this one");
     expect(prompt(a)).not.toContain("Report to the session");
     expect(prompt(a, {})).not.toContain("Report to the session");
+  });
+
+  test("the prompt names the project's own model, not the family's", () => {
+    const dir = mkdtempSync(join(tmpdir(), "harness-sonnet-"));
+    writeFileSync(join(dir, "harness.toml"), '[project]\nname = "p"\n[session]\nmodels = { code = "sonnet", prose = "sonnet" }\n');
+    const restore = scopedRoot(dir);
+    try {
+      const a = { title: "T", repos: ["p"], kind: "prose" as const, plan: false, task: "x" };
+      const p = prompt(a);
+      expect(p).toContain("You run on sonnet. Settle your own plan");
+      expect(p).not.toContain("opusplan");
+      expect(p).not.toContain("You run on Opus");
+      expect(prompt({ ...a, plan: true })).toContain("You run on sonnet and start in plan mode: plan first");
+      expect(prompt({ ...a, plan: true }, undefined, true)).toContain("your opener then moves you to Sonnet for the build");
+    } finally {
+      restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("the prompt for a desktop child: Sonnet or Opus lines, no background paragraph", () => {

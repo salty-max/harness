@@ -8,8 +8,9 @@
  *   title     the new session's name and its card's title
  *   repos     every repository the task writes: its card's --repos, the
  *             first its repo
- *   kind      the family's models by kind: code (and mechanical work)
- *             opusplan, prose (voices, translations, design) opus. opusplan
+ *   kind      code (and mechanical work) or prose (voices, translations,
+ *             design): the model of each is the project's `[session] models`
+ *             (the family's: code opusplan, prose opus). opusplan
  *             is Opus in plan mode and Sonnet otherwise: without --plan the
  *             session settles its own plan, the architect helper (Opus)
  *             looking before it locks, and never stops for the user's
@@ -128,18 +129,28 @@ export type Opener = { name?: string; socket?: string };
 export function prompt(a: Pick<Ask, "title" | "repos" | "kind" | "plan" | "task">, opener?: Opener, desktop = false): string {
   const [repo] = a.repos;
   const conf = loadConfig();
+  const m = conf.session.models[a.kind];
+  const settle = "Settle your own plan without stopping for the user's approval of it, and where it needs a design settled (a change across files), have the architect helper look before it locks.";
+  // a desktop child starts on the model the alias names (opusplan is Sonnet outside plan mode)
+  const dm = m === "sonnet" || m === "opusplan" ? "Sonnet" : m === "opus" ? "Opus" : m;
+  const planFirst = "plan first, and write nothing (your card included) until the user approves the plan";
+  // the family's words stay for its own models (opusplan, opus); any other model is named as the config has it
   const model =
-    a.kind === "prose"
+    a.kind === "prose" && m === "opus"
       ? a.plan
-        ? "You run on Opus and start in plan mode: plan first, and write nothing (your card included) until the user approves the plan."
+        ? `You run on Opus and start in plan mode: ${planFirst}.`
         : "You run on Opus (prose, voices, translations, design)."
-      : desktop
+      : a.kind === "code" && m === "opusplan" && !desktop
         ? a.plan
-          ? "You start on Opus in plan mode: plan first, and write nothing (your card included) until the user approves the plan, your opener then moves you to Sonnet for the build."
-          : "You run on Sonnet. Settle your own plan without stopping for the user's approval of it, and where it needs a design settled (a change across files), have the architect helper look before it locks."
-        : a.plan
           ? "You run on opusplan and start in plan mode: Opus plans, nothing is written (your card included) until the user approves the plan, then Sonnet carries it out."
-          : "You run on opusplan: Sonnet, and Opus in plan mode. Settle your own plan without stopping for the user's approval of it, and where it needs a design settled (a change across files), have the architect helper look before it locks.";
+          : `You run on opusplan: Sonnet, and Opus in plan mode. ${settle}`
+        : a.plan
+          ? !desktop
+            ? `You run on ${m} and start in plan mode: ${planFirst}.`
+            : dm === "Opus"
+              ? `You run on Opus and start in plan mode: ${planFirst}.`
+              : `You start on Opus in plan mode: ${planFirst}, your opener then moves you to ${dm} for the build.`
+          : `You run on ${desktop ? dm : m}. ${settle}`;
   const to = [opener?.socket && `to ${dq(`uds:${opener.socket}`)}`, opener?.name && `${opener.socket ? "(else to its name, " : "to "}${dq(opener.name)}${opener.socket ? ")" : ""}`].filter(Boolean).join(" ");
   const report = to
     ? `Report to the session that opened you with SendMessage, ${to}: a few lines each time your card stops running (waiting on the user or on another card, ready to push), saying what is committed and what is asked of whom, and again once your commits are pushed: the range, CI's verdict, your card done. You do not push yourself: with the user's go, report the quote and your opener pushes, then tells you to set your card done. A go to push is asked of the user in your own session (the question tool), never left to your opener to ask: your next report quotes their words and says what they cover (repository, range by sha, push only). A push go never covers a deploy or a release, each is its own go. Without a quoted go your opener will not push. It checks your work and closes this session: never close it yourself, and after that last report write nothing more.`
@@ -479,8 +490,8 @@ if (import.meta.main) {
     process.exit(run.exitCode || 1);
   }
   record({ id, title: a.title, repos: a.repos, kind: a.kind, plan: a.plan, opener: process.env.CLAUDE_CODE_SESSION_ID ?? null, openerName: opener?.name ?? null, at: new Date().toISOString() });
-  logEvent("session", "ok", a.repos[0], `${a.title} opened (${KINDS[a.kind]}${a.plan ? ", plan mode" : ""}) as ${id}`);
-  console.log(`opened "${a.title}" (${KINDS[a.kind]}${a.plan ? ", plan mode" : ""}) as ${id}
+  logEvent("session", "ok", a.repos[0], `${a.title} opened (${loadConfig().session.models[a.kind]}${a.plan ? ", plan mode" : ""}) as ${id}`);
+  console.log(`opened "${a.title}" (${loadConfig().session.models[a.kind]}${a.plan ? ", plan mode" : ""}) as ${id}
   claude attach ${id}    join it (Ctrl+Z leaves it running)
   claude logs ${id}      its recent output
   its card, once written: ${toolCmd("board")} list`);

@@ -42,3 +42,8 @@ commit, then sync the projects: a copy in a project is never edited.
 As a Claude Code skill: link `skills/harness-init` into `~/.claude/skills/`
 (`ln -s "$PWD/skills/harness-init" ~/.claude/skills/harness-init`) and ask
 for the harness in a project; it follows the steps above and checks them.
+The `child` skill (`/child <task>` opens a task in a session of its own and
+sees it through, `/child` alone makes the session the dispatch) is linked the
+same way (`ln -s "$PWD/skills/child" ~/.claude/skills/child`); it finds the
+project's tools folder through `bun config.ts show` (`toolsDir`) and sends a
+project without a harness to `harness-init`.

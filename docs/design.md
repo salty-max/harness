@@ -37,8 +37,8 @@ already generic. Per file:
 Not in the harness, stays in addon-kit: `Kit.lua` and everything the kit syncs,
 `preflight.ts`, `release.sh`, `store.ts`, `store-ui.ts`, `sync.ts`,
 `regional.ts`, `locales-lib.ts`, `package-lib.ts`, `ids.ts`, `secret.ts`,
-`glossary.py`, `subzones.py`, `coldread.ts` (languages), all `wow-*` skills,
-the `child` skill (it carries the desktop path), `data-scout`, `prose-reader`,
+`glossary.py`, `subzones.py`, `coldread.ts` (languages), all `wow-*` skills
+(`wow-child` among them: the family's addendum to the harness's `child`), `data-scout`, `prose-reader`,
 the family's CLAUDE.md rules.
 
 The harness's own prose rules (what it enforces) live in the project's rules
@@ -217,17 +217,18 @@ modules, lifted verbatim from `packet.ts` and `status.ts`.
   its registry reads go over as they are, flagged experimental in the
   README (the registry is an undocumented format). `--desktop`, `check
   <local_id>` and the `child` skill (they lean on Claude Desktop's session
-  tool) stay in addon-kit, which wraps the harness's session module; a
-  project without the desktop simply doesn't use them. If this proves too
+  tool) went over too, flagged the same; a project without the desktop
+  simply doesn't use them. If this proves too
   tangled in slice 2 the whole of `session.ts` stays out of v1 and is listed
   as not extracted. (Decide when the code is open.)
 - **The panel** (`harness-view`) moved into this repository as `pane/` on 1
   November 2026 (it was addon-kit's, frozen by the audit). It reads the
   board, stamps and the event log by path; after slice 3 those paths are the
   same files, so it works unchanged.
-- **Skills.** The harness ships no skills in v1 (the family's are procedures
-  of the WoW work). A generic `child` skill can come later from the desktop
-  split above.
+- **Skills.** `skills/harness-init` and `skills/child` (1 November 2026: the
+  generic `child` moved here from addon-kit, finding the project's tools
+  through `config.ts show`; the family's rules for it are `wow-child` in
+  addon-kit). The family's other skills are procedures of the WoW work.
 - **Platform.** macOS and Linux, bun, git. No Windows (`sh` hooks), as today.
 - **License and name.** For the user to choose (below).
 

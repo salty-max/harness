@@ -14,6 +14,7 @@ with `bun init.ts <project>`.
 | The tools | `board.ts q.ts hooks.ts review.ts packet.ts each.ts status.ts usage.ts session.ts events.ts`, `githooks/` |
 | Adopting, copying, checking | `init.ts`, `harness-sync.ts`, `doctor.ts`, `templates/` |
 | The adopt procedure as a skill (link `skills/harness-init` into `~/.claude/skills/`) | `skills/harness-init/SKILL.md` |
+| The child skill (open a task in its own session, see it through, the dispatch; link `skills/child` into `~/.claude/skills/`; finds the project's tools dir through `config.ts show`) | `skills/child/SKILL.md` |
 | The desktop Harness pane and status line (a Claude Code mod, not vendored; `~/.claude/skills/harness-view` links to it; its tests run in `bun run check`) | `pane/README.md` |
 | Tests (not vendored) | `*.test.ts`, `testing.ts` (a family-shaped fixture) |
 
