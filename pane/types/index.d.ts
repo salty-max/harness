@@ -217,6 +217,7 @@ declare module 'claude-code' {
       tick: number
       turn: TurnState
       handback: Handback | null
+      calm: boolean
     }
   }
 }

@@ -3,8 +3,8 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 
 import type { HarnessEvent, Snapshot } from '../types'
 import { FRESH_MS, tokens } from './format'
-import { FRAME_MS, lit } from './motion'
-import { edgeText, pulsePath } from './register'
+import { FRAME_MS, lit, periodOf } from './motion'
+import { edgeText, isCalmSetting, pulsePath } from './register'
 import { barSvg, edgeSvg, lap, lineSvg } from './vector'
 
 const AT = 1_760_940_000_000
@@ -31,9 +31,9 @@ const PANE = {
 
 /** The engine beneath the mod: a family session on the desktop, the pane shown unless told otherwise. */
 type Agent = { id: string; type: string; description: string; status: string }
-function world(on: On, opts: { snapshot?: () => Snapshot; isShown?: boolean; events?: () => number; surface?: 'desktop' | 'terminal'; agents?: () => Agent[] } = {}) {
+function world(on: On, opts: { calm?: string; snapshot?: () => Snapshot; isShown?: boolean | (() => boolean); events?: () => number; surface?: 'desktop' | 'terminal'; agents?: () => Agent[] } = {}) {
   const runs: string[][] = []
-  mock.env(on, { HOME: '/Users/someone' })
+  mock.env(on, { HOME: '/Users/someone', HARNESS_CALM: opts.calm ?? 'off' })
   const clock = mock.clock(on, { now: AT })
   on('session.root', () => ({ value: FAMILY }))
   on('session.surfaces', () => ({ value: [opts.surface ?? 'desktop'] }))
@@ -43,7 +43,7 @@ function world(on: On, opts: { snapshot?: () => Snapshot; isShown?: boolean; eve
   })
   on('ui.status', () => ({ value: undefined }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('ui.panes', () => ({ value: [{ id: 'harness', title: 'Harness', isShown: opts.isShown ?? true, isFocused: false, isPlaced: true }] }))
+  on('ui.panes', () => ({ value: [{ id: 'harness', title: 'Harness', isShown: typeof opts.isShown === 'function' ? opts.isShown() : (opts.isShown ?? true), isFocused: false, isPlaced: true }] }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('agent.list', () => ({ value: opts.agents?.() ?? [] }))
   on('fs.stat', () => ({ value: { kind: 'file', size: opts.events?.() ?? 1, mtimeMs: opts.events?.() ?? 1, isLink: false } }))
@@ -255,6 +255,7 @@ test('in the terminal too: the cells lit out are the running box\'s way alone, t
 
 test('figures and bars roll up to their value as they first show', async ($, on) => {
   world(on)
+  await $.session.start({ cwd: FAMILY, surface: 'desktop', isInteractive: true })
   const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'desktop', ...PANE })
   await ui.press({ key: 'refresh' })
   const shown = async (key: string) => (await ui.find({ in: key, type: 'Text' }))?.text
@@ -274,6 +275,7 @@ test('a new log line blinks its mark, then settles', async ($, on) => {
   // Each read its own time, as a real one: the pane draws again with the line's later age.
   let reads = 0
   const { clock } = world(on, { snapshot: () => ({ ...snap(events), at: AT + reads++ }) })
+  await $.session.start({ cwd: FAMILY, surface: 'desktop', isInteractive: true })
   const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'desktop', ...PANE })
   await ui.press({ key: 'refresh' })
   const mark = async (key: string) => JSON.stringify(await ui.drawn({ in: key }))
@@ -460,4 +462,107 @@ test("in the terminal a box at work wears a comet on its top and bottom edges, t
   expect(await edge('top')).toBeUndefined()
   expect((await border())?.props?.borderDimColor).toBeUndefined()
   await ui.unmount()
+})
+
+// Every Client and Svg in a drawing.
+const partsOf = (tree: unknown) => {
+  const clients: { key: string; kind: string }[] = []
+  const svgs: string[] = []
+  const walk = (n: unknown) => {
+    if (!n || typeof n !== 'object') return
+    if (Array.isArray(n)) return n.forEach(walk)
+    const node = n as { type?: string; props?: { key?: string; source?: string; props?: { kind?: string } }; children?: unknown }
+    if (node.type === 'Client') clients.push({ key: node.props?.key ?? '', kind: node.props?.props?.kind ?? '' })
+    if (node.type === 'Svg') svgs.push(node.props?.source ?? '')
+    walk(node.children)
+  }
+  walk(tree)
+  return { clients, svgs }
+}
+
+describe('calm', () => {
+  test('the setting: on unless the file says off', () => {
+    expect(isCalmSetting(null)).toBe(true)
+    expect(isCalmSetting('')).toBe(true)
+    expect(isCalmSetting('on\n')).toBe(true)
+    for (const off of ['off', 'off\n', ' 0 ', 'false', 'No']) expect(isCalmSetting(off)).toBe(false)
+  })
+
+  test('each kind wakes at the pace it needs', () => {
+    expect(periodOf({ kind: 'live', color: 'x' })).toBe(400)
+    expect(periodOf({ kind: 'ago', at: 0 })).toBe(1000)
+    expect(periodOf({ kind: 'spin', on: true })).toBe(FRAME_MS)
+    expect(periodOf({ kind: 'flow', text: '', path: [], start: 0, cycle: 1, on: true, color: 'x' })).toBe(FRAME_MS)
+  })
+
+  test('the vector parts of a calm drawing carry no animation, a box at work stands bolder', () => {
+    const edge = { cells: 40, lines: 6, color: 'green', nowMs: 1234, isRunning: true }
+    expect(edgeSvg('top', edge)).toContain('repeatCount')
+    const still = edgeSvg('top', { ...edge, isCalm: true })
+    expect(still).not.toContain('<animate')
+    expect(still).toContain('stroke-width="2.2"')
+    const line = { text: ' │ ', how: 'down' as const, at: 1, color: 'green', base: 'inactive', on: true, from: 0, to: 100, cycleMs: 1000, phaseMs: 0 }
+    expect(lineSvg(line)).toContain('repeatCount')
+    const lit = lineSvg({ ...line, isCalm: true })
+    expect(lit).not.toContain('<animate')
+    expect(lit).toContain('stroke="green"')
+  })
+
+  test('a calm pane at work draws no animation and runs one timer, the count of seconds', async ($, on) => {
+    world(on, { calm: 'on' })
+    await $.session.start({ cwd: FAMILY, surface: 'desktop', isInteractive: true })
+    const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'desktop', ...PANE })
+    await ui.press({ key: 'refresh' })
+    await $.turn.start({ text: 'hi', turnId: 't1' })
+    const { clients, svgs } = partsOf(await ui.drawn())
+    expect(clients.filter(c => c.kind === 'ago').length).toBe(1)
+    expect(clients.filter(c => c.kind !== 'ago')).toEqual([])
+    expect(svgs.filter(s => s.includes('<animate') && !s.includes('attributeName="width"'))).toEqual([])
+    await ui.unmount()
+  })
+
+  test('in the terminal a calm box at work has a bold border, a line at work its colour, no comet', async ($, on) => {
+    world(on, { calm: 'on', surface: 'terminal' })
+    await $.session.start({ cwd: FAMILY, surface: 'terminal', isInteractive: true })
+    const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'terminal', ...PANE })
+    await ui.press({ key: 'refresh' })
+    await $.turn.start({ text: 'hi', turnId: 't1' })
+    const tree = JSON.stringify(await ui.drawn())
+    expect(tree).toContain('"borderStyle":"bold"')
+    expect(partsOf(await ui.drawn()).clients.filter(c => c.kind !== 'ago')).toEqual([])
+    await ui.unmount()
+  })
+
+  test('a pane not shown draws no motion even with calm off, and moves again once shown', async ($, on) => {
+    let isShown = false
+    const { clock } = world(on, { isShown: () => isShown })
+    await $.session.start({ cwd: FAMILY, surface: 'desktop', isInteractive: true })
+    const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'desktop', ...PANE })
+    await ui.press({ key: 'refresh' })
+    await $.turn.start({ text: 'hi', turnId: 't1' })
+    await clock.advance(2100)
+    const hidden = partsOf(await ui.drawn())
+    expect(hidden.clients).toEqual([])
+    expect(hidden.svgs.filter(s => s.includes('repeatCount'))).toEqual([])
+    isShown = true
+    await clock.advance(2100)
+    const shown = partsOf(await ui.drawn())
+    expect(shown.clients.length).toBeGreaterThan(0)
+    expect(shown.svgs.some(s => s.includes('repeatCount'))).toBe(true)
+    await ui.unmount()
+  })
+
+  test('a read that changed nothing draws nothing again', async ($, on) => {
+    const { clock, runs } = world(on)
+    await $.session.start({ cwd: FAMILY, surface: 'desktop', isInteractive: true })
+    const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'desktop', ...PANE })
+    await ui.press({ key: 'refresh' })
+    await ui.advance(FRAME_MS * 10)
+    const before = JSON.stringify(await ui.drawn())
+    const reads = runs.length
+    await clock.advance(6_000)
+    expect(runs.length).toBeGreaterThan(reads)
+    expect(JSON.stringify(await ui.drawn())).toBe(before)
+    await ui.unmount()
+  })
 })

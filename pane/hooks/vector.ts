@@ -67,6 +67,8 @@ export type LineSvg = {
   phaseMs: number
   /** The cells the pulse goes to (the running helpers' boxes): every end of the line when none are given. */
   targets?: number[]
+  /** Calm: an `on` line stands lit in its colour, no animation (no pulse runs, nothing for the page to repaint every frame). */
+  isCalm?: boolean
 }
 
 /** One line of the diagram, its pulse running while `on`. */
@@ -74,7 +76,7 @@ export function lineSvg(l: LineSvg): string {
   const w = Math.max(1, l.text.length)
   const cx = (x: number) => x * UNIT + UNIT / 2
   const cy = H / 2
-  const base = esc(paint(l.base))
+  const base = esc(paint(l.isCalm && l.on ? l.color : l.base))
   const parts: string[] = []
   const cells: number[] = []
   const stroke = (x1: number, y1: number, x2: number, y2: number, dash = false) =>
@@ -93,7 +95,7 @@ export function lineSvg(l: LineSvg): string {
     if (ch === '▼') parts.push(`<path d="M${cx(x) - 4} ${H - 7}L${cx(x) + 4} ${H - 7}L${cx(x)} ${H}Z" fill="${base}"/>`)
     if (ch === '◂') parts.push(`<path d="M${left + 1} ${cy}L${left + UNIT} ${cy - 4}L${left + UNIT} ${cy + 4}Z" fill="${base}"/>`)
   }
-  if (l.on && cells.length > 0 && l.cycleMs > 0) {
+  if (l.on && !l.isCalm && cells.length > 0 && l.cycleMs > 0) {
     const t0 = Math.min(0.998, Math.max(0.001, l.from / l.cycleMs))
     const t1 = Math.min(0.999, Math.max(t0 + 0.001, l.to / l.cycleMs))
     const timing = `dur="${Math.round(l.cycleMs)}ms" begin="-${Math.round(l.phaseMs % l.cycleMs)}ms" repeatCount="indefinite"`
@@ -151,6 +153,8 @@ export type BoxEdges = {
   isRunning: boolean
   /** The main session's boxes, dashed as in the mock-up. */
   isDashed?: boolean
+  /** Calm: an edge at work stands bolder and still, no breath and no comet. */
+  isCalm?: boolean
 }
 
 /** The lap's length and each side's share of it, from the box's size. */
@@ -179,8 +183,8 @@ export function edgeSvg(side: 'top' | 'right' | 'bottom' | 'left', b: BoxEdges):
   const seen = `<animate attributeName="opacity" values="0;1;0" keyTimes="0;${t0};${t1}" calcMode="discrete" ${timing}/>`
   const run = (attr: string, a: number, z: number) => `<animate attributeName="${attr}" values="${a};${a};${z};${z}" keyTimes="0;${t0};${t1};1" ${timing}/>`
   const breath = `<animate attributeName="stroke-opacity" values=".3;.9;.3" dur="${BREATH_MS}ms" begin="-${Math.round(b.nowMs % BREATH_MS)}ms" repeatCount="indefinite"/>`
-  const edge = `stroke="${c}" stroke-opacity="${b.isRunning ? '.5' : '1'}" stroke-width="1.2" fill="none" vector-effect="non-scaling-stroke"${b.isDashed ? ' stroke-dasharray="5 4"' : ''}`
-  const moving = (x: string) => (b.isRunning ? x : '')
+  const edge = `stroke="${c}" stroke-opacity="${b.isRunning && !b.isCalm ? '.5' : '1'}" stroke-width="${b.isRunning && b.isCalm ? '2.2' : '1.2'}" fill="none" vector-effect="non-scaling-stroke"${b.isDashed ? ' stroke-dasharray="5 4"' : ''}`
+  const moving = (x: string) => (b.isRunning && !b.isCalm ? x : '')
   // The comet's tail fades behind it: the gradient runs from its tail (x1, y1) to its head (x2, y2).
   const grad = (x1: number, y1: number, x2: number, y2: number) =>
     `<defs><linearGradient id="g" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"><stop offset="0" stop-color="${c}" stop-opacity="0"/><stop offset="1" stop-color="${c}"/></linearGradient></defs>`

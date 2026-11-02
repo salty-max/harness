@@ -4,9 +4,10 @@
 // hooks module hands each instance its data; the frames are counted here, so
 // the pane itself redraws only when a number moved.
 //
-// Every instance counts frames on its own timer, held to the wall clock's
-// frame so the instances of one drawing stay in step, and stops its timer
-// once nothing of it moves (a props change starts it again).
+// Every instance counts frames on its own timer (at the pace its kind needs,
+// `periodOf`), held to the wall clock's frame so the instances of one drawing
+// stay in step, and stops its timer once nothing of it moves (a props change
+// starts it again).
 
 import type { ClientModule, ClientSurface, RenderElement } from 'claude-code'
 
@@ -14,6 +15,22 @@ import { ago, bar, FRESH_MS, tokens } from './format'
 
 /** One frame: 80 ms, about twelve a second. */
 export const FRAME_MS = 80
+/**
+ * How often an instance looks at the clock: the beat changes twice a
+ * 1.2 s, a count of seconds once a second, so they need not wake at every
+ * frame. Spinners, pulses, blinks and rolls keep the frame.
+ */
+export function periodOf(p: MotionProps): number {
+  switch (p.kind) {
+    case 'live':
+      return 400
+    case 'ago':
+      return 1000
+    default:
+      return FRAME_MS
+  }
+}
+
 /** A figure or a bar on its way to a new value: six frames, about half a second. */
 export const TWEEN_FRAMES = 6
 
@@ -223,7 +240,7 @@ const Motion: ClientModule<MotionProps, number> = (p, s: ClientSurface<number>) 
   }
   const run = r
   if (!run.cancel && isMoving(run, now)) {
-    run.cancel = s.every(FRAME_MS, () => {
+    run.cancel = s.every(periodOf(p), () => {
       run.frame = Math.max(run.frame + 1, wall())
       if (!isMoving(run, run.frame)) {
         run.cancel?.()

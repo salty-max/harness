@@ -17,6 +17,7 @@ const SNAPSHOT_MS = 30_000
 // The event log and the board looked at (a stat each): a line there reads anew at once.
 const WATCH_MS = 1_000
 const SESSION_MS = 1_000
+const HIDDEN_SESSION_BEATS = 5
 const LOG_LINES = 6
 const AGES_MS = 30_000
 // The gaps between the boxes: a row between stacked ones, two columns beside.
@@ -30,6 +31,8 @@ const agents = atom({ plugin: 'harness-view', key: 'agents' } as const, [])
 const steps = atom({ plugin: 'harness-view', key: 'steps' } as const, {})
 // Bumped every half minute while the pane is shown: the ages (12m, 3h) drawn again.
 const tick = atom({ plugin: 'harness-view', key: 'tick' } as const, 0)
+// Calm (the default): nothing moves that the page would have to repaint every frame, and a pane not shown draws as calm as well. `~/.config/wow-addons/harness-calm` holding `off` lets the motion run.
+const calm = atom({ plugin: 'harness-view', key: 'calm' } as const, true)
 // The main session's turn: the diagram's lines pulse while it runs.
 const turn = atom({ plugin: 'harness-view', key: 'turn' } as const, { isRunning: false, at: null })
 // A helper of this session just done: the diagram's way back to the lead lights up this long, then goes dark.
@@ -419,6 +422,7 @@ let isReading = false
 let isFreshWanted = false
 let isActive = false
 let isShown = false
+let sessionBeat = 0
 let slowAt = 0
 let watched = ''
 // Each vector bar's last value, so its next drawing slides from it.
@@ -587,8 +591,25 @@ async function openSession($: EngineInterface, link: string) {
 /** Whether the pane is drawn in front: the live pace's condition. */
 async function refreshShown($: EngineInterface): Promise<boolean> {
   const panes = await $.ui.panes().catch(() => [])
+  const was = isShown
   isShown = panes.some(p => p.id === PANE && p.isShown && p.isPlaced)
+  // The drawing differs shown and not (a pane behind another tab draws no motion): draw it again.
+  if (was !== isShown) void update($, tick, n => n + 1).catch(() => {})
   return isShown
+}
+
+/** The calm setting: on unless the file holds `off` (or `0`, `false`, `no`). */
+export function isCalmSetting(text: string | null): boolean {
+  return !/^\s*(off|0|false|no)\s*$/i.test(text ?? '')
+}
+
+async function refreshCalm($: EngineInterface) {
+  // HARNESS_CALM (the environment) outranks the file.
+  const fromEnv = await $.env.get('HARNESS_CALM')
+  const { home } = await familyRoot($)
+  const ran = fromEnv ? null : await run($, ['/bin/cat', `${home}/.config/wow-addons/harness-calm`])
+  const isCalm = isCalmSetting(fromEnv || (ran?.exitCode === 0 ? ran.stdout : null))
+  if (isChanged('calm', isCalm)) await update($, calm, () => isCalm)
 }
 
 /** The shared numbers at the live pace while the pane is shown, at the slow one while it is not. */
@@ -717,9 +738,14 @@ async function gate($: EngineInterface, isStart = false): Promise<boolean> {
     $.clock.every(LIVE_MS, () => void pace($).catch(() => {})),
     $.clock.every(WATCH_MS, () => void watch($).catch(() => {})),
     $.clock.every(AGES_MS, () => {
-      if (isShown) void update($, tick, n => n + 1).catch(() => {})
+      if (!isShown) return
+      void refreshCalm($).catch(() => {})
+      void update($, tick, n => n + 1).catch(() => {})
     }),
     $.clock.every(SESSION_MS, () => {
+      // The session's own facts feed the pane and the status line: every second shown, every fifth behind another tab.
+      sessionBeat++
+      if (!isShown && sessionBeat % HIDDEN_SESSION_BEATS !== 0) return
       void refreshSession($).catch(() => {})
       void refreshAgents($).catch(() => {})
     }),
@@ -728,6 +754,7 @@ async function gate($: EngineInterface, isStart = false): Promise<boolean> {
     name: 'harness',
     description: 'Open the harness panel: session, subagents, board, checks, usage today',
   })
+  void refreshCalm($).catch(() => {})
   void refreshSnapshot($).catch(() => {})
   void refreshSession($).catch(() => {})
   void refreshAgents($).catch(() => {})
@@ -753,6 +780,7 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'harness' }, async $ => {
+    void refreshCalm($).catch(() => {})
     void refreshSnapshot($, true).catch(() => {})
     try {
       const opened = await $.ui.open({ id: PANE, title: TITLE })
@@ -834,7 +862,7 @@ export const register: Register = on => {
     const Svg = e.surface === 'desktop' && 'Svg' in table ? table.Svg : undefined
     // A row between stacked boxes: the desktop's vertical unit is half a line.
     const gapY = e.surface === 'desktop' ? 2 : GAP_Y
-    const [snap, error, facts, rows, work, back] = await Promise.all([
+    const [snap, error, facts, rows, work, back, , isCalmSet] = await Promise.all([
       read($, snapshot),
       read($, snapshotError),
       read($, session),
@@ -842,7 +870,10 @@ export const register: Register = on => {
       read($, turn),
       read($, handback),
       read($, tick),
+      read($, calm),
     ])
+    // A pane not shown draws as calm as a calm one: its timers and animations stop with it.
+    const isCalm = isCalmSet || !isShown
     const now = await $.clock.now()
     const W = Math.max(32, e.props.bodyColumns)
     const tier = W >= 96 ? 'wide' : W >= 64 ? 'medium' : 'narrow'
@@ -865,7 +896,7 @@ export const register: Register = on => {
           )
         case 'flow':
           return (
-            <Text key={key} color={p.base ?? p.color} dimColor={p.base === undefined} wrap="truncate-end">
+            <Text key={key} color={p.on ? p.color : (p.base ?? p.color)} dimColor={!p.on && p.base === undefined} wrap="truncate-end">
               {p.text}
             </Text>
           )
@@ -900,12 +931,13 @@ export const register: Register = on => {
           )
       }
     }
-    const motion = (key: string, p: MotionProps) => (Client ? <Client key={key} module="./motion.tsx" props={p} /> : still(key, p))
+    // (calm keeps one moving part: a count of seconds, once a second)
+    const motion = (key: string, p: MotionProps) => (Client && (!isCalm || (p.kind === 'ago' && isShown)) ? <Client key={key} module="./motion.tsx" props={p} /> : still(key, p))
     // A bar: vector where the surface draws an Svg (block characters overflow a desktop cell), else rolling characters.
     const barOf = (key: string, value: number, max: number, width: number, color: string) => {
       if (!Svg) return motion(key, { kind: 'bar', value, max, width, rest: '▒', color })
       const share = max > 0 ? Math.min(1, Math.max(0, value / max)) : 0
-      const from = barsShown.get(key) ?? 0
+      const from = isCalm ? share : (barsShown.get(key) ?? 0)
       barsShown.set(key, share)
       return (
         <Box key={key} width={width} flexShrink={0} alignItems="center">
@@ -940,7 +972,7 @@ export const register: Register = on => {
     // the terminal's own border, a comet on its top and bottom edges while it works.
     const frame = (key: string, w: number, color: string, children: RenderChildren, opts: { dashed?: boolean; middle?: boolean; running?: { lines: number } } = {}) => {
       if (Svg) {
-        const edge = { cells: w, lines: opts.running?.lines ?? 6, color, nowMs: now, isRunning: opts.running !== undefined, isDashed: opts.dashed }
+        const edge = { cells: w, lines: opts.running?.lines ?? 6, color, nowMs: now, isRunning: opts.running !== undefined, isDashed: opts.dashed, isCalm }
         return (
           <Box key={key} flexDirection="column" width={w} flexShrink={0}>
             <Svg source={edgeSvg('top', edge)} alt="a box's top edge" height={EDGE_PX} />
@@ -961,7 +993,7 @@ export const register: Register = on => {
       // bottom's right to left, so the pair turns the box round. The motion module
       // draws them, the pane doesn't redraw. (On a plain Box at top 0 and bottom 0:
       // one at top -1 inside a bordered Box isn't drawn.)
-      const isLapped = opts.running !== undefined && Client !== undefined
+      const isLapped = opts.running !== undefined && Client !== undefined && !isCalm
       const bordered = (
         <Box
           key={isLapped ? `${key}-frame` : key}
@@ -971,7 +1003,7 @@ export const register: Register = on => {
           flexGrow={isLapped ? 1 : undefined}
           paddingX={1}
           justifyContent={opts.middle ? 'center' : 'flex-start'}
-          borderStyle={opts.dashed ? 'dashed' : 'single'}
+          borderStyle={opts.running !== undefined && isCalm ? 'bold' : opts.dashed ? 'dashed' : 'single'}
           borderColor={color}
           borderDimColor={isLapped ? true : undefined}
         >
@@ -1411,7 +1443,7 @@ export const register: Register = on => {
         const l = timed.find(d => d.key === key)
         if (!l) return null
         if (Svg) {
-          const source = lineSvg({ text: l.text, how: l.how, at: l.at, color: l.color, base: l.base ?? l.color, on: l.on, from: l.from, to: l.to, cycleMs, phaseMs: now % cycleMs, targets: l.targets })
+          const source = lineSvg({ text: l.text, how: l.how, at: l.at, color: l.color, base: l.base ?? l.color, on: l.on, from: l.from, to: l.to, cycleMs, phaseMs: now % cycleMs, targets: l.targets, isCalm })
           return (
             <Box key={key} width={w} flexShrink={0}>
               <Svg source={source} alt="a line of the diagram" height={LINE_PX} />

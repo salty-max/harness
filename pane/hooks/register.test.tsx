@@ -233,7 +233,7 @@ test('the pane draws the board, the checks and the day on every surface', async 
     statuses.push(e.text)
     return { value: undefined }
   })
-  mock.env(on, { HOME: '/Users/someone' })
+  mock.env(on, { HOME: '/Users/someone', HARNESS_CALM: 'off' })
   mock.clock(on)
   on('session.surfaces', () => ({ value: ['desktop'] }))
 
@@ -293,7 +293,7 @@ test('planning or building, on which model: opusplan wants Opus planning, a wron
 })
 
 test("the plan's limits are the header's meters, each with its reset, the fullest past 80% in the title", async ($, on) => {
-  mock.env(on, { HOME: '/Users/someone' })
+  mock.env(on, { HOME: '/Users/someone', HARNESS_CALM: 'off' })
   const now = SNAPSHOT.at + 3000
   const clock = mock.clock(on, { now })
   const snap: Snapshot = SNAPSHOT
@@ -382,7 +382,7 @@ test("the pane's board shows a blocked card's blocker, free once it is done; the
       card('after', 'keyring', 'blocked', { title: 'After the fix', waits: 'tested' }),
     ],
   }
-  mock.env(on, { HOME: '/Users/someone' })
+  mock.env(on, { HOME: '/Users/someone', HARNESS_CALM: 'off' })
   mock.clock(on)
   on('process.run', () => ({ value: { exitCode: 0, stdout: JSON.stringify(snap), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
   on('ui.status', () => ({ value: undefined }))
@@ -437,7 +437,7 @@ test("the sessions: each live one's status, model, card and an Open that hands t
     ],
   }
   const opened: string[][] = []
-  mock.env(on, { HOME: '/Users/someone' })
+  mock.env(on, { HOME: '/Users/someone', HARNESS_CALM: 'off' })
   const clock = mock.clock(on, { now: SNAPSHOT.at })
   on('process.run', ($, e) => {
     if (e.argv[0] === '/usr/bin/open') {
@@ -524,7 +524,7 @@ test("the locks: who holds a repository and who waits, a session off the lock, t
     ],
     slips: [{ session: 'kid', who: 'The child session', repo: 'yonder', at: SNAPSHOT.at - 120_000, why: 'no running card of this session names yonder' }],
   }
-  mock.env(on, { HOME: '/Users/someone' })
+  mock.env(on, { HOME: '/Users/someone', HARNESS_CALM: 'off' })
   mock.clock(on)
   on('process.run', () => ({ value: { exitCode: 0, stdout: JSON.stringify(snap), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
   on('ui.status', () => ({ value: undefined }))
@@ -589,7 +589,7 @@ test("the repositories' box says first why a verdict doesn't count: older, parti
       repo('pushed', 0, { base: null, covers: false }),
     ],
   }
-  mock.env(on, { HOME: '/Users/someone' })
+  mock.env(on, { HOME: '/Users/someone', HARNESS_CALM: 'off' })
   mock.clock(on, { now: SNAPSHOT.at })
   on('process.run', () => ({ value: { exitCode: 0, stdout: JSON.stringify(snap), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
   on('ui.status', () => ({ value: undefined }))
@@ -607,7 +607,7 @@ test("the repositories' box says first why a verdict doesn't count: older, parti
 
 test("the gates' meters and the status bar: what waits to be pushed, or nothing to push", async ($, on) => {
   let snap: Snapshot = SNAPSHOT
-  mock.env(on, { HOME: '/Users/someone' })
+  mock.env(on, { HOME: '/Users/someone', HARNESS_CALM: 'off' })
   mock.clock(on, { now: SNAPSHOT.at })
   on('process.run', () => ({ value: { exitCode: 0, stdout: JSON.stringify(snap), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
   on('ui.status', () => ({ value: undefined }))
@@ -635,7 +635,7 @@ test("the gates' meters and the status bar: what waits to be pushed, or nothing 
 
 test('the gates are at work only while a q.ts run goes on, not for a helper or the turn alone', async ($, on) => {
   let snap: Snapshot = SNAPSHOT
-  mock.env(on, { HOME: '/Users/someone' })
+  mock.env(on, { HOME: '/Users/someone', HARNESS_CALM: 'off' })
   const clock = mock.clock(on, { now: SNAPSHOT.at })
   on('process.run', () => ({ value: { exitCode: 0, stdout: JSON.stringify(snap), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
   on('ui.status', () => ({ value: undefined }))
@@ -646,6 +646,7 @@ test('the gates are at work only while a q.ts run goes on, not for a helper or t
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
   on('session.usage', () => ({ value: { context: { tokens: 1000, window: 1_000_000, percent: 0 }, rateLimits: [] } }))
   on('settings.read', () => ({ value: {} }))
+  on('ui.panes', () => ({ value: [{ id: 'harness', title: 'Harness', isShown: true, isFocused: false, isPlaced: true }] }))
   // A helper at work: the pulse runs out to it through the gates, which stay still.
   on('agent.list', () => ({ value: [{ id: 'a1', type: 'reviewer', description: 'Review the push', status: 'running' }] }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
@@ -681,7 +682,7 @@ test('a failing snapshot says why in the pane', async ($, on) => {
   }))
   on('ui.status', () => ({ value: undefined }))
   on('session.surfaces', () => ({ value: ['desktop'] }))
-  mock.env(on, { HOME: '/Users/someone' })
+  mock.env(on, { HOME: '/Users/someone', HARNESS_CALM: 'off' })
   mock.clock(on)
   const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'desktop', ...PANE })
   await ui.press({ key: 'refresh' })
@@ -694,7 +695,7 @@ for (const [where, project, isShown] of [
   ['anywhere else', '/Users/someone/code/other', false],
 ] as const) {
   test(`the pane opens ${where}: ${isShown}`, async ($, on) => {
-    mock.env(on, { HOME: '/Users/someone' })
+    mock.env(on, { HOME: '/Users/someone', HARNESS_CALM: 'off' })
     mock.clock(on)
     const opened: string[] = []
     on('session.root', () => ({ value: project }))
@@ -710,7 +711,7 @@ for (const [where, project, isShown] of [
 }
 
 test('the pane opens in another project the snapshot reads, and nowhere else', async ($, on) => {
-  mock.env(on, { HOME: '/Users/someone' })
+  mock.env(on, { HOME: '/Users/someone', HARNESS_CALM: 'off' })
   mock.clock(on)
   const runs: string[][] = []
   on('process.run', ($, e) => {
@@ -739,7 +740,7 @@ for (const [where, project, env, withToml, isShown] of [
   ['a project beside the family, the projects named by HARNESS_ROOTS', '/Users/someone/code/newcomer', { HARNESS_ROOTS: '/Users/someone/code/wow-addons' }, ['newcomer'], false],
 ] as const) {
   test(`the pane opens by discovery in ${where}: ${isShown}`, async ($, on) => {
-    mock.env(on, { HOME: '/Users/someone', ...env })
+    mock.env(on, { HOME: '/Users/someone', HARNESS_CALM: 'off', ...env })
     mock.clock(on)
     on('process.run', ($, e) => {
       const [cmd, flag, path] = e.argv
@@ -762,7 +763,7 @@ for (const [where, project, env, withToml, isShown] of [
 }
 
 test('a session outside every project starts no bun, and none at all far from it', async ($, on) => {
-  mock.env(on, { HOME: '/Users/someone' })
+  mock.env(on, { HOME: '/Users/someone', HARNESS_CALM: 'off' })
   mock.clock(on)
   const runs: string[][] = []
   on('process.run', ($, e) => {
@@ -783,7 +784,7 @@ for (const [moment, move] of [
   ['the desktop attaching', ($: Parameters<Parameters<typeof test>[1]>[0]) => $.session.attach({ surface: 'desktop', clientId: 'desktop:default' })],
 ] as const) {
   test(`a session moved out of the desktop's spare folder opens the pane at ${moment}`, async ($, on) => {
-    mock.env(on, { HOME: '/Users/someone' })
+    mock.env(on, { HOME: '/Users/someone', HARNESS_CALM: 'off' })
     mock.clock(on)
     let project = '/Users/someone/.claude/spares/spare-abc'
     const opened: string[] = []
@@ -818,7 +819,7 @@ for (const [moment, move] of [
 }
 
 test('a headless run reads nothing, /harness opens the pane and reads anew', async ($, on) => {
-  mock.env(on, { HOME: '/Users/someone' })
+  mock.env(on, { HOME: '/Users/someone', HARNESS_CALM: 'off' })
   mock.clock(on)
   let surfaces: RenderSurface[] = []
   const runs: string[][] = []

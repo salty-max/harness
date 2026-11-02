@@ -328,6 +328,23 @@ pane itself redraws only when a number moved. It moves when work does:
 Idle, everything else stands still. The editor and the phone draw no
 `Client`: the same parts stand still there.
 
+**Calm** (2 November 2026, on by default). The motion above cost a machine
+with several panes open its CPU (`ideas/audit/pane-cpu.md`: about a hundred
+Client redraws a second and 17 endless SMIL images per busy pane, times the
+panes open). Calm draws none of it and removes no information: a working
+spinner is a fixed glyph, a line at work stands lit in its colour, a box at
+work has a bolder border, a figure shows its value at once, a new log line
+shows its settled mark; the only part that moves is the `changed 4s ago`
+count, once a second. A pane that isn't shown draws calm too, and its session
+read waits five seconds (the status line's helper count can lag by as much). In the terminal a box at work has a bold border (the main session's loses its dashes while it works) and a line at work its colour. The motion comes back with `off` in
+`~/.config/wow-addons/harness-calm` (read when the pane opens and every half
+minute while it is shown) or `HARNESS_CALM=off` in the environment, which
+outranks the file. With the motion on, the beat wakes at 400 ms and the count
+at one second, not at each frame. The window being in front or not can't be
+told from the mod API (`UiPane.isShown` is per session): not handled.
+`zsh bin/pane-cpu.sh [idle|busy] [shown|hidden]` counts the cost
+(`CALM=1` for calm).
+
 What the pane can't draw: no pixels (bars and meters are block
 characters, an eighth of a cell at best), no charts or trends, no
 background of its own (the mock-up's navy is the app's background here),
