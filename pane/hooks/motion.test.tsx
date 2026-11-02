@@ -3,7 +3,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 
 import type { HarnessEvent, Snapshot } from '../types'
 import { FRESH_MS, tokens } from './format'
-import { FRAME_MS, HOP, lit, periodOf, STEP_MS } from './motion'
+import Motion, { FRAME_MS, lit, periodOf, STEP_MS } from './motion'
 import { edgeText, isCalmSetting, isStillSetting, pulsePath } from './register'
 import { barSvg, edgeSvg, lap, lineSvg } from './vector'
 
@@ -86,10 +86,9 @@ describe('the pulse', () => {
   })
 
   test("a box's edges as the terminal draws them", async () => {
-    expect(edgeText(6, false, 'top')).toBe('┌────┐')
-    expect(edgeText(6, false, 'bottom')).toBe('└────┘')
-    expect(edgeText(6, true, 'top')).toBe(' ╌╌╌╌ ')
-    expect(edgeText(1, false, 'top')).toBe('')
+    expect(edgeText(6, 'top')).toBe('┌────┐')
+    expect(edgeText(6, 'bottom')).toBe('└────┘')
+    expect(edgeText(1, 'top')).toBe('')
   })
 })
 
@@ -377,10 +376,10 @@ describe('a running box', () => {
     expect(top).toContain('<path d="M1 8A7 7 0 0 1 8 1')
     expect(top).toContain(`begin="-${2500 % l.ms}ms"`)
     expect(top).toContain('attributeName="stroke-opacity"')
-    // At rest the same edge stands still; the main session's is dashed.
-    const still = edgeSvg('top', { cells: 50, lines: 4, color: '#b4b0e8', nowMs: 2500, isRunning: false, isDashed: true })
+    // At rest the same edge stands still.
+    const still = edgeSvg('top', { cells: 50, lines: 4, color: '#b4b0e8', nowMs: 2500, isRunning: false })
     expect(still).not.toContain('<animate')
-    expect(still).toContain('stroke-dasharray')
+    expect(still).not.toContain('stroke-dasharray')
     // A side's comet is no longer than half the side; its own height a pixel, the row's taken.
     const side = edgeSvg('left', { cells: 50, lines: 2, color: '#b4b0e8', nowMs: 0, isRunning: true })
     expect(side).toContain('height="45"')
@@ -540,7 +539,6 @@ describe('calm', () => {
     // Every moving part is stepped but the seconds and the beat: a bar, a figure, a blink stay still.
     expect(tree.match(/"kind":"(spin|flow)"[^}]*?"step":true/g)?.length).toBe(clients.filter(c => c.kind === 'spin' || c.kind === 'flow').length)
     // The diagram's lines (one chain, one cycle) step one cell a beat, so the pulse stays in step along them; no box edge is a flow.
-    expect(tree).not.toContain('"hop"')
     expect(tree).not.toContain('"key":"session-top"')
     await ui.unmount()
   })
@@ -556,11 +554,40 @@ describe('calm', () => {
     await ui.unmount()
   })
 
-  test('a stepped part wakes twice a second and hops a comet several cells a beat', () => {
-    expect(periodOf({ kind: 'spin', on: true, step: true })).toBe(STEP_MS)
-    expect(periodOf({ kind: 'flow', text: '', path: [], start: 0, cycle: 1, on: true, color: 'x', step: true })).toBe(STEP_MS)
+  test('a stepped part looks at the clock twice a beat, so a timer at any phase misses none', () => {
+    expect(periodOf({ kind: 'spin', on: true, step: true })).toBe(STEP_MS / 2)
+    expect(periodOf({ kind: 'flow', text: '', path: [], start: 0, cycle: 1, on: true, color: 'x', step: true })).toBe(STEP_MS / 2)
     expect(STEP_MS).toBeGreaterThanOrEqual(400)
-    expect(HOP).toBeGreaterThan(1)
+  })
+
+  test('a stepped part is armed again when its pace changes, and draws once a beat however often it wakes', () => {
+    const timers: { ms: number; fn: () => void; isCancelled: boolean }[] = []
+    let sets = 0
+    const surface = {
+      elements: { Text: (props: object) => ({ type: 'Text', props }), Box: (props: object) => ({ type: 'Box', props }) },
+      every: (ms: number, fn: () => void) => {
+        const t = { ms, fn, isCancelled: false }
+        timers.push(t)
+        return () => {
+          t.isCancelled = true
+        }
+      },
+      setState: () => {
+        sets++
+      },
+    }
+    const spin = (step: boolean) => ({ kind: 'spin' as const, on: true, step })
+    Motion(spin(false), surface as never)
+    expect(timers.map(t => t.ms)).toEqual([FRAME_MS])
+    // Calm turned on while the pane is shown: the same part, a new pace.
+    Motion(spin(true), surface as never)
+    expect(timers[0]?.isCancelled).toBe(true)
+    expect(timers.at(-1)?.ms).toBe(STEP_MS / 2)
+    // Woken twice within a beat, it draws at most once (the beat may turn between the two).
+    sets = 0
+    timers.at(-1)?.fn()
+    timers.at(-1)?.fn()
+    expect(sets).toBeLessThanOrEqual(1)
   })
 
   test('a pane not shown draws no motion even with calm off, and moves again once shown', async ($, on) => {

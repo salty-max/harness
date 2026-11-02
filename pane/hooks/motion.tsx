@@ -17,11 +17,12 @@ import { ago, bar, FRESH_MS, tokens } from './format'
 export const FRAME_MS = 80
 /**
  * The stepped pace (calm in the terminal): a spinner turns a notch and a
- * pulse or comet hops `HOP` cells once a beat, not twelve times a second, so
- * a busy pane wakes twice a second a part and still looks alive.
+ * pulse steps a cell once a beat, not twelve times a second, so a busy pane
+ * redraws twice a second a part and still looks alive. A part looks at the
+ * clock twice a beat (a timer armed at any phase can't miss a beat) and draws
+ * only when the beat moved.
  */
 export const STEP_MS = 500
-export const HOP = 4
 const isStepped = (p: MotionProps): boolean => (p.kind === 'spin' || p.kind === 'flow') && p.step === true
 
 /**
@@ -30,7 +31,7 @@ const isStepped = (p: MotionProps): boolean => (p.kind === 'spin' || p.kind === 
  * frame. Spinners, pulses, blinks and rolls keep the frame (a stepped one, a beat).
  */
 export function periodOf(p: MotionProps): number {
-  if (isStepped(p)) return STEP_MS
+  if (isStepped(p)) return STEP_MS / 2
   switch (p.kind) {
     case 'live':
       return 400
@@ -66,7 +67,7 @@ export type MotionProps =
    * line itself is drawn in `base`, else in `color` dimmed. A running box's
    * top and bottom edges in the terminal are flows too, a comet on each.
    */
-  | { kind: 'flow'; text: string; path: number[][]; start: number; cycle: number; on: boolean; color: string; base?: string; tail?: number; step?: boolean; hop?: number }
+  | { kind: 'flow'; text: string; path: number[][]; start: number; cycle: number; on: boolean; color: string; base?: string; tail?: number; step?: boolean }
   /** A bar of `width` cells rolling to `value` of `max`. */
   | { kind: 'bar'; value: number; max: number; width: number; rest?: string; color: string }
   /** A figure rolling to `value`. */
@@ -98,9 +99,9 @@ type Run = {
 
 const runs = new WeakMap<object, Run>()
 const wall = () => Math.floor(Date.now() / FRAME_MS)
-/** The frame the wall clock is at: every 80 ms, or once a beat (a flow hopping `HOP` cells) when stepped. */
+/** The frame the wall clock is at: every 80 ms, or once a beat when stepped. */
 const frameNow = (p: MotionProps) =>
-  isStepped(p) ? Math.floor(Date.now() / STEP_MS) * (p.kind === 'flow' ? (p.hop ?? 1) : 1) : wall()
+  isStepped(p) ? Math.floor(Date.now() / STEP_MS) : wall()
 
 export const ease = (t: number) => 1 - (1 - Math.min(1, Math.max(0, t))) ** 3
 
@@ -261,7 +262,10 @@ const Motion: ClientModule<MotionProps, number> = (p, s: ClientSurface<number>) 
   if (!run.cancel && isMoving(run, now)) {
     run.period = periodOf(p)
     run.cancel = s.every(periodOf(p), () => {
+      const was = run.frame
       run.frame = isStepped(run.props) ? frameNow(run.props) : Math.max(run.frame + 1, frameNow(run.props))
+      // (a stepped part wakes twice a beat: the beat hasn't moved, nothing to draw)
+      if (run.frame === was && isStepped(run.props) && isMoving(run, run.frame)) return
       if (!isMoving(run, run.frame)) {
         run.cancel?.()
         run.cancel = null

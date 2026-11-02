@@ -151,8 +151,6 @@ export type BoxEdges = {
   nowMs: number
   /** At work: the edges breathe and the comet runs. */
   isRunning: boolean
-  /** The main session's boxes, dashed as in the mock-up. */
-  isDashed?: boolean
   /** Calm: an edge at work stands bolder and still, no breath and no comet. */
   isCalm?: boolean
 }
@@ -183,7 +181,7 @@ export function edgeSvg(side: 'top' | 'right' | 'bottom' | 'left', b: BoxEdges):
   const seen = `<animate attributeName="opacity" values="0;1;0" keyTimes="0;${t0};${t1}" calcMode="discrete" ${timing}/>`
   const run = (attr: string, a: number, z: number) => `<animate attributeName="${attr}" values="${a};${a};${z};${z}" keyTimes="0;${t0};${t1};1" ${timing}/>`
   const breath = `<animate attributeName="stroke-opacity" values=".3;.9;.3" dur="${BREATH_MS}ms" begin="-${Math.round(b.nowMs % BREATH_MS)}ms" repeatCount="indefinite"/>`
-  const edge = `stroke="${c}" stroke-opacity="${b.isRunning && !b.isCalm ? '.5' : '1'}" stroke-width="${b.isRunning && b.isCalm ? '2.2' : '1.2'}" fill="none" vector-effect="non-scaling-stroke"${b.isDashed ? ' stroke-dasharray="5 4"' : ''}`
+  const edge = `stroke="${c}" stroke-opacity="${b.isRunning && !b.isCalm ? '.5' : '1'}" stroke-width="${b.isRunning && b.isCalm ? '2.2' : '1.2'}" fill="none" vector-effect="non-scaling-stroke"`
   const moving = (x: string) => (b.isRunning && !b.isCalm ? x : '')
   // The comet's tail fades behind it: the gradient runs from its tail (x1, y1) to its head (x2, y2).
   const grad = (x1: number, y1: number, x2: number, y2: number) =>

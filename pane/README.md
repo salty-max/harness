@@ -97,7 +97,7 @@ day's transcripts read again (the cache is keyed by the roots).
 The flow diagram of the mock-up the user shared (an "opusplan" dashboard in
 a video, 20 October 2026), drawn in text with this family's numbers. Boxes
 in each model's colour (Opus lavender, Sonnet orange, Haiku blue, the gates
-green), the main session's boxes dashed, connectors and arrows between
+green), connectors and arrows between
 them, bars of block characters with a checkered rest, statuses ok green,
 waiting amber, failed red. The mock-up's "JEV router" is not ours: its place
 holds the gates, the part of the harness that runs in code.
@@ -110,7 +110,7 @@ holds the gates, the part of the harness that runs in code.
   least), and under 64 columns, named `5h` and `7d`. The
   settings' model, mode, context window, ask rules and subagent model were
   rows of a box until 25 October 2026: the settings are one file away.
-- **Main session** (dashed, its model's colour), laid out as the other
+- **Main session** (its model's colour), laid out as the other
   boxes: `PLANNING` or `BUILDING` and the model of its last call, the
   session's title after it (cut first), its state on the right (idle,
   working, the helpers running); the context as a meter to the box's
@@ -161,7 +161,7 @@ holds the gates, the part of the harness that runs in code.
   The planner, a tall Opus box of today's calls by moment, went on 25
   October 2026: two of its four moments were nearly always 0, and its one
   live part, an Opus helper at work, is what the fan-out draws.
-- **Back to lead** (dashed, one row): the last helper's handback, tokens and time;
+- **Back to lead** (one row): the last helper's handback, tokens and time;
   "handing back" while a helper of this session has just finished and the
   shared numbers don't have its figures yet. Drawn with the helpers only.
 - **Repositories**: each family repository's newest check stamp
@@ -338,7 +338,7 @@ pane itself redraws only when a number moved. It moves when work does:
   lead's while a handback comes in.
   On the desktop every box's border is four vector edges (rounded strips
   top and bottom cut to the box's width, sides the row stretches to its
-  height, the main session's dashed), standing still at rest; at work they
+  height, standing still at rest; at work they
   breathe brighter and fainter while a comet laps them, top, right, bottom,
   left, on the wall clock's phase. One frame at rest and at work, so a box
   keeps its size as work starts (measured: `HARNESS_PAINT_IDLE=1` paints
@@ -370,7 +370,7 @@ spinner is a fixed glyph, a line at work stands lit in its colour, a box at
 work has a bolder border, a figure shows its value at once, a new log line
 shows its settled mark; the only part that moves is the `changed 4s ago`
 count, once a second. A pane that isn't shown draws calm too, and its session
-read waits five seconds (the status line's helper count can lag by as much). In the desktop, and in the terminal with `still`, a box at work has a bold border (the main session's loses its dashes while it works) and a line at work its colour; the terminal's calm steps (below). The motion comes back with `off` in
+read waits five seconds (the status line's helper count can lag by as much). In calm a box at work has a bold border, in the terminal's stepped calm too; a line at work stands in its colour (stepped: its pulse runs over it); the terminal's calm steps (below). The motion comes back with `off` in
 `~/.config/wow-addons/harness-calm` (read when the pane opens and every half
 minute while it is shown) or `HARNESS_CALM=off` in the environment, which
 outranks the file. `still` in the same
@@ -379,11 +379,11 @@ place (or `HARNESS_CALM=still`) is calm with no stepped motion at all.
 **Stepped motion** (2 November 2026, the terminal's calm). Calm alone left the
 terminal pane looking dead (a fixed glyph for every spinner, comets and
 pulses gone). In the terminal, shown, calm keeps the working parts moving on
-a slow beat (`STEP_MS` 500 ms, `hooks/motion.tsx`; a working box is highlighted by a bold border, no comet laps it, a timer a box, and no border is dashed since 2 November 2026): spinners turn a notch, the
+a slow beat (`STEP_MS` 500 ms, `hooks/motion.tsx`; a part looks at the clock twice a beat and draws when the beat moved; a working box is highlighted by a bold border, no comet laps it, a timer a box, and no border is dashed since 2 November 2026): spinners turn a notch, the
 diagram's pulses run (one cell a beat along every line, so the
 chain's lines stay in step on a shared cycle), and the live dot beats (its
 own 400 ms wake, about two redraws a 1.2 s beat, also when idle). Bars, figures and blinks stay still.
-Cost: a busy pane (12 spinners, 4 pulse lines) wakes about 35 times a second (motion fully on:
+Cost: a busy pane (the spinners and pulse lines at work, 13 timers on 2 November) redraws about 25 times a second, looking at the clock twice that (motion fully on:
 about 280; the pane-cpu run counts them as `timerTicksPerSec`, `SURFACE=terminal`),
 an idle pane's two parts (the count, the beat) about 3.5. A part re-arms its
 timer when its pace changes. The desktop's calm is unchanged (still).
@@ -392,8 +392,8 @@ What the pane can't draw: no pixels (bars and meters are block
 characters, an eighth of a cell at best), no charts or trends, no
 background of its own (the mock-up's navy is the app's background here),
 connectors only as text between boxes in the terminal, no smooth motion
-there (a frame is a cell's change, twelve a second). The desktop's paint of borders
-(dashed among them), colours and the `Client` regions is the desktop page's
+there (a frame is a cell's change, twelve a second). The desktop's paint of borders,
+colours and the `Client` regions is the desktop page's
 own and was checked in tests only: the terminal's was seen (a `claude
 --plugin-dir` session, and the whole pane painted with Ink, the motion's
 regions mid-pulse included), the desktop app can't be captured from here. A prompt shows in the log once answered. Helpers, prompts and
@@ -510,8 +510,7 @@ can't be captured from a session):
 - The whole pane in colour: print `await ui.drawn()` from a throwaway
   `*.test.tsx` that mounts the Pane with a real snapshot, paint the tree
   with upstream Ink in a scratch folder, and screenshot it with headless
-  Chrome. Upstream Ink ignores `top`/`left` and the `dashed` style (map it
-  to a custom border).
+  Chrome. Upstream Ink ignores `top`/`left`.
 
 Fixed columns are `flexShrink={0}` with widths from `fit()`: `flexShrink`
 on them breaks alignment as soon as a row's last text is long. A fragment

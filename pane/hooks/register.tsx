@@ -45,10 +45,9 @@ let handbackTimer: { cancel: () => void } | null = null
 // A running box's comets in the terminal: the head and this many cells of trail.
 const COMET_TAIL = 4
 
-/** A box's top or bottom edge as the terminal draws it: Ink's single style, or its dashed one (the corners blank). */
-export function edgeText(w: number, isDashed: boolean, side: 'top' | 'bottom'): string {
+/** A box's top or bottom edge as the terminal draws it: Ink's single style. */
+export function edgeText(w: number, side: 'top' | 'bottom'): string {
   if (w < 2) return ''
-  if (isDashed) return ` ${'╌'.repeat(w - 2)} `
   return side === 'top' ? `┌${'─'.repeat(w - 2)}┐` : `└${'─'.repeat(w - 2)}┘`
 }
 
@@ -997,15 +996,14 @@ export const register: Register = on => {
     )
 
     // --- the parts ---------------------------------------------------------
-    // A box of the diagram: its border in its colour (dashed for the main
-    // session's, as in the mock-up), a column of padding each side.
+    // A box of the diagram: its border in its colour, a column of padding each side.
     // A box. On the desktop its border is four vector edges, at rest as at work
     // (one frame, so it keeps its size as work starts), a comet lapping them
     // while it works (`running`, its height in lines about). In the terminal
     // the terminal's own border, a comet on its top and bottom edges while it works.
-    const frame = (key: string, w: number, color: string, children: RenderChildren, opts: { dashed?: boolean; middle?: boolean; running?: { lines: number } } = {}) => {
+    const frame = (key: string, w: number, color: string, children: RenderChildren, opts: { middle?: boolean; running?: { lines: number } } = {}) => {
       if (Svg) {
-        const edge = { cells: w, lines: opts.running?.lines ?? 6, color, nowMs: now, isRunning: opts.running !== undefined, isDashed: false, isCalm }
+        const edge = { cells: w, lines: opts.running?.lines ?? 6, color, nowMs: now, isRunning: opts.running !== undefined, isCalm }
         return (
           <Box key={key} flexDirection="column" width={w} flexShrink={0}>
             <Svg source={edgeSvg('top', edge)} alt="a box's top edge" height={EDGE_PX} />
@@ -1050,7 +1048,7 @@ export const register: Register = on => {
       const edge = (side: 'top' | 'bottom') =>
         motion(`${key}-${side}`, {
           kind: 'flow',
-          text: edgeText(w, false, side),
+          text: edgeText(w, side),
           path: side === 'top' ? across : [...across].reverse(),
           start: 0,
           cycle,
@@ -1287,7 +1285,7 @@ export const register: Register = on => {
             {flush(9, line(facts?.costUsd != null ? `$${facts.costUsd.toFixed(2)}` : '', { dim: true }))}
           </Box>
         </>,
-        { dashed: true, running: work.isRunning ? { lines: 5 } : undefined },
+        { running: work.isRunning ? { lines: 5 } : undefined },
       )
     }
 
@@ -1424,7 +1422,7 @@ export const register: Register = on => {
             {rx}
           </>
         ),
-        { dashed: true, running: isReturning ? { lines: 3 } : undefined },
+        { running: isReturning ? { lines: 3 } : undefined },
       )
     }
 
@@ -1462,7 +1460,8 @@ export const register: Register = on => {
         return { ...l, path, start }
       })
       // Nothing but the turn: the pulse goes round the gates' part alone, a beat a second or so.
-      const cycle = step + 6
+      // (a beat is 500 ms when stepped: a short pause, or a line at work would sit dark most of the cycle)
+      const cycle = step + (isStepped ? 1 : 6)
       // The same way in milliseconds for the desktop's vector lines: a line of marks 160, a fan-out by its reach, a pause a box.
       let ms = 0
       const timed = drawn.map(l => {
@@ -1483,7 +1482,7 @@ export const register: Register = on => {
             </Box>
           )
         }
-        return motion(key, { kind: 'flow', text: l.text, path: l.path, start: l.start, cycle, on: l.on, color: l.color, base: l.base })
+        return motion(key, { kind: 'flow', text: l.text, path: l.path, start: l.start, cycle, on: l.on, color: l.color, base: isStepped && l.on ? l.color : l.base })
       }
       // No helper at work or worked today, none handing back: the diagram ends at the gates.
       if (fan.count === 0 && !back) {

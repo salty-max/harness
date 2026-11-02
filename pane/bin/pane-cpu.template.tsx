@@ -78,7 +78,7 @@ test('pane cpu', async ($, on) => {
   for (const k of clients) {
     const p = props[k]
     kinds[p.kind] = (kinds[p.kind] ?? 0) + 1
-    if ((p.kind === 'spin' || p.kind === 'flow') ? p.on : (p.kind === 'live' || p.kind === 'ago')) { timersAlive++; ticks += 1000 / (p.kind === 'live' ? 400 : p.kind === 'ago' ? 1000 : p.step ? 500 : 80) }
+    if ((p.kind === 'spin' || p.kind === 'flow') ? p.on : (p.kind === 'live' || p.kind === 'ago')) { timersAlive++; ticks += 1000 / (p.kind === 'live' ? 400 : p.kind === 'ago' ? 1000 : p.step ? 250 : 80) }
   }
   const totalClient = Object.values(clientRedraws).reduce((a, b) => a + b, 0)
   console.log('PANE-CPU ' + JSON.stringify({ MODE, SURFACE, shown: SHOWN, clients: clients.length, kinds, timersAlive, timerTicksPerSec: ticks, svgs: svgs.length, animatedSvgs: animSvgs, animateElements: animates, svgBytes: svgs.join('').length, treeRenders30s: renders, clientRedraws30s: totalClient, clientRedrawsPerSec: +(totalClient / 30).toFixed(1), calls, drawMs: +draw.toFixed(2), wallMs: Math.round(wall) }))
