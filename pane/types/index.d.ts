@@ -221,6 +221,7 @@ declare module 'claude-code' {
       turn: TurnState
       handback: Handback | null
       calm: boolean
+      still: boolean
     }
   }
 }

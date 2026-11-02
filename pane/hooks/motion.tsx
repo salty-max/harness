@@ -16,11 +16,21 @@ import { ago, bar, FRESH_MS, tokens } from './format'
 /** One frame: 80 ms, about twelve a second. */
 export const FRAME_MS = 80
 /**
+ * The stepped pace (calm in the terminal): a spinner turns a notch and a
+ * pulse or comet hops `HOP` cells once a beat, not twelve times a second, so
+ * a busy pane wakes twice a second a part and still looks alive.
+ */
+export const STEP_MS = 500
+export const HOP = 4
+const isStepped = (p: MotionProps): boolean => (p.kind === 'spin' || p.kind === 'flow') && p.step === true
+
+/**
  * How often an instance looks at the clock: the beat changes twice a
  * 1.2 s, a count of seconds once a second, so they need not wake at every
- * frame. Spinners, pulses, blinks and rolls keep the frame.
+ * frame. Spinners, pulses, blinks and rolls keep the frame (a stepped one, a beat).
  */
 export function periodOf(p: MotionProps): number {
+  if (isStepped(p)) return STEP_MS
   switch (p.kind) {
     case 'live':
       return 400
@@ -46,7 +56,7 @@ export const heavy = (ch: string) => HEAVY[ch] ?? ch
 
 export type MotionProps =
   /** Turns while `on`; else `idle` stands still. */
-  | { kind: 'spin'; on: boolean; color?: string; idle?: string }
+  | { kind: 'spin'; on: boolean; color?: string; idle?: string; step?: boolean }
   /** The beat that says the pane is live. */
   | { kind: 'live'; color: string; label?: string }
   /**
@@ -56,7 +66,7 @@ export type MotionProps =
    * line itself is drawn in `base`, else in `color` dimmed. A running box's
    * top and bottom edges in the terminal are flows too, a comet on each.
    */
-  | { kind: 'flow'; text: string; path: number[][]; start: number; cycle: number; on: boolean; color: string; base?: string; tail?: number }
+  | { kind: 'flow'; text: string; path: number[][]; start: number; cycle: number; on: boolean; color: string; base?: string; tail?: number; step?: boolean; hop?: number }
   /** A bar of `width` cells rolling to `value` of `max`. */
   | { kind: 'bar'; value: number; max: number; width: number; rest?: string; color: string }
   /** A figure rolling to `value`. */
@@ -73,6 +83,8 @@ export type MotionProps =
 type Run = {
   frame: number
   cancel: (() => void) | null
+  /** The period the timer runs at: a part whose pace changes (calm turned on or off while shown) is armed again. */
+  period: number
   props: MotionProps
   from: number
   to: number
@@ -86,6 +98,9 @@ type Run = {
 
 const runs = new WeakMap<object, Run>()
 const wall = () => Math.floor(Date.now() / FRAME_MS)
+/** The frame the wall clock is at: every 80 ms, or once a beat (a flow hopping `HOP` cells) when stepped. */
+const frameNow = (p: MotionProps) =>
+  isStepped(p) ? Math.floor(Date.now() / STEP_MS) * (p.kind === 'flow' ? (p.hop ?? 1) : 1) : wall()
 
 export const ease = (t: number) => 1 - (1 - Math.min(1, Math.max(0, t))) ** 3
 
@@ -225,11 +240,11 @@ const Motion: ClientModule<MotionProps, number> = (p, s: ClientSurface<number>) 
   // Cut, never wrapped, its runs too (the desktop wraps a Text with no wrap).
   const Text = (props: Parameters<Elements['Text']>[0]) => s.elements.Text({ wrap: 'truncate-end', ...props })
   let r = runs.get(s)
-  const now = Math.max(r?.frame ?? 0, wall())
+  const now = isStepped(p) ? frameNow(p) : Math.max(r?.frame ?? 0, frameNow(p))
   if (!r) {
     // A figure or a bar rolls up from nothing as it first shows.
     const until = now + (p.kind === 'fresh' ? Math.ceil((FRESH_MS - p.age) / FRAME_MS) : 0)
-    r = { frame: now, cancel: null, props: p, from: 0, to: 0, t0: now, born: now, until, look: '' }
+    r = { frame: now, cancel: null, period: 0, props: p, from: 0, to: 0, t0: now, born: now, until, look: '' }
     runs.set(s, r)
   }
   r.props = p
@@ -239,9 +254,14 @@ const Motion: ClientModule<MotionProps, number> = (p, s: ClientSurface<number>) 
     r.t0 = now
   }
   const run = r
+  if (run.cancel && run.period !== periodOf(p)) {
+    run.cancel()
+    run.cancel = null
+  }
   if (!run.cancel && isMoving(run, now)) {
+    run.period = periodOf(p)
     run.cancel = s.every(periodOf(p), () => {
-      run.frame = Math.max(run.frame + 1, wall())
+      run.frame = isStepped(run.props) ? frameNow(run.props) : Math.max(run.frame + 1, frameNow(run.props))
       if (!isMoving(run, run.frame)) {
         run.cancel?.()
         run.cancel = null
@@ -250,7 +270,7 @@ const Motion: ClientModule<MotionProps, number> = (p, s: ClientSurface<number>) 
       if (JSON.stringify(draw(run.props, run, run.frame, Text, s.elements.Box)) !== run.look) s.setState(run.frame)
     })
   }
-  const drawn = draw(p, run, Math.max(run.frame, now), Text, s.elements.Box)
+  const drawn = draw(p, run, isStepped(p) ? now : Math.max(run.frame, now), Text, s.elements.Box)
   run.look = JSON.stringify(drawn)
   return drawn
 }

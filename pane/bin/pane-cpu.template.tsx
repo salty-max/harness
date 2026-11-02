@@ -2,6 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 
 const MODE = '@MODE@'
 const SHOWN = @SHOWN@
+const SURFACE = '@SURFACE@' as 'desktop' | 'terminal'
 const BUSY = MODE === 'busy'
 
 test('pane cpu', async ($, on) => {
@@ -27,10 +28,10 @@ test('pane cpu', async ($, on) => {
   on('settings.read', () => ({ value: { model: 'opus' } }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
-  await $.session.start({ cwd: '/Users/someone/code/wow-addons', surface: 'desktop', isInteractive: true })
+  await $.session.start({ cwd: '/Users/someone/code/wow-addons', surface: SURFACE, isInteractive: true })
   if (BUSY) await $.turn.start({ text: 'hi', turnId: 't1' })
   await clock.advance(1100)
-  const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'desktop', component: 'Pane', requestId: 'harness', props: { title: 'Harness', isFocused: false, bodyColumns: 110, placement: 'dock', scroll: { offset: 0, bodyRows: 200 }, view: {} } })
+  const ui = await $.ui.mount({ plugin: 'harness-view', surface: SURFACE, component: 'Pane', requestId: 'harness', props: { title: 'Harness', isFocused: false, bodyColumns: 110, placement: 'dock', scroll: { offset: 0, bodyRows: 200 }, view: {} } })
   await ui.advance(500)
   const tree = await ui.drawn()
   const clients: string[] = []
@@ -52,6 +53,7 @@ test('pane cpu', async ($, on) => {
   const clientRedraws: Record<string, number> = {}
   const lastClient: Record<string, string> = {}
   for (const k of clients) lastClient[k] = JSON.stringify(await ui.drawn({ in: k }))
+  // (The motion reads the wall clock, which the mock clock doesn't move: a stepped part's redraws are counted as timerTicksPerSec, not here.)
   const t0 = performance.now()
   for (let t = 0; t < WINDOW; t += STEP) {
     await clock.advance(STEP)
@@ -76,10 +78,10 @@ test('pane cpu', async ($, on) => {
   for (const k of clients) {
     const p = props[k]
     kinds[p.kind] = (kinds[p.kind] ?? 0) + 1
-    if ((p.kind === 'spin' || p.kind === 'flow') ? p.on : (p.kind === 'live' || p.kind === 'ago')) { timersAlive++; ticks += 1000 / (p.kind === 'live' ? 400 : p.kind === 'ago' ? 1000 : 80) }
+    if ((p.kind === 'spin' || p.kind === 'flow') ? p.on : (p.kind === 'live' || p.kind === 'ago')) { timersAlive++; ticks += 1000 / (p.kind === 'live' ? 400 : p.kind === 'ago' ? 1000 : p.step ? 500 : 80) }
   }
   const totalClient = Object.values(clientRedraws).reduce((a, b) => a + b, 0)
-  console.log('PANE-CPU ' + JSON.stringify({ MODE, shown: SHOWN, clients: clients.length, kinds, timersAlive, timerTicksPerSec: ticks, svgs: svgs.length, animatedSvgs: animSvgs, animateElements: animates, svgBytes: svgs.join('').length, treeRenders30s: renders, clientRedraws30s: totalClient, clientRedrawsPerSec: +(totalClient / 30).toFixed(1), calls, drawMs: +draw.toFixed(2), wallMs: Math.round(wall) }))
+  console.log('PANE-CPU ' + JSON.stringify({ MODE, SURFACE, shown: SHOWN, clients: clients.length, kinds, timersAlive, timerTicksPerSec: ticks, svgs: svgs.length, animatedSvgs: animSvgs, animateElements: animates, svgBytes: svgs.join('').length, treeRenders30s: renders, clientRedraws30s: totalClient, clientRedrawsPerSec: +(totalClient / 30).toFixed(1), calls, drawMs: +draw.toFixed(2), wallMs: Math.round(wall) }))
   await ui.unmount()
   expect(1).toBe(1)
 })

@@ -7,6 +7,7 @@
 #
 #   zsh bin/pane-cpu.sh [idle|busy] [shown|hidden]
 #   CALM=1 zsh bin/pane-cpu.sh busy     (the calm setting on)
+#   SURFACE=terminal CALM=1 zsh bin/pane-cpu.sh busy   (the terminal's pane)
 set -e
 here=${0:A:h:h}
 mode=${1:-busy}
@@ -24,6 +25,6 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT TERM HUP
 {
   print -r -- "const SNAP = $(cat $snap)"
-  sed -e "s/@MODE@/$mode/" -e "s/@SHOWN@/$shown/" -e "s/@CALMENV@/$([[ ${CALM:-0} == 1 ]] && print on || print off)/" $here/bin/pane-cpu.template.tsx
+  sed -e "s/@MODE@/$mode/" -e "s/@SHOWN@/$shown/" -e "s/@SURFACE@/${SURFACE:-desktop}/" -e "s/@CALMENV@/$([[ ${CALM:-0} == 1 ]] && print on || print off)/" $here/bin/pane-cpu.template.tsx
 } > $test_file
 (cd $here && claude plugin test . 2>&1) | grep -a -A8 "PANE-CPU\|(fail)\|error:" || true

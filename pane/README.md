@@ -370,14 +370,24 @@ spinner is a fixed glyph, a line at work stands lit in its colour, a box at
 work has a bolder border, a figure shows its value at once, a new log line
 shows its settled mark; the only part that moves is the `changed 4s ago`
 count, once a second. A pane that isn't shown draws calm too, and its session
-read waits five seconds (the status line's helper count can lag by as much). In the terminal a box at work has a bold border (the main session's loses its dashes while it works) and a line at work its colour. The motion comes back with `off` in
+read waits five seconds (the status line's helper count can lag by as much). In the desktop, and in the terminal with `still`, a box at work has a bold border (the main session's loses its dashes while it works) and a line at work its colour; the terminal's calm steps (below). The motion comes back with `off` in
 `~/.config/wow-addons/harness-calm` (read when the pane opens and every half
 minute while it is shown) or `HARNESS_CALM=off` in the environment, which
-outranks the file. With the motion on, the beat wakes at 400 ms and the count
-at one second, not at each frame. The window being in front or not can't be
-told from the mod API (`UiPane.isShown` is per session): not handled.
-`zsh bin/pane-cpu.sh [idle|busy] [shown|hidden]` counts the cost
-(`CALM=1` for calm).
+outranks the file. `still` in the same
+place (or `HARNESS_CALM=still`) is calm with no stepped motion at all.
+
+**Stepped motion** (2 November 2026, the terminal's calm). Calm alone left the
+terminal pane looking dead (a fixed glyph for every spinner, comets and
+pulses gone). In the terminal, shown, calm keeps the working parts moving on
+a slow beat (`STEP_MS` 500 ms, `hooks/motion.tsx`): spinners turn a notch, a
+working box's comets lap its top and bottom edges (hopping `HOP`, 4 cells a
+beat), the diagram's pulses run (one cell a beat along every line, so the
+chain's lines stay in step on a shared cycle), and the live dot beats (its
+own 400 ms wake, about two redraws a 1.2 s beat, also when idle). Bars, figures and blinks stay still.
+Cost: a busy pane's 24 parts wake about 48 times a second (motion fully on:
+about 280; the pane-cpu run counts them as `timerTicksPerSec`, `SURFACE=terminal`),
+an idle pane's two parts (the count, the beat) about 3.5. A part re-arms its
+timer when its pace changes. The desktop's calm is unchanged (still).
 
 What the pane can't draw: no pixels (bars and meters are block
 characters, an eighth of a cell at best), no charts or trends, no

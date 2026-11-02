@@ -4,6 +4,7 @@ import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 import type { AgentRow, AgentSteps, BoardCard, CheckStamp, HarnessEvent, LiveSession, LockCard, ModelDay, RepoLock, RepoRow, SessionFacts, Snapshot } from '../types'
 import { ago, bar, FRESH_MS, type Moment, momentOf, stance, tokens } from './format'
 import { dispatcherOf, ownProject, scopeSnapshot, summariseOthers } from './scope'
+import { HOP } from './motion'
 import type { MotionProps } from './motion'
 import { BAR_PX, barSvg, EDGE_PX, edgeSvg, LINE_PX, lineSvg, SIDE_PX } from './vector'
 
@@ -34,6 +35,8 @@ const steps = atom({ plugin: 'harness-view', key: 'steps' } as const, {})
 const tick = atom({ plugin: 'harness-view', key: 'tick' } as const, 0)
 // Calm (the default): nothing moves that the page would have to repaint every frame, and a pane not shown draws as calm as well. `~/.config/wow-addons/harness-calm` holding `off` lets the motion run.
 const calm = atom({ plugin: 'harness-view', key: 'calm' } as const, true)
+// Calm in the terminal still steps (a spinner, a comet and a pulse once a beat); `still` in the same file stops even that.
+const still = atom({ plugin: 'harness-view', key: 'still' } as const, false)
 // The main session's turn: the diagram's lines pulse while it runs.
 const turn = atom({ plugin: 'harness-view', key: 'turn' } as const, { isRunning: false, at: null })
 // A helper of this session just done: the diagram's way back to the lead lights up this long, then goes dark.
@@ -604,13 +607,21 @@ export function isCalmSetting(text: string | null): boolean {
   return !/^\s*(off|0|false|no)\s*$/i.test(text ?? '')
 }
 
+/** The calm setting holding `still`: calm with no stepped motion either. */
+export function isStillSetting(text: string | null): boolean {
+  return /^\s*still\s*$/i.test(text ?? '')
+}
+
 async function refreshCalm($: EngineInterface) {
   // HARNESS_CALM (the environment) outranks the file.
   const fromEnv = await $.env.get('HARNESS_CALM')
   const { home } = await familyRoot($)
   const ran = fromEnv ? null : await run($, ['/bin/cat', `${home}/.config/wow-addons/harness-calm`])
-  const isCalm = isCalmSetting(fromEnv || (ran?.exitCode === 0 ? ran.stdout : null))
+  const text = fromEnv || (ran?.exitCode === 0 ? ran.stdout : null)
+  const isCalm = isCalmSetting(text)
+  const isStill = isStillSetting(text)
   if (isChanged('calm', isCalm)) await update($, calm, () => isCalm)
+  if (isChanged('still', isStill)) await update($, still, () => isStill)
 }
 
 /** The shared numbers at the live pace while the pane is shown, at the slow one while it is not. */
@@ -873,7 +884,7 @@ export const register: Register = on => {
     const Svg = e.surface === 'desktop' && 'Svg' in table ? table.Svg : undefined
     // A row between stacked boxes: the desktop's vertical unit is half a line.
     const gapY = e.surface === 'desktop' ? 2 : GAP_Y
-    const [full, error, facts, rows, work, back, , isCalmSet] = await Promise.all([
+    const [full, error, facts, rows, work, back, , isCalmSet, isStillSet] = await Promise.all([
       read($, snapshot),
       read($, snapshotError),
       read($, session),
@@ -882,19 +893,22 @@ export const register: Register = on => {
       read($, handback),
       read($, tick),
       read($, calm),
+      read($, still),
     ])
     // The pane shows its own session's project: that project's rows, usage and helpers, the other projects only in their block.
     const own = await projectOfSession($, full, facts?.id ?? null)
     const snap = full ? scopeSnapshot(full, own) : full
     // A pane not shown draws as calm as a calm one: its timers and animations stop with it.
     const isCalm = isCalmSet || !isShown
+    // Calm in the terminal, shown: spinners, comets and pulses step once a beat (twice a second a part), nothing else moves.
+    const isStepped = isCalm && isShown && isCalmSet && !isStillSet && e.surface === 'terminal'
     const now = await $.clock.now()
     const W = Math.max(32, e.props.bodyColumns)
     const tier = W >= 96 ? 'wide' : W >= 64 ? 'medium' : 'narrow'
 
     // --- motion ------------------------------------------------------------
     // A moving part, drawn by motion.tsx on the drawing thread, or the same standing still.
-    const still = (key: string, p: MotionProps) => {
+    const standing = (key: string, p: MotionProps) => {
       switch (p.kind) {
         case 'spin':
           return (
@@ -946,7 +960,13 @@ export const register: Register = on => {
       }
     }
     // (calm keeps one moving part: a count of seconds, once a second)
-    const motion = (key: string, p: MotionProps) => (Client && (!isCalm || (p.kind === 'ago' && isShown)) ? <Client key={key} module="./motion.tsx" props={p} /> : still(key, p))
+    const motion = (key: string, p: MotionProps) => {
+      if (!Client) return standing(key, p)
+      if (!isCalm || (p.kind === 'ago' && isShown)) return <Client key={key} module="./motion.tsx" props={p} />
+      if (isStepped && (p.kind === 'spin' || p.kind === 'flow')) return <Client key={key} module="./motion.tsx" props={{ ...p, step: true }} />
+      if (isStepped && p.kind === 'live') return <Client key={key} module="./motion.tsx" props={p} />
+      return standing(key, p)
+    }
     // A bar: vector where the surface draws an Svg (block characters overflow a desktop cell), else rolling characters.
     const barOf = (key: string, value: number, max: number, width: number, color: string) => {
       if (!Svg) return motion(key, { kind: 'bar', value, max, width, rest: '▒', color })
@@ -1007,7 +1027,7 @@ export const register: Register = on => {
       // bottom's right to left, so the pair turns the box round. The motion module
       // draws them, the pane doesn't redraw. (On a plain Box at top 0 and bottom 0:
       // one at top -1 inside a bordered Box isn't drawn.)
-      const isLapped = opts.running !== undefined && Client !== undefined && !isCalm
+      const isLapped = opts.running !== undefined && Client !== undefined && (!isCalm || isStepped)
       const bordered = (
         <Box
           key={isLapped ? `${key}-frame` : key}
@@ -1017,7 +1037,7 @@ export const register: Register = on => {
           flexGrow={isLapped ? 1 : undefined}
           paddingX={1}
           justifyContent={opts.middle ? 'center' : 'flex-start'}
-          borderStyle={opts.running !== undefined && isCalm ? 'bold' : opts.dashed ? 'dashed' : 'single'}
+          borderStyle={opts.running !== undefined && isCalm && !isLapped ? 'bold' : opts.dashed ? 'dashed' : 'single'}
           borderColor={color}
           borderDimColor={isLapped ? true : undefined}
         >
@@ -1038,6 +1058,7 @@ export const register: Register = on => {
           on: true,
           color,
           tail: COMET_TAIL,
+          hop: HOP,
         })
       return (
         <Box key={key} flexDirection="column" width={w} flexShrink={0}>

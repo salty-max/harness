@@ -3,8 +3,8 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 
 import type { HarnessEvent, Snapshot } from '../types'
 import { FRESH_MS, tokens } from './format'
-import { FRAME_MS, lit, periodOf } from './motion'
-import { edgeText, isCalmSetting, pulsePath } from './register'
+import { FRAME_MS, HOP, lit, periodOf, STEP_MS } from './motion'
+import { edgeText, isCalmSetting, isStillSetting, pulsePath } from './register'
 import { barSvg, edgeSvg, lap, lineSvg } from './vector'
 
 const AT = 1_760_940_000_000
@@ -485,6 +485,10 @@ describe('calm', () => {
     expect(isCalmSetting(null)).toBe(true)
     expect(isCalmSetting('')).toBe(true)
     expect(isCalmSetting('on\n')).toBe(true)
+    expect(isCalmSetting('still\n')).toBe(true)
+    expect(isStillSetting('still\n')).toBe(true)
+    expect(isStillSetting('on')).toBe(false)
+    expect(isStillSetting(null)).toBe(false)
     for (const off of ['off', 'off\n', ' 0 ', 'false', 'No']) expect(isCalmSetting(off)).toBe(false)
   })
 
@@ -521,16 +525,45 @@ describe('calm', () => {
     await ui.unmount()
   })
 
-  test('in the terminal a calm box at work has a bold border, a line at work its colour, no comet', async ($, on) => {
+  test('in the terminal a calm pane at work steps: spinners, comets and pulses on a beat, nothing else', async ($, on) => {
     world(on, { calm: 'on', surface: 'terminal' })
     await $.session.start({ cwd: FAMILY, surface: 'terminal', isInteractive: true })
     const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'terminal', ...PANE })
     await ui.press({ key: 'refresh' })
     await $.turn.start({ text: 'hi', turnId: 't1' })
     const tree = JSON.stringify(await ui.drawn())
-    expect(tree).toContain('"borderStyle":"bold"')
+    // The box at work wears the comet laps over its dimmed border, not the bold one.
+    expect(tree).not.toContain('"borderStyle":"bold"')
+    expect(tree).toContain('"borderDimColor":true')
+    const { clients } = partsOf(await ui.drawn())
+    expect(new Set(clients.map(c => c.kind))).toEqual(new Set(['ago', 'flow', 'spin', 'live']))
+    // Every moving part is stepped but the seconds and the beat: a bar, a figure, a blink stay still.
+    expect(tree.match(/"kind":"(spin|flow)"[^}]*?"step":true/g)?.length).toBe(clients.filter(c => c.kind === 'spin' || c.kind === 'flow').length)
+    // A box's edges hop, the diagram's lines (one chain, one cycle) step one cell a beat, so the pulse stays in step along them.
+    const flows = JSON.stringify(await ui.drawn()).match(/"kind":"flow"[^}]*?"step":true(,"hop":\d+)?/g) ?? []
+    const hopped = flows.filter(f => f.includes('"hop":'))
+    expect(hopped.length).toBeGreaterThan(0)
+    for (const f of hopped) expect(f).toContain(`"hop":${HOP}`)
+    expect(flows.length).toBeGreaterThan(hopped.length)
+    await ui.unmount()
+  })
+
+  test('still in the setting stops the stepped motion too: a bold border, a line in its colour', async ($, on) => {
+    world(on, { calm: 'still', surface: 'terminal' })
+    await $.session.start({ cwd: FAMILY, surface: 'terminal', isInteractive: true })
+    const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'terminal', ...PANE })
+    await ui.press({ key: 'refresh' })
+    await $.turn.start({ text: 'hi', turnId: 't1' })
+    expect(JSON.stringify(await ui.drawn())).toContain('"borderStyle":"bold"')
     expect(partsOf(await ui.drawn()).clients.filter(c => c.kind !== 'ago')).toEqual([])
     await ui.unmount()
+  })
+
+  test('a stepped part wakes twice a second and hops a comet several cells a beat', () => {
+    expect(periodOf({ kind: 'spin', on: true, step: true })).toBe(STEP_MS)
+    expect(periodOf({ kind: 'flow', text: '', path: [], start: 0, cycle: 1, on: true, color: 'x', step: true })).toBe(STEP_MS)
+    expect(STEP_MS).toBeGreaterThanOrEqual(400)
+    expect(HOP).toBeGreaterThan(1)
   })
 
   test('a pane not shown draws no motion even with calm off, and moves again once shown', async ($, on) => {
