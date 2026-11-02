@@ -379,12 +379,11 @@ place (or `HARNESS_CALM=still`) is calm with no stepped motion at all.
 **Stepped motion** (2 November 2026, the terminal's calm). Calm alone left the
 terminal pane looking dead (a fixed glyph for every spinner, comets and
 pulses gone). In the terminal, shown, calm keeps the working parts moving on
-a slow beat (`STEP_MS` 500 ms, `hooks/motion.tsx`): spinners turn a notch, a
-working box's comets lap its top and bottom edges (hopping `HOP`, 4 cells a
-beat), the diagram's pulses run (one cell a beat along every line, so the
+a slow beat (`STEP_MS` 500 ms, `hooks/motion.tsx`; a working box is highlighted by a bold border, no comet laps it, a timer a box, and no border is dashed since 2 November 2026): spinners turn a notch, the
+diagram's pulses run (one cell a beat along every line, so the
 chain's lines stay in step on a shared cycle), and the live dot beats (its
 own 400 ms wake, about two redraws a 1.2 s beat, also when idle). Bars, figures and blinks stay still.
-Cost: a busy pane's 24 parts wake about 48 times a second (motion fully on:
+Cost: a busy pane (12 spinners, 4 pulse lines) wakes about 35 times a second (motion fully on:
 about 280; the pane-cpu run counts them as `timerTicksPerSec`, `SURFACE=terminal`),
 an idle pane's two parts (the count, the beat) about 3.5. A part re-arms its
 timer when its pace changes. The desktop's calm is unchanged (still).

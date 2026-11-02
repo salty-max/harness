@@ -410,7 +410,7 @@ test('on the desktop a box has one vector frame at rest and at work, the comet o
     expect(top?.type).toBe('Svg')
     return top?.props?.source ?? ''
   }
-  expect(await topOf()).toContain('stroke-dasharray')
+  expect(await topOf()).not.toContain('stroke-dasharray')
   expect(await topOf()).not.toContain('repeatCount')
   await $.turn.start({ text: 'hi', turnId: 't1' })
   expect(await topOf()).toContain('repeatCount="indefinite"')
@@ -443,10 +443,10 @@ test("in the terminal a box at work wears a comet on its top and bottom edges, t
   await $.turn.start({ text: 'hi', turnId: 't1' })
   const top = await edge('top')
   const bottom = await edge('bottom')
-  // The dashed box's edges, a comet each: the top's left to right, the bottom's right to left.
+  // The box's edges, a comet each: the top's left to right, the bottom's right to left.
   expect(top.kind).toBe('flow')
   expect(top.on).toBe(true)
-  expect(top.text).toBe(` ${'╌'.repeat(top.text.length - 2)} `)
+  expect(top.text).toBe(`┌${'─'.repeat(top.text.length - 2)}┐`)
   expect(top.path[0]).toEqual([0])
   expect(bottom.path[0]).toEqual([top.text.length - 1])
   expect(top.cycle).toBe(bottom.cycle)
@@ -532,19 +532,16 @@ describe('calm', () => {
     await ui.press({ key: 'refresh' })
     await $.turn.start({ text: 'hi', turnId: 't1' })
     const tree = JSON.stringify(await ui.drawn())
-    // The box at work wears the comet laps over its dimmed border, not the bold one.
-    expect(tree).not.toContain('"borderStyle":"bold"')
-    expect(tree).toContain('"borderDimColor":true')
+    // The box at work is highlighted by its bold border: no comet laps (a timer a box), no dashes.
+    expect(tree).toContain('"borderStyle":"bold"')
+    expect(tree).not.toContain('"borderDimColor":true')
     const { clients } = partsOf(await ui.drawn())
     expect(new Set(clients.map(c => c.kind))).toEqual(new Set(['ago', 'flow', 'spin', 'live']))
     // Every moving part is stepped but the seconds and the beat: a bar, a figure, a blink stay still.
     expect(tree.match(/"kind":"(spin|flow)"[^}]*?"step":true/g)?.length).toBe(clients.filter(c => c.kind === 'spin' || c.kind === 'flow').length)
-    // A box's edges hop, the diagram's lines (one chain, one cycle) step one cell a beat, so the pulse stays in step along them.
-    const flows = JSON.stringify(await ui.drawn()).match(/"kind":"flow"[^}]*?"step":true(,"hop":\d+)?/g) ?? []
-    const hopped = flows.filter(f => f.includes('"hop":'))
-    expect(hopped.length).toBeGreaterThan(0)
-    for (const f of hopped) expect(f).toContain(`"hop":${HOP}`)
-    expect(flows.length).toBeGreaterThan(hopped.length)
+    // The diagram's lines (one chain, one cycle) step one cell a beat, so the pulse stays in step along them; no box edge is a flow.
+    expect(tree).not.toContain('"hop"')
+    expect(tree).not.toContain('"key":"session-top"')
     await ui.unmount()
   })
 

@@ -4,7 +4,6 @@ import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 import type { AgentRow, AgentSteps, BoardCard, CheckStamp, HarnessEvent, LiveSession, LockCard, ModelDay, RepoLock, RepoRow, SessionFacts, Snapshot } from '../types'
 import { ago, bar, FRESH_MS, type Moment, momentOf, stance, tokens } from './format'
 import { dispatcherOf, ownProject, scopeSnapshot, summariseOthers } from './scope'
-import { HOP } from './motion'
 import type { MotionProps } from './motion'
 import { BAR_PX, barSvg, EDGE_PX, edgeSvg, LINE_PX, lineSvg, SIDE_PX } from './vector'
 
@@ -1006,7 +1005,7 @@ export const register: Register = on => {
     // the terminal's own border, a comet on its top and bottom edges while it works.
     const frame = (key: string, w: number, color: string, children: RenderChildren, opts: { dashed?: boolean; middle?: boolean; running?: { lines: number } } = {}) => {
       if (Svg) {
-        const edge = { cells: w, lines: opts.running?.lines ?? 6, color, nowMs: now, isRunning: opts.running !== undefined, isDashed: opts.dashed, isCalm }
+        const edge = { cells: w, lines: opts.running?.lines ?? 6, color, nowMs: now, isRunning: opts.running !== undefined, isDashed: false, isCalm }
         return (
           <Box key={key} flexDirection="column" width={w} flexShrink={0}>
             <Svg source={edgeSvg('top', edge)} alt="a box's top edge" height={EDGE_PX} />
@@ -1027,7 +1026,7 @@ export const register: Register = on => {
       // bottom's right to left, so the pair turns the box round. The motion module
       // draws them, the pane doesn't redraw. (On a plain Box at top 0 and bottom 0:
       // one at top -1 inside a bordered Box isn't drawn.)
-      const isLapped = opts.running !== undefined && Client !== undefined && (!isCalm || isStepped)
+      const isLapped = opts.running !== undefined && Client !== undefined && !isCalm
       const bordered = (
         <Box
           key={isLapped ? `${key}-frame` : key}
@@ -1037,7 +1036,7 @@ export const register: Register = on => {
           flexGrow={isLapped ? 1 : undefined}
           paddingX={1}
           justifyContent={opts.middle ? 'center' : 'flex-start'}
-          borderStyle={opts.running !== undefined && isCalm && !isLapped ? 'bold' : opts.dashed ? 'dashed' : 'single'}
+          borderStyle={opts.running !== undefined && isCalm ? 'bold' : 'single'}
           borderColor={color}
           borderDimColor={isLapped ? true : undefined}
         >
@@ -1051,14 +1050,13 @@ export const register: Register = on => {
       const edge = (side: 'top' | 'bottom') =>
         motion(`${key}-${side}`, {
           kind: 'flow',
-          text: edgeText(w, opts.dashed === true, side),
+          text: edgeText(w, false, side),
           path: side === 'top' ? across : [...across].reverse(),
           start: 0,
           cycle,
           on: true,
           color,
           tail: COMET_TAIL,
-          hop: HOP,
         })
       return (
         <Box key={key} flexDirection="column" width={w} flexShrink={0}>

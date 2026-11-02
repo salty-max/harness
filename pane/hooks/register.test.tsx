@@ -270,8 +270,8 @@ test('the pane draws the board, the checks and the day on every surface', async 
         ],
       ])
       await has('opus:reviewer')
-      // The main session's boxes dashed, as in the mock-up: the terminal's border, the desktop's vector edges.
-      expect(JSON.stringify(await ui.drawn())).toContain(surface === 'terminal' ? '"borderStyle":"dashed"' : 'stroke-dasharray')
+      // No box is dashed any more (2 November 2026): a dash was a cost for nothing a bold border at work doesn't say.
+      expect(JSON.stringify(await ui.drawn())).not.toMatch(/"borderStyle":"dashed"|stroke-dasharray/)
       await ui.unmount()
     }
   }
