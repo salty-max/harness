@@ -854,3 +854,86 @@ test('a headless run reads nothing, /harness opens the pane and reads anew', asy
   expect(runs.some(argv => argv.includes('--fresh'))).toBe(true)
   await ui.unmount()
 })
+
+test("a pane is its project's: its rows alone, the other projects in a block with their dispatcher and a Go", async ($, on) => {
+  const session = (id: string, project: string, extra: Partial<NonNullable<Snapshot['sessions']>[number]>) => ({
+    project,
+    id,
+    pid: 1,
+    name: id,
+    status: 'idle',
+    waitingFor: null,
+    since: SNAPSHOT.at - 3_600_000,
+    entrypoint: 'claude-desktop',
+    link: `claude://claude.ai/epitaxy/local_${id}`,
+    model: 'claude-opus-5-5',
+    helpers: [],
+    skills: [],
+    ...extra,
+  })
+  const model = (m: string, calls: number) => ({ model: m, calls, input: 1000, cacheRead: 0, cacheWrite: 0, output: 1000 })
+  const snap = {
+    ...SNAPSHOT,
+    repos: [{ ...SNAPSHOT.repos[0]!, project: 'family' }, { name: 'puzzles', head: 'aaaaaaa', check: null, failed: null, review: null, ahead: 0, project: 'puzzles' }],
+    board: [
+      { ...SNAPSHOT.board[0]!, id: 'fam-card', title: 'Family card', project: 'family' },
+      { ...SNAPSHOT.board[0]!, id: 'puz-card', title: 'Puzzle card', project: 'puzzles', status: 'waiting-review' },
+    ],
+    events: [],
+    usage: { day: SNAPSHOT.usage.day, models: [model('claude-opus-5-5', 9)], byProject: { family: [model('claude-opus-5-5', 5)], puzzles: [model('claude-sonnet-5-5', 4)] }, files: 2 },
+    sessions: [
+      session('self', 'puzzles', { name: 'Puzzle work', parent: 'dispatch' }),
+      session('dispatch', 'puzzles', { name: 'Puzzle dispatch' }),
+      session('famdisp', 'family', { name: 'Batch release planning', skills: [{ name: 'child', by: 'user', at: SNAPSHOT.at, count: 1 }] }),
+      session('famkid', 'family', { name: 'Kid', parent: 'famdisp', status: 'waiting', waitingFor: 'permission prompt' }),
+      session('famterm', 'family', { name: 'Terminal one', entrypoint: 'cli', link: null }),
+    ],
+    projects: [{ name: 'family', dir: '/Users/someone/code/wow-addons', isFamily: true }, { name: 'puzzles', dir: '/Users/someone/code/warcraft-puzzles', isFamily: false }],
+  } as unknown as Snapshot
+  const opened: string[][] = []
+  mock.env(on, { HOME: '/Users/someone', HARNESS_CALM: 'off' })
+  const clock = mock.clock(on, { now: SNAPSHOT.at })
+  on('process.run', ($, e) => {
+    if (e.argv[0] === '/usr/bin/open') {
+      opened.push([...e.argv])
+      return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
+    return { value: { exitCode: 0, stdout: JSON.stringify(snap), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('command.register', ($, e) => ({ value: { command: e.name } }))
+  on('session.root', () => ({ value: '/Users/someone/code/warcraft-puzzles' }))
+  on('session.surfaces', () => ({ value: ['desktop'] }))
+  on('session.id', () => ({ value: 'self' }))
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('session.usage', () => ({ value: { context: { tokens: 1000, window: 1_000_000, percent: 0 }, rateLimits: [] } }))
+  on('settings.read', () => ({ value: {} }))
+  on('agent.list', () => ({ value: [] }))
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/Users/someone/code/warcraft-puzzles', surface: 'desktop', isInteractive: true })
+  await clock.advance(1100)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'harness-view', surface, ...PANE, props: { ...PANE.props, bodyColumns: 110 } })
+    await ui.press({ key: 'refresh' })
+    const has = async (text: string | RegExp, isThere = true) => expect([surface, text, (await ui.find({ text })) !== undefined]).toEqual([surface, text, isThere])
+    await has('HARNESS · PUZZLES')
+    await has(/^SESSIONS · 2 live in puzzles/)
+    // This project's own: its card, its dispatcher (this session's opener), nothing of the family's.
+    await has('Puzzle card')
+    await has('Family card', false)
+    await has('Puzzle dispatch · claude', false)
+    // The other project, in its block: sessions, who waits, its dispatcher and a Go to it.
+    await has('OTHER PROJECTS · 1')
+    await has(/3 live/)
+    await has(/1 waiting on you/)
+    await has('Batch release planning')
+    opened.length = 0
+    await ui.press({ key: 'other-family-go' })
+    expect([surface, opened]).toEqual([surface, [['/usr/bin/open', 'claude://claude.ai/epitaxy/local_famdisp']]])
+    opened.length = 0
+    await ui.press({ key: 'own-go' })
+    expect([surface, opened]).toEqual([surface, [['/usr/bin/open', 'claude://claude.ai/epitaxy/local_dispatch']]])
+    await ui.unmount()
+  }
+})

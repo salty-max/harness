@@ -149,12 +149,15 @@ export type Snapshot = {
   at: number
   repos: RepoRow[]
   board: BoardCard[]
-  usage: { day: string; models: ModelDay[]; files: number }
+  /** `models` is every transcript on the machine; `byProject` the same for each project's own folders (a worktree included). */
+  usage: { day: string; models: ModelDay[]; byProject?: Record<string, ModelDay[]>; files: number }
   /** Today's events, newest first. */
   events: HarnessEvent[]
   /** The family's helpers, and each helper's runs today by its type. */
   helpers: HelperDef[]
   helperDay: Record<string, HelperDay>
+  /** The same for each project alone. */
+  helperDayBy?: Record<string, Record<string, HelperDay>>
   /** The live sessions in the family folder; absent when the registry can't be read (or an older snapshot). */
   sessions?: LiveSession[]
   /** The q.ts runs going on, the oldest first; absent in an older snapshot. */
@@ -164,7 +167,7 @@ export type Snapshot = {
   /** Sessions that wrote in a repository their cards don't hold, lately; absent like `locks`. */
   slips?: Slip[]
   /** The projects read, the family first; absent with one (or in an older snapshot). */
-  projects?: { name: string; isFamily: boolean }[]
+  projects?: { name: string; dir?: string; isFamily: boolean }[]
 }
 
 /** The session the panel is drawn in. */

@@ -3,6 +3,7 @@ import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
 import type { AgentRow, AgentSteps, BoardCard, CheckStamp, HarnessEvent, LiveSession, LockCard, ModelDay, RepoLock, RepoRow, SessionFacts, Snapshot } from '../types'
 import { ago, bar, FRESH_MS, type Moment, momentOf, stance, tokens } from './format'
+import { dispatcherOf, ownProject, scopeSnapshot, summariseOthers } from './scope'
 import type { MotionProps } from './motion'
 import { BAR_PX, barSvg, EDGE_PX, edgeSvg, LINE_PX, lineSvg, SIDE_PX } from './vector'
 
@@ -705,8 +706,18 @@ async function refreshAgents($: EngineInterface) {
   await refreshStatus($)
 }
 
+/** The session's project: from its own row, the session's root asked only when the row isn't there yet and there is a choice. */
+async function projectOfSession($: EngineInterface, snap: Snapshot | null, id: string | null): Promise<string | undefined> {
+  const own = ownProject(snap, id)
+  if (own || !snap?.projects || snap.projects.length < 2) return own
+  return ownProject(snap, id, await $.session.root().catch(() => null))
+}
+
 async function refreshStatus($: EngineInterface) {
-  const [snap, rows, facts] = await Promise.all([read($, snapshot), read($, agents), read($, session)])
+  const [full, rows, facts] = await Promise.all([read($, snapshot), read($, agents), read($, session)])
+  // This project's numbers, but the sessions waiting on you in every project (nothing else says so).
+  const own = await projectOfSession($, full, facts?.id ?? null)
+  const snap = full && own ? { ...scopeSnapshot(full, own), sessions: full.sessions } : full
   const line = statusLine(snap, rows.filter(a => a.status === 'running').length, facts?.id ?? null, facts ? { model: facts.lastModel ?? facts.model, setting: facts.settings.model } : null)
   if (isChanged('status', line)) $.ui.status(line)
 }
@@ -862,7 +873,7 @@ export const register: Register = on => {
     const Svg = e.surface === 'desktop' && 'Svg' in table ? table.Svg : undefined
     // A row between stacked boxes: the desktop's vertical unit is half a line.
     const gapY = e.surface === 'desktop' ? 2 : GAP_Y
-    const [snap, error, facts, rows, work, back, , isCalmSet] = await Promise.all([
+    const [full, error, facts, rows, work, back, , isCalmSet] = await Promise.all([
       read($, snapshot),
       read($, snapshotError),
       read($, session),
@@ -872,6 +883,9 @@ export const register: Register = on => {
       read($, tick),
       read($, calm),
     ])
+    // The pane shows its own session's project: that project's rows, usage and helpers, the other projects only in their block.
+    const own = await projectOfSession($, full, facts?.id ?? null)
+    const snap = full ? scopeSnapshot(full, own) : full
     // A pane not shown draws as calm as a calm one: its timers and animations stop with it.
     const isCalm = isCalmSet || !isShown
     const now = await $.clock.now()
@@ -1178,7 +1192,7 @@ export const register: Register = on => {
       <Box key="header" flexDirection="column" width={W}>
         <Box justifyContent="space-between" alignItems="center" width={W}>
           {runs('title', [
-            [isShort ? 'HARNESS' : snap?.projects ? 'HARNESS · ' + snap.projects.map(p => p.name.toUpperCase()).join(' + ') : 'WOW-ADDONS HARNESS', { bold: true, fixed: true }],
+            [isShort ? 'HARNESS' : own ? 'HARNESS · ' + own.toUpperCase() : snap?.projects ? 'HARNESS · ' + snap.projects.map(p => p.name.toUpperCase()).join(' + ') : 'WOW-ADDONS HARNESS', { bold: true, fixed: true }],
             worst && worst.percentUsed >= 80 ? [` · ${limitName(worst.kind, isShort)} at ${Math.round(worst.percentUsed)}%`, { color: limitColor(worst.percentUsed), bold: true }] : null,
           ])}
           <Box flexShrink={0} alignItems="center">
@@ -1720,6 +1734,7 @@ export const register: Register = on => {
     // does now, waiting on you first, with its card and an Open for a desktop one.
     const sessionsBox = (w: number) => {
       const inner = w - 4
+      const ownDispatcher = dispatcherOf(live, selfId)
       const asking = live.filter(x => x.status === 'waiting' && x.id !== selfId).length
       const busy = live.filter(x => x.status === 'busy').length
       const isWide = inner >= 72
@@ -1774,15 +1789,61 @@ export const register: Register = on => {
         'inactive',
         <>
           <Box justifyContent="space-between">
-            {line(inner >= 40 ? `SESSIONS · ${live.length} live in ${snap?.projects ? (snap.projects.length > 1 ? `${snap.projects.length} projects` : snap.projects[0].name) : 'the family folder'}` : `SESSIONS · ${live.length}`, { bold: true })}
+            {line(inner >= 40 ? `SESSIONS · ${live.length} live in ${own ?? (snap?.projects ? (snap.projects.length > 1 ? `${snap.projects.length} projects` : snap.projects[0].name) : 'the family folder')}` : `SESSIONS · ${live.length}`, { bold: true })}
             {runs('sessions-counts', [
               asking > 0 ? [`${asking} waiting on you`, { color: PALETTE.wait }] : null,
               asking > 0 && busy > 0 ? [' · ', { dim: true }] : null,
               busy > 0 ? [`${busy} busy`, { color: PALETTE.ask }] : null,
             ])}
           </Box>
+          {ownDispatcher && ownDispatcher.id !== selfId ? (
+            <Box key="own-dispatcher">
+              {cell(11, line('dispatcher', { dim: true }))}
+              {dispatchCell('own', ownDispatcher, inner - 11)}
+            </Box>
+          ) : null}
           <Box flexDirection="column">
             {!snap?.sessions ? line(snap ? "can't read Claude Code's sessions (~/.claude/sessions)" : 'reading…', { dim: true }) : live.length === 0 ? line('none', { dim: true }) : groupSessions(live).map(row)}
+          </Box>
+        </>,
+      )
+    }
+
+    // A project's dispatcher: its name and a Go that brings the session up on the desktop; a background session is joined by
+    // name, a terminal one has no window to bring up from here.
+    const dispatchCell = (key: string, d: LiveSession | null, w: number) => {
+      if (!d) return cell(w, line('no live dispatcher', { dim: true }))
+      const how = d.id === selfId ? 'this session' : d.link ? null : d.background ? `claude attach ${/\s/.test(d.name) ? `"${d.name}"` : d.name}` : 'a terminal session'
+      return cell(w, <Box key={key} minWidth={0}>
+        <Box flexGrow={1} flexShrink={1} minWidth={0}>{line(`${d.name}${how ? ` · ${how}` : ''}`, { bold: d.status === 'waiting', color: d.status === 'waiting' ? PALETTE.wait : undefined })}</Box>
+        {!how && d.link ? <Box flexShrink={0} marginLeft={1}><Button key={`${key}-go`} label="Go" onPress={() => void openSession($, d.link as string)} /></Box> : null}
+      </Box>)
+    }
+    // The other projects under the harness: what goes on there, and the way to its dispatcher.
+    const othersBox = (w: number) => {
+      const others = summariseOthers(full, own, c => WAITING({ status: c } as BoardCard))
+      if (others.length === 0) return null
+      const inner = w - 4
+      const [nameW = 14, factsW = 22] = fit([Math.max(...others.map(o => o.name.length)) + 1, 24], inner, 12)
+      const dispatchW = Math.max(10, inner - nameW - factsW)
+      return frame(
+        'others',
+        w,
+        'inactive',
+        <>
+          {line(`OTHER PROJECTS · ${others.length}`, { bold: true })}
+          <Box flexDirection="column">
+            {others.map(o => (
+              <Box key={`other-${o.name}`} alignItems="center">
+                {cell(nameW, line(o.name, { bold: o.waiting > 0 }))}
+                {cell(factsW, runs(`other-${o.name}-facts`, [
+                  [`${o.live} live`, { dim: o.live === 0 }],
+                  o.waiting > 0 ? [` · ${o.waiting} waiting on you`, { color: PALETTE.wait }] : null,
+                  o.cards > 0 ? [` · ${o.cards} card${o.cards > 1 ? 's' : ''} waiting`, { color: PALETTE.wait }] : null,
+                ]))}
+                {dispatchCell(`other-${o.name}`, o.dispatcher, dispatchW)}
+              </Box>
+            ))}
           </Box>
         </>,
       )
@@ -1792,6 +1853,7 @@ export const register: Register = on => {
       tier === 'narrow' || W < 80 ? (
         <Box key="ledger" flexDirection="column" width={W} marginTop={gapY} gap={gapY}>
           {sessionsBox(W)}
+          {othersBox(W)}
           {locksBox(W)}
           {todayBox(W)}
           {boardBox(W)}
@@ -1800,6 +1862,7 @@ export const register: Register = on => {
       ) : (
         <Box key="ledger" flexDirection="column" width={W} marginTop={gapY} gap={gapY}>
           {sessionsBox(W)}
+          {othersBox(W)}
           {locksBox(W)}
           <Box width={W}>
             {todayBox(todayW)}

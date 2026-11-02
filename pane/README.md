@@ -34,15 +34,49 @@ fall back to HEAD alone and the plain card parser. The repository names are
 the pane's keys: two projects never share one.
 
 Every row of the snapshot (repository, card, event, session, gate, lock,
-slip) carries its `project`; `projects` lists them when there are several.
-What the pane draws of it: the title (`HARNESS · WOW-ADDONS + WARCRAFT-PUZZLES`),
-`SESSIONS · 5 live in 2 projects`, and a session of another project than
-the family's is prefixed with it. The rest is one list across projects (the
-gates, the board, the repositories, the log): a standalone project's repository
-and its cards already say its name. Each project's lock is its own board's.
-The family's own parts (the kit, the addons) are the family's repositories
-and appear as before; nothing in the pane is drawn for a project that
-has no such thing. Which sessions show the pane is decided by the mod without a snapshot and
+slip) carries its `project`; `projects` lists them (name, folder) when there
+are several, and `usage.byProject` and `helperDayBy` split the day's tokens
+and the helpers' runs the same way (a transcript row belongs to the project
+whose folder its `cwd` is under, a worktree included; `usage.models` stays the
+whole machine's, transcripts outside every project included).
+
+**A pane is its session's project** (2 November 2026; it merged every project
+until then). `ownProject` in `hooks/scope.ts` takes it from the session's own
+row in the snapshot (the registry's `cwd` against each root, as every row is
+placed), else from the session's root against the projects' folders, and
+`scopeSnapshot` keeps that project's rows alone (repositories, cards, events,
+sessions, gates, locks, slips, today's tokens, the helpers' days), once per
+draw on the snapshot already read: no second read, no second poll, and the
+atoms hold the whole snapshot, so a draw only follows a real change. The title
+is `HARNESS · PUZZLES`, the Sessions box says `live in puzzles`, and nothing
+of another project is mixed in. With one project nothing is scoped. The
+family's own parts (the kit, the addons) are the family's repositories and
+appear in its pane only.
+
+**Other projects** have a block of their own under the Sessions box
+(`OTHER PROJECTS · 1`, drawn only with another project): per project its live
+sessions, how many wait on you, how many cards wait on you (test, review,
+a push's go), and its **dispatcher** with a **Go** button. The status line
+keeps the sessions waiting on you across every project (nothing else says
+so), the rest of it is this project's.
+
+**The dispatcher** (`dispatcherOf`, from the live sessions alone, no schema)
+is the session a project's tasks are opened from: for this session, the root
+of its own opener chain (a child goes to the session that opened it); else a
+session nobody opened that used the `child` skill (one the user typed `/child`
+in first), else the one nobody opened with the most live children; none when
+no session opened another and none used the skill (`no live dispatcher`). Go
+does what Open does, hands the desktop the session's own link
+(`/usr/bin/open claude://claude.ai/epitaxy/<id>`). The mod API has no call
+to focus or open another session (checked 2 November 2026 in the types: no
+session, focus or link noun reaches past the mod's own sites), so the link
+through macOS is the way, the one the Open buttons use. A dispatcher that is a terminal session has no window
+to bring up (`a terminal session`), a background one (`claude --bg`) shows the
+command to join it (`claude attach <name>`, the name in quotes when it has spaces), this session's own says `this
+session`. The Sessions box shows the dispatcher of this project in its own row
+under its header, when it isn't this session.
+
+Which sessions show the pane is decided by the mod without a snapshot and
 without bun: the session folder is under the family, or under a folder next
 to it holding a `harness.toml` (one `/bin/test -f`; a worktree,
 `<project>/.claude/worktrees/…`, is under its project, so it counts as it).
@@ -151,7 +185,7 @@ holds the gates, the part of the harness that runs in code.
   commits go out with its next push); the header counts the held ones.
   A quiet repository (stamped with no edits since, nothing to push, not held, no failed
   check) isn't a row: "12 more stamped, nothing to push".
-- **Sessions**: one row a live session, waiting on you first, then busy,
+- **Sessions** (this project's): one row a live session, waiting on you first, then busy,
   then idle: its status (a spinner while busy, amber while it waits on
   you, with what for: "permission prompt"), its title, its main loop's
   last model with `plan` or `build` before it (the mode its transcript

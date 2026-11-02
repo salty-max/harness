@@ -307,8 +307,8 @@ export function readBoard(dir: string, today: string, kit?: CardKit): BoardCard[
 // Opus helpers' calls by moment, 7 each session's model and open helpers, 8 and 9 the
 // session's mode, 10 the skills each session used, 11 left the moments out again, 12 ends a
 // background helper's run at the notice of its end, 13 carries the sessions' skills, open helpers, events and
-// file offsets over midnight from the day before, 14 each session's last Edit or Write by repository)
-const CACHE_VERSION = 15
+// file offsets over midnight from the day before, 14 each session's last Edit or Write by repository, 16 usage and helpers' days by project)
+const CACHE_VERSION = 16
 
 type UsageCache = {
   version: number
@@ -321,12 +321,15 @@ type UsageCache = {
   pending: Record<string, PendingCall>
   events: HarnessEvent[]
   helpers: Record<string, HelperDay>
+  /** Today's tokens and the helpers' days of each project (the pane shows one project's). */
+  byProject?: Record<string, Record<string, ModelDay>>
+  helpersBy?: Record<string, Record<string, HelperDay>>
   sessions: SessionDay
   known: string[]
 }
 
 /** What the transcripts say of each session: its main loop's last model, its helpers started and not yet back (by the Agent call's id). */
-export type SessionDay = { models: Record<string, string>; /** Its permission mode as the transcript last recorded it (`plan`: planning, anything else building). */ modes: Record<string, string>; open: Record<string, { session: string; type: string; at: number; repo?: string | null; model?: string }>; /** The skills each session used today: loaded by the session (a `Skill` call) or typed by the user (`/name`), once each with the last time and a count. */ skills?: Record<string, SkillUse[]>; /** The last time each session (or a helper of it) wrote a file under each family folder: an Edit, Write or NotebookEdit. */ writes?: Record<string, Record<string, number>> }
+export type SessionDay = { models: Record<string, string>; /** Its permission mode as the transcript last recorded it (`plan`: planning, anything else building). */ modes: Record<string, string>; open: Record<string, { session: string; type: string; at: number; repo?: string | null; model?: string; project?: string }>; /** The skills each session used today: loaded by the session (a `Skill` call) or typed by the user (`/name`), once each with the last time and a count. */ skills?: Record<string, SkillUse[]>; /** The last time each session (or a helper of it) wrote a file under each family folder: an Edit, Write or NotebookEdit. */ writes?: Record<string, Record<string, number>> }
 
 /** One skill a session used: `by` says who started it. */
 export type SkillUse = { name: string; by: 'user' | 'session'; at: number; count: number }
@@ -358,26 +361,36 @@ type Row = {
 }
 
 /** Adds one transcript line to the day's sums; a repeated message counts once. */
-export function countLine(line: string, from: number, to: number, seen: Set<string>, models: Record<string, ModelDay>) {
+export function countLine(line: string, from: number, to: number, seen: Set<string>, models: Record<string, ModelDay>, also?: Record<string, ModelDay>) {
   if (!line.includes('"type":"assistant"') || !line.includes('"usage"')) return
   try {
-    countRow(JSON.parse(line), from, to, seen, models)
+    countRow(JSON.parse(line), from, to, seen, models, also)
   } catch {}
 }
 
-function countRow(row: Row, from: number, to: number, seen: Set<string>, models: Record<string, ModelDay>) {
+/** `also` is the same count for the row's project alone. */
+function countRow(row: Row, from: number, to: number, seen: Set<string>, models: Record<string, ModelDay>, also?: Record<string, ModelDay>) {
   const msg = row.message
   if (row.type !== 'assistant' || !msg?.usage || !msg.id || !msg.model || msg.model.startsWith('<')) return
   const at = Date.parse(row.timestamp ?? '')
   if (!(at >= from && at < to) || seen.has(msg.id)) return
   seen.add(msg.id)
   const u = msg.usage
-  const day = (models[msg.model] ??= { model: msg.model, calls: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0 })
-  day.calls += 1
-  day.input += u.input_tokens ?? 0
-  day.cacheRead += u.cache_read_input_tokens ?? 0
-  day.cacheWrite += u.cache_creation_input_tokens ?? 0
-  day.output += u.output_tokens ?? 0
+  for (const sums of [models, also]) {
+    if (!sums) continue
+    const day = (sums[msg.model] ??= { model: msg.model, calls: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0 })
+    day.calls += 1
+    day.input += u.input_tokens ?? 0
+    day.cacheRead += u.cache_read_input_tokens ?? 0
+    day.cacheWrite += u.cache_creation_input_tokens ?? 0
+    day.output += u.output_tokens ?? 0
+  }
+}
+
+/** The project a working directory belongs to (the folder's name, as the rows are tagged), else none. */
+export function projectAt(state: Pick<EventState, 'root' | 'others'>, cwd: string | undefined): string | undefined {
+  const dir = [state.root, ...(state.others ?? [])].find(d => cwd === d || !!cwd?.startsWith(`${d}/`))
+  return dir === undefined ? undefined : basename(dir)
 }
 
 // --- today's events ---------------------------------------------------------
@@ -425,6 +438,9 @@ export type EventState = {
   pending: Record<string, PendingCall>
   events: HarnessEvent[]
   helpers: Record<string, HelperDay>
+  /** The same by project, and the day's tokens by project. */
+  helpersBy?: Record<string, Record<string, HelperDay>>
+  byProject?: Record<string, Record<string, ModelDay>>
   /** Each session's model and open helpers. */
   sessions: SessionDay
   /** Every event id seen today: the events keep only the last 40, a reread line must not come back as new. */
@@ -497,6 +513,14 @@ function helperEnded(state: EventState, id: string, at: number, repo: string | n
   day.ms += ms ?? 0
   day.lastAt = Math.max(day.lastAt, at)
   day.model = model ?? day.model
+  if (state.project && state.helpersBy) {
+    const mine = ((state.helpersBy[state.project] ??= {})[type] ??= { runs: 0, tokens: 0, ms: 0, lastAt: 0, model: null })
+    mine.runs += 1
+    mine.tokens += tokens ?? 0
+    mine.ms += ms ?? 0
+    mine.lastAt = Math.max(mine.lastAt, at)
+    mine.model = model ?? mine.model
+  }
 }
 
 const WRITE_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit'])
@@ -547,7 +571,7 @@ export function eventRow(row: Row, from: number, to: number, state: EventState) 
           ...(model ? { model } : {}),
         })
         // Open until its result comes back (a background one: until the notice of its end).
-        if (row.sessionId && !row.isSidechain) state.sessions.open[block.id] = { session: row.sessionId, type, at, repo: repoIn(), ...(model ? { model } : {}) }
+        if (row.sessionId && !row.isSidechain) state.sessions.open[block.id] = { session: row.sessionId, type, at, repo: repoIn(), project: state.project, ...(model ? { model } : {}) }
       } else if (WRITE_TOOLS.has(String(block.name))) {
         // A file written under a family folder: the session's (a helper's rows carry its parent's id) last write there.
         const path = input.file_path ?? input.notebook_path
@@ -615,6 +639,8 @@ export function scanLine(line: string, from: number, to: number, seen: Set<strin
         return Number.isNaN(n) ? undefined : n
       }
       const status = /<status>(\w+)<\/status>/.exec(notice)?.[1] ?? 'stopped'
+      // (the notice's own line was not read as an event row: the call knows its project)
+      state.project = call.project
       helperEnded(state, id, at, call.repo ?? null, call.type, status, call.model, figure('subagent_tokens'), figure('duration_ms'))
     }
   }
@@ -648,7 +674,10 @@ export function scanLine(line: string, from: number, to: number, seen: Set<strin
   } catch {
     return
   }
-  if (isUsage) countRow(row, state.dayFrom ?? from, to, seen, models)
+  if (isUsage) {
+    const project = projectAt(state, row.cwd)
+    countRow(row, state.dayFrom ?? from, to, seen, models, project && state.byProject ? (state.byProject[project] ??= {}) : undefined)
+  }
   // A session's main loop's last model (a helper's rows are a sidechain).
   if (isUsage && row.sessionId && !row.isSidechain && row.message?.model && !row.message.model.startsWith('<')) state.sessions.models[row.sessionId] = row.message.model
   if (isEvent) eventRow(row, from, to, state)
@@ -771,6 +800,8 @@ function carriedOver(projects: string, cacheDir: string, day: string, fresh: Usa
   }
 }
 
+const bySize = (a: ModelDay, b: ModelDay) => b.input + b.cacheRead + b.cacheWrite + b.output - (a.input + a.cacheRead + a.cacheWrite + a.output)
+
 /** Today's tokens by model and today's helper and prompt events, read on from where the last read stopped. */
 export async function readTranscripts(
   projects: string,
@@ -781,14 +812,14 @@ export async function readTranscripts(
   skillNames?: Set<string>,
   others: string[] = [],
   isFamily = true,
-): Promise<{ usage: Snapshot['usage']; events: HarnessEvent[]; helperDay: Record<string, HelperDay>; sessions: SessionDay }> {
+): Promise<{ usage: Snapshot['usage']; events: HarnessEvent[]; helperDay: Record<string, HelperDay>; helperDayBy: Record<string, Record<string, HelperDay>>; sessions: SessionDay }> {
   const [dayFrom, to] = dayBounds(day)
   // The rows and events read a little before the day starts: a line written across midnight is read once, by its id.
   let from = dayFrom - EDGE_MS
   // (a root added today: what was read before never looked under it, so the day is read again)
   const rootsKey = [isFamily ? '' : 'standalone', ...others].join('|')
   const cachePath = join(cacheDir, `usage-${day}.json`)
-  let cache: UsageCache = { version: CACHE_VERSION, day, files: {}, seen: [], models: {}, pending: {}, events: [], helpers: {}, sessions: { models: {}, modes: {}, open: {}, skills: {} }, known: [] }
+  let cache: UsageCache = { version: CACHE_VERSION, day, files: {}, seen: [], models: {}, pending: {}, events: [], helpers: {}, byProject: {}, helpersBy: {}, sessions: { models: {}, modes: {}, open: {}, skills: {} }, known: [] }
   try {
     const saved = JSON.parse(readFileSync(cachePath, 'utf8')) as UsageCache
     if (saved.day === day && saved.version === CACHE_VERSION && (saved.roots ?? '') === rootsKey) cache = saved
@@ -800,7 +831,9 @@ export async function readTranscripts(
   }
 
   const seen = new Set(cache.seen)
-  const state: EventState = { root, models: helpers, pending: cache.pending, events: cache.events, helpers: cache.helpers, sessions: cache.sessions, known: new Set(cache.known), skillNames, dayFrom, others, isFamily }
+  cache.byProject ??= {}
+  cache.helpersBy ??= {}
+  const state: EventState = { root, models: helpers, pending: cache.pending, events: cache.events, helpers: cache.helpers, helpersBy: cache.helpersBy, byProject: cache.byProject, sessions: cache.sessions, known: new Set(cache.known), skillNames, dayFrom, others, isFamily }
   const files = listTranscripts(projects, from)
   for (const { path, size } of files) {
     const known = cache.files[path]?.offset ?? 0
@@ -813,7 +846,8 @@ export async function readTranscripts(
 
   // A read of a day just over (its day picked before midnight, the work after it) must not move the offsets over the new day's lines: the
   // cache stays as it was and the next day's reads them (the events by their ids).
-  if (Date.now() >= to && Date.now() - to < 60_000) return { usage: { day, models: Object.values(cache.models), files: files.length }, events: state.events, helperDay: cache.helpers, sessions: cache.sessions }
+  const byProject = () => Object.fromEntries(Object.entries(cache.byProject ?? {}).map(([name, m]) => [name, Object.values(m).sort(bySize)]))
+  if (Date.now() >= to && Date.now() - to < 60_000) return { usage: { day, models: Object.values(cache.models), byProject: byProject(), files: files.length }, events: state.events, helperDay: cache.helpers, helperDayBy: cache.helpersBy ?? {}, sessions: cache.sessions }
 
   cache.seen = [...seen]
   cache.events = state.events.sort((a, b) => b.at - a.at).slice(0, MAX_EVENTS)
@@ -829,10 +863,8 @@ export async function readTranscripts(
   writeFileSync(tmp, JSON.stringify(cache))
   renameSync(tmp, cachePath)
 
-  const models = Object.values(cache.models).sort(
-    (a, b) => b.input + b.cacheRead + b.cacheWrite + b.output - (a.input + a.cacheRead + a.cacheWrite + a.output),
-  )
-  return { usage: { day, models, files: files.length }, events: cache.events, helperDay: cache.helpers, sessions: cache.sessions }
+  const models = Object.values(cache.models).sort(bySize)
+  return { usage: { day, models, byProject: byProject(), files: files.length }, events: cache.events, helperDay: cache.helpers, helperDayBy: cache.helpersBy ?? {}, sessions: cache.sessions }
 }
 
 // --- the live sessions --------------------------------------------------------
@@ -1287,10 +1319,11 @@ if (import.meta.main) {
       events: [...out.flatMap(o => o.log), ...transcripts.events.filter(e => e.at >= since)].sort((a, b) => b.at - a.at).slice(0, MAX_EVENTS),
       helpers,
       helperDay: transcripts.helperDay,
+      helperDayBy: transcripts.helperDayBy,
       sessions,
       gates: out.flatMap(o => o.gates),
     }
-    if (roots.length > 1 || !roots[0].isFamily) snapshot.projects = roots.map(r => ({ name: r.name, isFamily: r.isFamily }))
+    if (roots.length > 1 || !roots[0].isFamily) snapshot.projects = roots.map(r => ({ name: r.name, dir: r.dir, isFamily: r.isFamily }))
     if (snapshot.sessions) {
       const opened = out.flatMap(o => readOpened(o.opened))
       const parents = parentsOf(snapshot.sessions, opened, desktopParent(arg('desktop') ?? join(home, 'Library', 'Application Support', 'Claude', 'claude-code-sessions'), cacheDir))
