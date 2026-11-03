@@ -1472,7 +1472,8 @@ export const register: Register = on => {
         const path = pulsePath(l.pulse ?? l.text, l.at, l.how)
         const start = step
         if (l.on) step += path.length + l.pause
-        return { ...l, path, start }
+        // At rest a line is neutral: its colour (a junction dot's, an arrowhead's) is for the lines at work.
+        return { ...l, base: l.on ? l.base : 'inactive', path, start }
       })
       // Nothing but the turn: the pulse goes round the gates' part alone, a beat a second or so.
       // (a beat is 500 ms when stepped: a short pause, or a line at work would sit dark most of the cycle)

@@ -4,7 +4,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { HarnessEvent, Snapshot } from '../types'
 import { FRESH_MS, tokens } from './format'
 import Motion, { FRAME_MS, lit, periodOf, STEP_MS } from './motion'
-import { edgeText, isCalmSetting, isStillSetting, pulsePath, tint } from './register'
+import { edgeText, isCalmSetting, isStillSetting, PALETTE, pulsePath, tint } from './register'
 import { barSvg, edgeSvg, lap, lineSvg } from './vector'
 
 const AT = 1_760_940_000_000
@@ -169,6 +169,35 @@ const svgIn = (tree: unknown, key: string): string => {
   }
   return (find(tree) as { props?: { source?: string } } | undefined)?.props?.source ?? ''
 }
+
+test('with nothing running every line and arrowhead is neutral and still, and at work they take their colours', async ($, on) => {
+  let agents: Agent[] = []
+  const helpers = [
+    { name: 'data-scout', model: 'sonnet', description: 'Answers a data question.' },
+    { name: 'prose-reader', model: 'sonnet', description: 'Reads text cold.' },
+    { name: 'Explore', model: 'haiku', description: 'Searches.' },
+  ]
+  const { clock } = world(on, { snapshot: () => ({ ...snap(), helpers, helperDay: WORKED }), agents: () => agents })
+  await $.session.start({ cwd: FAMILY, surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'refresh' })
+  const keys = ['to-gates-1', 'to-gates-2', 'to-fan', 'fan-out', 'arrows', 'merge', 'to-back']
+  const models = [PALETTE.opus, PALETTE.sonnet, PALETTE.haiku, PALETTE.gate]
+  for (const key of keys) {
+    const source = svgIn(await ui.drawn(), key)
+    expect(source, key).toContain('<')
+    expect(source, key).not.toContain('<animate')
+    for (const colour of models) expect(source, `${key} ${colour}`).not.toContain(colour)
+  }
+  agents = [{ id: 'a1', type: 'data-scout', description: 'A question', status: 'running' }]
+  await ui.press({ key: 'refresh' })
+  await clock.advance(1100)
+  const arrows = svgIn(await ui.drawn(), 'arrows')
+  expect(arrows).toContain('<animate')
+  // (the arrowhead itself, not only the pulse dot, wears the colour at work)
+  expect(arrows).toContain(`Z" fill="${PALETTE.haiku}"`)
+  await ui.unmount()
+})
 
 test('the pulse goes out to the running helpers alone, back to the lead once one is done, then stands still', async ($, on) => {
   let agents: Agent[] = [{ id: 'a1', type: 'data-scout', description: 'A question about the data', status: 'running' }]
@@ -578,6 +607,22 @@ describe('calm', () => {
     expect(tree.match(/"kind":"(spin|flow)"[^}]*?"step":true/g)?.length).toBe(clients.filter(c => c.kind === 'spin' || c.kind === 'flow').length)
     // The diagram's lines (one chain, one cycle) step one cell a beat, so the pulse stays in step along them; no box edge is a flow.
     expect(tree).not.toContain('"key":"session-top"')
+    await ui.unmount()
+  })
+
+  test('in the terminal every line at rest is neutral: no flow carries a colour of its own', async ($, on) => {
+    const helpers = [{ name: 'data-scout', model: 'sonnet', description: 'Answers a data question.' }]
+    world(on, { calm: 'on', surface: 'terminal', snapshot: () => ({ ...snap(), helpers, helperDay: WORKED }) })
+    await $.session.start({ cwd: FAMILY, surface: 'terminal', isInteractive: true })
+    const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'terminal', ...PANE })
+    await ui.press({ key: 'refresh' })
+    const tree = JSON.stringify(await ui.drawn())
+    const flows = tree.match(/\{[^{}]*"kind":"flow"[^{}]*\}/g) ?? []
+    expect(flows.length).toBeGreaterThan(0)
+    for (const f of flows) {
+      expect(f).toContain('"on":false')
+      expect(f).toContain('"base":"inactive"')
+    }
     await ui.unmount()
   })
 
