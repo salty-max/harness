@@ -365,7 +365,7 @@ Idle, everything else stands still. The editor and the phone draw no
 **Calm** (2 November 2026, on by default). The motion above cost a machine
 with several panes open its CPU (`ideas/audit/pane-cpu.md`: about a hundred
 Client redraws a second and 17 endless SMIL images per busy pane, times the
-panes open). Calm draws none of it and removes no information: a working
+panes open). On the terminal and for `still`, calm draws none of it and removes no information: a working
 spinner is a fixed glyph, a line at work stands lit in its colour, a box at
 work has a bolder border, a figure shows its value at once, a new log line
 shows its settled mark; the only part that moves is the `changed 4s ago`
@@ -386,7 +386,21 @@ own 400 ms wake, about two redraws a 1.2 s beat, also when idle). Bars, figures 
 Cost: a busy pane (the spinners and pulse lines at work, 13 timers on 2 November) redraws about 25 times a second, looking at the clock twice that (motion fully on:
 about 280; the pane-cpu run counts them as `timerTicksPerSec`, `SURFACE=terminal`),
 an idle pane's two parts (the count, the beat) about 3.5. A part re-arms its
-timer when its pace changes. The desktop's calm is unchanged (still).
+timer when its pace changes. The desktop's calm is lively (below); only `still` or a hidden pane keeps it still.
+
+**Lively calm** (3 November 2026, the desktop's calm). Calm alone left the
+desktop pane dead while the terminal stepped. On the desktop, shown, calm now
+keeps the working parts moving cheaply (`isLively`, `hooks/register.tsx`):
+spinners on the same 500 ms step (Client, `step: true`) and the live beat on its 400 ms wake, bars
+slide, figures roll and a new log line blinks (one-shots: their timers stop
+when they settle), and the vector parts run a light SMIL, pulse dots on the
+lines at work and a comet on the top and bottom of a box at work (`isLight` in
+`edgeSvg`: no breath, one comet layer, the sides lit and still). Measured with `CALM=1 bin/pane-cpu.sh busy`
+(desktop): 0.6 Client redraws a second (100-127 before calm), 31 timer ticks a
+second (125), 28 `<animate>` elements in 11 endless images (63 in 17 before calm);
+idle: 3.5 ticks, no endless animation. The renderer's own CPU for the SMIL is
+not countable from here: the user's check on the desktop. A pane not shown, or
+`still` in the setting, draws the old calm (nothing moves but the seconds).
 
 What the pane can't draw: no pixels (bars and meters are block
 characters, an eighth of a cell at best), no charts or trends, no

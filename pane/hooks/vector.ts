@@ -153,6 +153,8 @@ export type BoxEdges = {
   isRunning: boolean
   /** Calm: an edge at work stands bolder and still, no breath and no comet. */
   isCalm?: boolean
+  /** Lively calm: the comet runs but the edge doesn't breathe, one comet layer instead of two, the sides still (a lighter page). */
+  isLight?: boolean
 }
 
 /** The lap's length and each side's share of it, from the box's size. */
@@ -181,8 +183,9 @@ export function edgeSvg(side: 'top' | 'right' | 'bottom' | 'left', b: BoxEdges):
   const seen = `<animate attributeName="opacity" values="0;1;0" keyTimes="0;${t0};${t1}" calcMode="discrete" ${timing}/>`
   const run = (attr: string, a: number, z: number) => `<animate attributeName="${attr}" values="${a};${a};${z};${z}" keyTimes="0;${t0};${t1};1" ${timing}/>`
   const breath = `<animate attributeName="stroke-opacity" values=".3;.9;.3" dur="${BREATH_MS}ms" begin="-${Math.round(b.nowMs % BREATH_MS)}ms" repeatCount="indefinite"/>`
-  const edge = `stroke="${c}" stroke-opacity="${b.isRunning && !b.isCalm ? '.5' : '1'}" stroke-width="${b.isRunning && b.isCalm ? '2.2' : '1.2'}" fill="none" vector-effect="non-scaling-stroke"`
+  const edge = `stroke="${c}" stroke-opacity="${b.isRunning && !b.isCalm ? (b.isLight ? '.8' : '.5') : '1'}" stroke-width="${b.isRunning && b.isCalm ? '2.2' : '1.2'}" fill="none" vector-effect="non-scaling-stroke"`
   const moving = (x: string) => (b.isRunning && !b.isCalm ? x : '')
+  const breathing = b.isLight ? '' : breath
   // The comet's tail fades behind it: the gradient runs from its tail (x1, y1) to its head (x2, y2).
   const grad = (x1: number, y1: number, x2: number, y2: number) =>
     `<defs><linearGradient id="g" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"><stop offset="0" stop-color="${c}" stop-opacity="0"/><stop offset="1" stop-color="${c}"/></linearGradient></defs>`
@@ -199,16 +202,18 @@ export function edgeSvg(side: 'top' | 'right' | 'bottom' | 'left', b: BoxEdges):
     const [a, z] = isTop ? [-k, w] : [w, -k]
     const comet = (yy: number, hh: number, o: number) =>
       `<g opacity="0">${seen}<rect x="${a}" y="${yy}" width="${k}" height="${hh}" rx="${hh / 2}" fill="url(#g)" opacity="${o}">${run('x', a, z)}</rect></g>`
-    const glow = isTop ? comet(0, 6, 0.4) + comet(0, 3, 1) : comet(e - 6, 6, 0.4) + comet(e - 3, 3, 1)
+    const glow = b.isLight ? (isTop ? comet(0, 3, 1) : comet(e - 3, 3, 1)) : isTop ? comet(0, 6, 0.4) + comet(0, 3, 1) : comet(e - 6, 6, 0.4) + comet(e - 3, 3, 1)
     return (
       `<svg xmlns="http://www.w3.org/2000/svg" width="${w * 20}" height="${e}" viewBox="0 0 ${w} ${e}" preserveAspectRatio="none">` +
       (isTop ? grad(0, 0, 1, 0) : grad(1, 0, 0, 0)) +
-      `<path d="${path}" ${edge}>${moving(breath)}</path>${moving(glow)}</svg>`
+      `<path d="${path}" ${edge}>${moving(breathing)}</path>${moving(glow)}</svg>`
     )
   }
   // A side: drawn on a 100-high strip the row stretches to the box's height.
   // The comet no longer than half the side, in the strip's hundred units.
   const h = Math.max(1, b.lines) * LINE_PX
+  // Lively calm: the sides stand lit and still, only the top and bottom strips carry the comet (fewer endless images).
+  if (b.isLight) return `<svg xmlns="http://www.w3.org/2000/svg" width="${SIDE_PX}" height="1" viewBox="0 0 ${SIDE_PX} 100" preserveAspectRatio="none"><line x1="${SIDE_PX / 2}" y1="0" x2="${SIDE_PX / 2}" y2="100" ${edge}/></svg>`
   const k = r((Math.min(COMET_PX, h * 0.45) / h) * 100)
   const isRight = side === 'right'
   const [a, z] = isRight ? [-k, 100] : [100, -k]
@@ -217,6 +222,6 @@ export function edgeSvg(side: 'top' | 'right' | 'bottom' | 'left', b: BoxEdges):
     // Its own height a pixel: the row it sits in gives it its height, never the other way.
     `<svg xmlns="http://www.w3.org/2000/svg" width="${SIDE_PX}" height="1" viewBox="0 0 ${SIDE_PX} 100" preserveAspectRatio="none">` +
     (isRight ? grad(0, 0, 0, 1) : grad(0, 1, 0, 0)) +
-    `<line x1="${SIDE_PX / 2}" y1="0" x2="${SIDE_PX / 2}" y2="100" ${edge}>${moving(breath)}</line>${moving(comet)}</svg>`
+    `<line x1="${SIDE_PX / 2}" y1="0" x2="${SIDE_PX / 2}" y2="100" ${edge}>${moving(breathing)}</line>${moving(comet)}</svg>`
   )
 }

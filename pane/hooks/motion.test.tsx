@@ -498,6 +498,20 @@ describe('calm', () => {
     expect(periodOf({ kind: 'flow', text: '', path: [], start: 0, cycle: 1, on: true, color: 'x' })).toBe(FRAME_MS)
   })
 
+  test('the lively desktop runs a light comet: no breath, one comet layer, a brighter edge', () => {
+    const edge = { cells: 40, lines: 6, color: 'green', nowMs: 1234, isRunning: true }
+    const full = edgeSvg('top', edge)
+    const light = edgeSvg('top', { ...edge, isLight: true })
+    expect(full).toContain('stroke-opacity" values')
+    expect(light).not.toContain('values=".3;.9;.3"')
+    expect(light).toContain('repeatCount')
+    expect(light.match(/<rect/g)?.length).toBe(1)
+    expect(edgeSvg('left', { ...edge, isLight: true })).not.toContain('<animate')
+    expect(barSvg(0.5, 0, 'green')).toContain('attributeName="width"')
+    expect(full.match(/<rect/g)?.length).toBe(2)
+    expect(light).toContain('stroke-opacity=".8"')
+  })
+
   test('the vector parts of a calm drawing carry no animation, a box at work stands bolder', () => {
     const edge = { cells: 40, lines: 6, color: 'green', nowMs: 1234, isRunning: true }
     expect(edgeSvg('top', edge)).toContain('repeatCount')
@@ -511,8 +525,25 @@ describe('calm', () => {
     expect(lit).toContain('stroke="green"')
   })
 
-  test('a calm pane at work draws no animation and runs one timer, the count of seconds', async ($, on) => {
+  test('the desktop pane at work is lively: spinners and the beat step, a light comet runs, a figure rolls', async ($, on) => {
     world(on, { calm: 'on' })
+    await $.session.start({ cwd: FAMILY, surface: 'desktop', isInteractive: true })
+    const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'desktop', ...PANE })
+    await ui.press({ key: 'refresh' })
+    await $.turn.start({ text: 'hi', turnId: 't1' })
+    const { clients, svgs } = partsOf(await ui.drawn())
+    const tree = JSON.stringify(await ui.drawn())
+    expect(clients.some(c => c.kind === 'spin')).toBe(true)
+    expect(clients.some(c => c.kind === 'live')).toBe(true)
+    expect(tree.match(/"kind":"spin"[^}]*?"step":true/g)?.length).toBe(clients.filter(c => c.kind === 'spin').length)
+    expect(svgs.some(x => x.includes('repeatCount'))).toBe(true)
+    expect(svgs.some(x => x.includes('values=".3;.9;.3"'))).toBe(false)
+    expect(clients.some(c => c.kind === 'count')).toBe(true)
+    await ui.unmount()
+  })
+
+  test('still in the setting stops the desktop too: nothing moves but the count of seconds', async ($, on) => {
+    world(on, { calm: 'still' })
     await $.session.start({ cwd: FAMILY, surface: 'desktop', isInteractive: true })
     const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'desktop', ...PANE })
     await ui.press({ key: 'refresh' })

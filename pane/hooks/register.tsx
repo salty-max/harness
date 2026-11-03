@@ -32,7 +32,7 @@ const agents = atom({ plugin: 'harness-view', key: 'agents' } as const, [])
 const steps = atom({ plugin: 'harness-view', key: 'steps' } as const, {})
 // Bumped every half minute while the pane is shown: the ages (12m, 3h) drawn again.
 const tick = atom({ plugin: 'harness-view', key: 'tick' } as const, 0)
-// Calm (the default): nothing moves that the page would have to repaint every frame, and a pane not shown draws as calm as well. `~/.config/wow-addons/harness-calm` holding `off` lets the motion run.
+// Calm (the default): little moves (on the desktop a lively calm, in the terminal a stepped one), and a pane not shown or set to `still` draws nothing but the seconds. `~/.config/wow-addons/harness-calm` holding `off` lets the motion run.
 const calm = atom({ plugin: 'harness-view', key: 'calm' } as const, true)
 // Calm in the terminal still steps (a spinner, a comet and a pulse once a beat); `still` in the same file stops even that.
 const still = atom({ plugin: 'harness-view', key: 'still' } as const, false)
@@ -900,6 +900,10 @@ export const register: Register = on => {
     const isCalm = isCalmSet || !isShown
     // Calm in the terminal, shown: spinners, comets and pulses step once a beat (twice a second a part), nothing else moves.
     const isStepped = isCalm && isShown && isCalmSet && !isStillSet && e.surface === 'terminal'
+    // Lively calm on the desktop (the terminal's stepped motion, in the page's idiom): spinners on the 500 ms step, the live beat on its 400 ms wake, bars, figures and blinks as one-shots, and a light SMIL (pulse dots on a line at work, a comet on a box's top and bottom, no breath). Hidden or `still`, it is calm again.
+    const isLively = isCalm && isShown && isCalmSet && !isStillSet && e.surface === 'desktop'
+    // What the vector parts see as calm: the lively desktop runs its (light) SMIL.
+    const isStill = isCalm && !isLively
     const now = await $.clock.now()
     const W = Math.max(32, e.props.bodyColumns)
     const tier = W >= 96 ? 'wide' : W >= 64 ? 'medium' : 'narrow'
@@ -963,13 +967,15 @@ export const register: Register = on => {
       if (!isCalm || (p.kind === 'ago' && isShown)) return <Client key={key} module="./motion.tsx" props={p} />
       if (isStepped && (p.kind === 'spin' || p.kind === 'flow')) return <Client key={key} module="./motion.tsx" props={{ ...p, step: true }} />
       if (isStepped && p.kind === 'live') return <Client key={key} module="./motion.tsx" props={p} />
+      if (isLively && (p.kind === 'spin' || p.kind === 'flow')) return <Client key={key} module="./motion.tsx" props={{ ...p, step: true }} />
+      if (isLively) return <Client key={key} module="./motion.tsx" props={p} />
       return standing(key, p)
     }
     // A bar: vector where the surface draws an Svg (block characters overflow a desktop cell), else rolling characters.
     const barOf = (key: string, value: number, max: number, width: number, color: string) => {
       if (!Svg) return motion(key, { kind: 'bar', value, max, width, rest: '▒', color })
       const share = max > 0 ? Math.min(1, Math.max(0, value / max)) : 0
-      const from = isCalm ? share : (barsShown.get(key) ?? 0)
+      const from = isStill ? share : (barsShown.get(key) ?? 0)
       barsShown.set(key, share)
       return (
         <Box key={key} width={width} flexShrink={0} alignItems="center">
@@ -1003,7 +1009,7 @@ export const register: Register = on => {
     // the terminal's own border, a comet on its top and bottom edges while it works.
     const frame = (key: string, w: number, color: string, children: RenderChildren, opts: { middle?: boolean; running?: { lines: number } } = {}) => {
       if (Svg) {
-        const edge = { cells: w, lines: opts.running?.lines ?? 6, color, nowMs: now, isRunning: opts.running !== undefined, isCalm }
+        const edge = { cells: w, lines: opts.running?.lines ?? 6, color, nowMs: now, isRunning: opts.running !== undefined, isCalm: isStill, isLight: isLively }
         return (
           <Box key={key} flexDirection="column" width={w} flexShrink={0}>
             <Svg source={edgeSvg('top', edge)} alt="a box's top edge" height={EDGE_PX} />
@@ -1475,7 +1481,7 @@ export const register: Register = on => {
         const l = timed.find(d => d.key === key)
         if (!l) return null
         if (Svg) {
-          const source = lineSvg({ text: l.text, how: l.how, at: l.at, color: l.color, base: l.base ?? l.color, on: l.on, from: l.from, to: l.to, cycleMs, phaseMs: now % cycleMs, targets: l.targets, isCalm })
+          const source = lineSvg({ text: l.text, how: l.how, at: l.at, color: l.color, base: l.base ?? l.color, on: l.on, from: l.from, to: l.to, cycleMs, phaseMs: now % cycleMs, targets: l.targets, isCalm: isStill })
           return (
             <Box key={key} width={w} flexShrink={0}>
               <Svg source={source} alt="a line of the diagram" height={LINE_PX} />
