@@ -393,11 +393,13 @@ desktop pane dead while the terminal stepped. On the desktop, shown, calm now
 keeps the working parts moving cheaply (`isLively`, `hooks/register.tsx`):
 spinners on the same 500 ms step (Client, `step: true`) and the live beat on its 400 ms wake, bars
 slide, figures roll and a new log line blinks (one-shots: their timers stop
-when they settle), and the vector parts run a light SMIL, pulse dots on the
-lines at work and a comet on the top and bottom of a box at work (`isLight` in
-`edgeSvg`: no breath, one comet layer, the sides lit and still). Measured with `CALM=1 bin/pane-cpu.sh busy`
+when they settle), and the lines run a light SMIL, pulse dots on the
+lines at work, while a box at work wears a static highlight (a tinted fill, a fifth of
+its colour over the page's dark, and a bold edge, `tint` in `register.tsx`; the
+comet and the breath cost the most and are gone from the desktop: 3 November
+2026). Measured with `CALM=1 bin/pane-cpu.sh busy`
 (desktop): 0.6 Client redraws a second (100-127 before calm), 31 timer ticks a
-second (125), 28 `<animate>` elements in 11 endless images (63 in 17 before calm);
+second (125), 16 `<animate>` elements in 5 endless images, the lines' dots alone (63 in 17 before calm);
 idle: 3.5 ticks, no endless animation. The renderer's own CPU for the SMIL is
 not countable from here: the user's check on the desktop. A pane not shown, or
 `still` in the setting, draws the old calm (nothing moves but the seconds).

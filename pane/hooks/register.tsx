@@ -44,6 +44,15 @@ const HANDBACK_MS = 6_000
 let handbackTimer: { cancel: () => void } | null = null
 // A running box's comets in the terminal: the head and this many cells of trail.
 const COMET_TAIL = 4
+// A box at work on the desktop: a tinted fill (a fifth of its colour over the page's dark) and a bolder edge in its colour. Static, so it costs the page nothing to paint.
+const PAGE_DARK = [30, 30, 28]
+export function tint(color: string, share = 0.2): string {
+  const m = /^#([0-9a-f]{6})$/i.exec(color)
+  if (!m) return `#${PAGE_DARK.map(c => c.toString(16).padStart(2, '0')).join('')}`
+  const n = parseInt(m[1] ?? '000000', 16)
+  const mix = [n >> 16, (n >> 8) & 255, n & 255].map((c, i) => Math.round((PAGE_DARK[i] ?? 0) * (1 - share) + c * share))
+  return `#${mix.map(c => c.toString(16).padStart(2, '0')).join('')}`
+}
 
 /** A box's top or bottom edge as the terminal draws it: Ink's single style. */
 export function edgeText(w: number, side: 'top' | 'bottom'): string {
@@ -900,7 +909,7 @@ export const register: Register = on => {
     const isCalm = isCalmSet || !isShown
     // Calm in the terminal, shown: spinners, comets and pulses step once a beat (twice a second a part), nothing else moves.
     const isStepped = isCalm && isShown && isCalmSet && !isStillSet && e.surface === 'terminal'
-    // Lively calm on the desktop (the terminal's stepped motion, in the page's idiom): spinners on the 500 ms step, the live beat on its 400 ms wake, bars, figures and blinks as one-shots, and a light SMIL (pulse dots on a line at work, a comet on a box's top and bottom, no breath). Hidden or `still`, it is calm again.
+    // Lively calm on the desktop (the terminal's stepped motion, in the page's idiom): spinners on the 500 ms step, the live beat on its 400 ms wake, bars, figures and blinks as one-shots, and a light SMIL for the pulse dots on a line at work (a box at work is a tinted fill and a bold edge, still). Hidden or `still`, it is calm again.
     const isLively = isCalm && isShown && isCalmSet && !isStillSet && e.surface === 'desktop'
     // What the vector parts see as calm: the lively desktop runs its (light) SMIL.
     const isStill = isCalm && !isLively
@@ -1005,13 +1014,13 @@ export const register: Register = on => {
     // A box of the diagram: its border in its colour, a column of padding each side.
     // A box. On the desktop its border is four vector edges, at rest as at work
     // (one frame, so it keeps its size as work starts), a comet lapping them
-    // while it works (`running`, its height in lines about). In the terminal
+    // while it works in full motion (`running`, its height in lines about; in calm a tinted fill and a bold edge, still). In the terminal
     // the terminal's own border, a comet on its top and bottom edges while it works.
     const frame = (key: string, w: number, color: string, children: RenderChildren, opts: { middle?: boolean; running?: { lines: number } } = {}) => {
       if (Svg) {
-        const edge = { cells: w, lines: opts.running?.lines ?? 6, color, nowMs: now, isRunning: opts.running !== undefined, isCalm: isStill, isLight: isLively }
+        const edge = { cells: w, lines: opts.running?.lines ?? 6, color, nowMs: now, isRunning: opts.running !== undefined, isCalm }
         return (
-          <Box key={key} flexDirection="column" width={w} flexShrink={0}>
+          <Box key={key} flexDirection="column" width={w} flexShrink={0} backgroundColor={opts.running !== undefined && isCalm ? tint(color) : undefined}>
             <Svg source={edgeSvg('top', edge)} alt="a box's top edge" height={EDGE_PX} />
             {/* Stretched, not centred: the sides take the row's height (a row with no alignItems centres an image). */}
             <Box alignItems="stretch" flexGrow={1}>

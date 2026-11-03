@@ -4,7 +4,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { HarnessEvent, Snapshot } from '../types'
 import { FRESH_MS, tokens } from './format'
 import Motion, { FRAME_MS, lit, periodOf, STEP_MS } from './motion'
-import { edgeText, isCalmSetting, isStillSetting, pulsePath } from './register'
+import { edgeText, isCalmSetting, isStillSetting, pulsePath, tint } from './register'
 import { barSvg, edgeSvg, lap, lineSvg } from './vector'
 
 const AT = 1_760_940_000_000
@@ -498,18 +498,13 @@ describe('calm', () => {
     expect(periodOf({ kind: 'flow', text: '', path: [], start: 0, cycle: 1, on: true, color: 'x' })).toBe(FRAME_MS)
   })
 
-  test('the lively desktop runs a light comet: no breath, one comet layer, a brighter edge', () => {
-    const edge = { cells: 40, lines: 6, color: 'green', nowMs: 1234, isRunning: true }
-    const full = edgeSvg('top', edge)
-    const light = edgeSvg('top', { ...edge, isLight: true })
-    expect(full).toContain('stroke-opacity" values')
-    expect(light).not.toContain('values=".3;.9;.3"')
-    expect(light).toContain('repeatCount')
-    expect(light.match(/<rect/g)?.length).toBe(1)
-    expect(edgeSvg('left', { ...edge, isLight: true })).not.toContain('<animate')
+  test('a box at work on the lively desktop is a tinted fill and a bold edge, no animation', () => {
+    expect(tint('#e8915c')).toBe('#463529')
+    expect(tint('text')).toBe('#1e1e1c')
+    const edge = { cells: 40, lines: 6, color: 'green', nowMs: 1234, isRunning: true, isCalm: true }
+    expect(edgeSvg('top', edge)).not.toContain('<animate')
+    expect(edgeSvg('left', edge)).toContain('stroke-width="2.2"')
     expect(barSvg(0.5, 0, 'green')).toContain('attributeName="width"')
-    expect(full.match(/<rect/g)?.length).toBe(2)
-    expect(light).toContain('stroke-opacity=".8"')
   })
 
   test('the vector parts of a calm drawing carry no animation, a box at work stands bolder', () => {
@@ -525,7 +520,7 @@ describe('calm', () => {
     expect(lit).toContain('stroke="green"')
   })
 
-  test('the desktop pane at work is lively: spinners and the beat step, a light comet runs, a figure rolls', async ($, on) => {
+  test('the desktop pane at work is lively: spinners and the beat step, the line pulses run, a figure rolls, a running box is still', async ($, on) => {
     world(on, { calm: 'on' })
     await $.session.start({ cwd: FAMILY, surface: 'desktop', isInteractive: true })
     const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'desktop', ...PANE })
@@ -537,8 +532,20 @@ describe('calm', () => {
     expect(clients.some(c => c.kind === 'live')).toBe(true)
     expect(tree.match(/"kind":"spin"[^}]*?"step":true/g)?.length).toBe(clients.filter(c => c.kind === 'spin').length)
     expect(svgs.some(x => x.includes('repeatCount'))).toBe(true)
-    expect(svgs.some(x => x.includes('values=".3;.9;.3"'))).toBe(false)
+    expect(tree).toContain('"backgroundColor":"#')
+    // (only the lines' dots are endless: no box edge carries a comet or a breath)
+    expect(svgs.some(x => x.includes('values=".3;.9;.3"') || (x.includes('linearGradient') && x.includes('repeatCount')))).toBe(false)
     expect(clients.some(c => c.kind === 'count')).toBe(true)
+    await ui.unmount()
+  })
+
+  test('with calm off the running box keeps its comet and takes no tint', async ($, on) => {
+    world(on)
+    await $.session.start({ cwd: FAMILY, surface: 'desktop', isInteractive: true })
+    const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'desktop', ...PANE })
+    await ui.press({ key: 'refresh' })
+    await $.turn.start({ text: 'hi', turnId: 't1' })
+    expect(JSON.stringify(await ui.drawn())).not.toContain('"backgroundColor"')
     await ui.unmount()
   })
 

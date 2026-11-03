@@ -39,6 +39,7 @@ function boxStyle(p: any): string {
     'box-sizing:border-box',
     `flex-direction:${p.flexDirection ?? 'row'}`,
     q('flex-grow', num(p.flexGrow)),
+    q('background', color(p.backgroundColor)),
     q('flex-shrink', num(p.flexShrink)),
     q('flex-wrap', p.flexWrap),
     q('align-items', p.alignItems),
