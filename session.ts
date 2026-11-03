@@ -3,7 +3,7 @@
  * task"): a session asked a task that isn't its own opens one here, tells
  * the user its name and how to attach, and writes nothing for it.
  *
- *   bun session.ts "<card title>" --repos a,b --kind code|prose [--plan] [--dry-run] [--desktop] -- "<the task>"
+ *   bun session.ts "<card title>" --repos a,b --kind code|prose [--plan] [--dry-run] [--desktop] [--opener <name|socket>] -- "<the task>"
  *
  *   title     the new session's name and its card's title
  *   repos     every repository the task writes: its card's --repos, the
@@ -26,6 +26,10 @@
  *   desktop   the prompt alone, for a desktop child: the opener hands it to
  *             the app's own session tool. Printed alone on stdout, nothing
  *             started (notes still go to stderr), and it wins over --dry-run
+ *   opener    who receives the child's reports instead of the session that
+ *             runs this (an app that is no session, a dispatch): a live
+ *             session's name, short id or messaging socket path, found in
+ *             Claude Code's registry. No live match, no start
  *   the task  in the user's words, with what the opener knows
  *
  * It runs `claude --bg -n <title> --model <model> <prompt>` from the family
@@ -78,10 +82,10 @@ import { loadConfig, projectPath, projectRoot, repoDir, toolCmd } from "./config
 export const KINDS = { code: "opusplan", prose: "opus" } as const;
 export type Kind = keyof typeof KINDS;
 
-export type Ask = { title: string; repos: string[]; kind: Kind; plan: boolean; dryRun: boolean; desktop: boolean; task: string };
+export type Ask = { title: string; repos: string[]; kind: Kind; plan: boolean; dryRun: boolean; desktop: boolean; opener?: string; task: string };
 
 const tilde = (p: string) => (p.startsWith(homedir() + "/") ? `~${p.slice(homedir().length)}` : p);
-const USAGE = () => `usage: ${toolCmd("session")} "<card title>" --repos a,b --kind code|prose [--plan] [--dry-run] [--desktop] -- "<the task>"
+const USAGE = () => `usage: ${toolCmd("session")} "<card title>" --repos a,b --kind code|prose [--plan] [--dry-run] [--desktop] [--opener <name|socket>] -- "<the task>"
        ${toolCmd("session")} children [--all]
        ${toolCmd("session")} close <id> [--force]
        ${toolCmd("session")} check <id>`;
@@ -96,12 +100,17 @@ export function parse(argv: string[]): Ask | string {
   let plan = false;
   let dryRun = false;
   let desktop = false;
+  let opener: string | undefined;
   for (let i = 0; i < head.length; i++) {
     const a = head[i];
-    if (a === "--repos" || a === "--kind") {
+    if (a === "--repos" || a === "--kind" || a === "--opener") {
       if (head[i + 1] === undefined) return `${a} takes a value`;
       if (a === "--repos") repos = repoList(head[++i]);
-      else kind = head[++i];
+      else if (a === "--opener") {
+        opener = head[++i].trim();
+        // (a name as the registry shows it, a short id, or a socket path: no option, no quote or backslash, no control character or newline)
+        if (!/^(\/[\w./-]+\.sock|[^\s"\\\p{Cc}-][^"\\\p{Cc}]{0,199})$/u.test(opener)) return `--opener takes a live session's name, id or socket path (not ${JSON.stringify(opener)})`;
+      } else kind = head[++i];
     } else if (a === "--plan") plan = true;
     else if (a === "--dry-run") dryRun = true;
     else if (a === "--desktop") desktop = true;
@@ -115,12 +124,12 @@ export function parse(argv: string[]): Ask | string {
   if (odd) return `--repos takes folder names, a comma between them (not ${JSON.stringify(odd)})`;
   if (!(kind in KINDS)) return "--kind is code or prose";
   if (!task) return "the task after --, in the user's words";
-  return { title, repos, kind: kind as Kind, plan, dryRun, desktop, task };
+  return { title, repos, kind: kind as Kind, plan, dryRun, desktop, ...(opener ? { opener } : {}), task };
 }
 
 // (a shell's single quotes: what the prompt shows the new session to run)
 const sq = (s: string) => (/^[\w./,:@-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
-const dq = (s: string) => `"${s.replace(/(["\\$`])/g, "\\$1")}"`;
+const dq = (s: string) => `"${s.replace(/\p{Cc}/gu, " ").replace(/(["\\$`])/g, "\\$1")}"`;
 
 /** Who opened the new session: the name it is known by, the socket SendMessage reaches it on. */
 export type Opener = { name?: string; socket?: string };
@@ -224,6 +233,20 @@ export function registry(dir = join(process.env.CLAUDE_CONFIG_DIR ?? join(homedi
     } catch {}
   }
   return out;
+}
+
+/**
+ * The session `--opener` names, alive in the registry: by name, session id
+ * (or its short form), job id or socket path. Undefined when none matches or
+ * several do (a report must not go to the wrong session).
+ */
+export function pickOpener(given: string, live: Live[]): (Opener & { sessionId: string }) | undefined {
+  const hits = live.filter((r) => r.name === given || r.sessionId === given || r.job === given || r.socket === given || (/^[0-9a-f]{8,}$/i.test(given) && r.sessionId.startsWith(given.toLowerCase())));
+  if (new Set(hits.map((r) => r.sessionId)).size !== 1) return undefined;
+  const r = hits[0];
+  // (an automatic name is no name to send to, and a name carries no control character into the prompt)
+  const name = r.nameSource === "derived" ? undefined : r.name?.replace(/\p{Cc}/gu, " ").trim() || undefined;
+  return name || r.socket ? { name, socket: r.socket, sessionId: r.sessionId } : undefined;
 }
 
 function openerInfo(session: string | undefined): Opener | undefined {
@@ -462,7 +485,18 @@ if (import.meta.main) {
     process.exit(2);
   }
   const root = projectRoot();
-  const opener = openerInfo(process.env.CLAUDE_CODE_SESSION_ID);
+  let opener: Opener | undefined;
+  let openerId = process.env.CLAUDE_CODE_SESSION_ID;
+  if (a.opener) {
+    const named = pickOpener(a.opener, registry());
+    if (!named) {
+      console.error(`no live session matches --opener ${JSON.stringify(a.opener)} (or it matches more than one): nothing started`);
+      logEvent("session", "fail", a.repos[0], `${a.title}: no live opener ${a.opener}`);
+      process.exit(2);
+    }
+    opener = { name: named.name, socket: named.socket };
+    openerId = named.sessionId;
+  } else opener = openerInfo(openerId);
   const text = prompt(a, opener, a.desktop);
   const cmd = command(a);
   for (const n of notes(a.repos)) console.error(n);
@@ -489,7 +523,7 @@ if (import.meta.main) {
     logEvent("session", "fail", a.repos[0], `${a.title}: ${why}`);
     process.exit(run.exitCode || 1);
   }
-  record({ id, title: a.title, repos: a.repos, kind: a.kind, plan: a.plan, opener: process.env.CLAUDE_CODE_SESSION_ID ?? null, openerName: opener?.name ?? null, at: new Date().toISOString() });
+  record({ id, title: a.title, repos: a.repos, kind: a.kind, plan: a.plan, opener: openerId ?? null, openerName: opener?.name ?? null, at: new Date().toISOString() });
   logEvent("session", "ok", a.repos[0], `${a.title} opened (${loadConfig().session.models[a.kind]}${a.plan ? ", plan mode" : ""}) as ${id}`);
   console.log(`opened "${a.title}" (${loadConfig().session.models[a.kind]}${a.plan ? ", plan mode" : ""}) as ${id}
   claude attach ${id}    join it (Ctrl+Z leaves it running)
