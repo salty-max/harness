@@ -430,6 +430,50 @@ the desktop starts a session in a spare folder of its own
 (`~/.claude/spares/`) and moves it to the folder picked afterwards, with no
 new start, so `/harness` and the pane come with the first prompt there.
 
+## When the pane vanishes (5 November 2026)
+
+The user's report: the pane keeps disappearing, on a day of one dispatcher
+opening and archiving about thirty children. What was checked, and what it
+showed:
+
+- **The app pauses idle sessions, and a paused session has no mod.** The
+  desktop's `CliGovernor` (`~/Library/Logs/Claude/main.log`) stops the Claude
+  Code process of an idle session under memory pressure or at its process cap
+  (`[CliGovernor] pressure evicting local_… (idle 105s)`, then `[CCD] Pausing
+  session local_… (governor_evict)`; the app's own code, `pauseSession`,
+  kills the process, and `Starting local session` is the respawn on the next
+  message). The mod lives in that process, the pane's roster is the process's,
+  so a paused session shows no pane until it wakes. 117 such pauses in the
+  log, 50 of them on 5 November (5, 17, 22, 2, 21 on the days from 31 October; "memory
+  pressure (warning)" 204 times, the process tree at 4 to 6.6 GB). This is
+  the app, not the mod: the mod cannot keep a process the app has stopped.
+  Nothing in the mod can be set against it; the app has no setting for the
+  governor that was found (not verified: a setting may exist in a build that
+  exposes it). Fewer open idle sessions, or archiving the finished ones, is
+  what keeps the pressure under its line.
+- **Closes the mod never hears of.** `ui.close` with origin `unload` (a
+  drawing that threw or whose tree the engine refused, a plugin unloaded)
+  runs no hook of the mod's own (the types: "gone before the hooks hear of
+  it"), and the engine's transcript line for it goes to the debug log alone
+  outside a hot-reloaded folder. The pane is just gone. Since then:
+  a throw while drawing draws its reason in the pane
+  instead (`The harness pane could not draw: …`); and `refreshShown`, at
+  every tick, opens the pane again when the engine's roster
+  (`$.ui.panes()`) no longer lists it and the person did not close it by hand
+  (`ui.close`, origin `person`, stays closed until `/harness`), at most three
+  times in ten minutes.
+- **Not the cause**, checked: the pane's drawing is within the engine's limits
+  (the real snapshot and one grown forty times, every width 48 to 160: the
+  largest `Svg` source 40,650 characters of the 131,072 allowed, whole tree
+  130 to 150 KB, every mount drew without an error: whether the test engine judges a tree as the real one does is not verified); a session folder outside
+  the family starts nothing; `roots.json` and `spawned.json` are rewritten
+  without touching the pane.
+- **The trace**: `~/.cache/harness-view/pane.log` (one line per start, attach,
+  close and reopening, each with the engine's `isPlaced`/`reason`; kept to its
+  last 200 lines past 100 KB). The next time a pane vanishes, a line there says
+  whether it was closed (by whom), reopened, or never placed. No line at the
+  hour of the vanishing is itself the answer: the process was stopped.
+
 ## Where it loads from
 
 `~/.claude/skills/harness-view` is a link to this folder, `harness/pane`

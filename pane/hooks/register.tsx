@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, RenderChildren } from 'claude-code'
+import type { EngineInterface, Register, RenderChildren, RenderInput } from 'claude-code'
 
 import type { AgentRow, AgentSteps, BoardCard, CheckStamp, HarnessEvent, LiveSession, LockCard, ModelDay, RepoLock, RepoRow, SessionFacts, Snapshot } from '../types'
 import { ago, bar, FRESH_MS, type Moment, momentOf, stance, tokens } from './format'
@@ -433,6 +433,13 @@ let isReading = false
 let isFreshWanted = false
 let isActive = false
 let isShown = false
+// The person closed the pane by hand (`ui.close`, origin `person`): not opened again until /harness.
+let closedByPerson = false
+// The last drawing failure traced: a drawing that keeps throwing leaves one line, not one a redraw.
+let lastDrawFailure = ''
+let reopened: number[] = []
+const REOPEN_MAX = 3
+const REOPEN_WINDOW_MS = 10 * 60_000
 let sessionBeat = 0
 let slowAt = 0
 let watched = ''
@@ -599,11 +606,38 @@ async function openSession($: EngineInterface, link: string) {
   await $.process.run(['/usr/bin/open', link], { timeoutMs: 10_000 })
 }
 
+/** One line of the pane's own trace, `~/.cache/harness-view/pane.log` (kept to its last 200 lines past 100 KB): why a pane vanished is only ever knowable from here. */
+async function paneLog($: EngineInterface, text: string) {
+  const home = (await $.env.get('HOME')) ?? ''
+  if (!home) return
+  const line = `${new Date().toISOString()} ${text.replace(/\s+/g, ' ').slice(0, 300)}`
+  await $.process
+    .run(['/bin/sh', '-c', 'f="$1/.cache/harness-view/pane.log"; [ -d "${f%/*}" ] || exit 0; [ "$(wc -c <"$f" 2>/dev/null || echo 0)" -gt 100000 ] && { tail -n 200 "$f" >"$f.tmp" && mv "$f.tmp" "$f"; }; printf "%s\\n" "$2" >>"$f"', 'sh', home, line], { timeoutMs: 3_000 })
+    .catch(() => {})
+}
+
+/** The pane is gone from the engine's roster and nobody closed it by hand: opened again, at most REOPEN_MAX times in REOPEN_WINDOW_MS. */
+async function reopenIfGone($: EngineInterface, why: string) {
+  if (!isActive || closedByPerson) return
+  const now = await $.clock.now()
+  reopened = reopened.filter(at => now - at < REOPEN_WINDOW_MS)
+  if (reopened.length >= REOPEN_MAX) return
+  reopened.push(now)
+  try {
+    const opened = await $.ui.open({ id: PANE, title: TITLE })
+    await paneLog($, `pane gone (${why}), opened again: ${opened.isPlaced ? 'placed' : `waiting, ${opened.reason}`}`)
+  } catch (error) {
+    await paneLog($, `pane gone (${why}), opening again refused: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
 /** Whether the pane is drawn in front: the live pace's condition. */
 async function refreshShown($: EngineInterface): Promise<boolean> {
-  const panes = await $.ui.panes().catch(() => [])
+  const panes = await $.ui.panes().catch(() => null)
+  // The engine's roster no longer lists the pane (its drawing threw or was refused, which closes it with no hook of ours told, or the open never took): the person's close is the only reason to leave it.
+  if (panes && !panes.some(p => p.id === PANE)) void reopenIfGone($, 'not in the roster').catch(() => {})
   const was = isShown
-  isShown = panes.some(p => p.id === PANE && p.isShown && p.isPlaced)
+  isShown = (panes ?? []).some(p => p.id === PANE && p.isShown && p.isPlaced)
   // The drawing differs shown and not (a pane behind another tab draws no motion): draw it again.
   if (was !== isShown) void update($, tick, n => n + 1).catch(() => {})
   return isShown
@@ -789,8 +823,11 @@ async function gate($: EngineInterface, isStart = false): Promise<boolean> {
   void refreshAgents($).catch(() => {})
   void $.ui
     .open({ id: PANE, title: TITLE })
-    .then(() => refreshShown($))
-    .catch(() => {})
+    .then(opened => {
+      void paneLog($, `session start, pane opened: ${opened.isPlaced ? 'placed' : `waiting, ${opened.reason}`}`)
+      return refreshShown($)
+    })
+    .catch(error => paneLog($, `session start, opening the pane refused: ${error instanceof Error ? error.message : String(error)}`))
   return true
 }
 
@@ -808,7 +845,15 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // The person's close mark is the one close that stays closed. An unload (a drawing that threw or was refused) runs no hook at all: refreshShown finds it in the roster.
+  on('ui.close', { id: PANE }, async ($, e, next) => {
+    if (e.origin.kind === 'person') closedByPerson = true
+    void paneLog($, `pane closed by ${e.origin.kind}`).catch(() => {})
+    return next(e)
+  })
+
   on('command.run', { command: 'harness' }, async $ => {
+    closedByPerson = false
     void refreshCalm($).catch(() => {})
     void refreshSnapshot($, true).catch(() => {})
     try {
@@ -821,6 +866,7 @@ export const register: Register = on => {
 
   // The desktop attaches after the session starts: read at once, not at the next tick.
   on('session.attach', async ($, e, next) => {
+    if (isActive) void paneLog($, `surface attached: ${e.surface}`).catch(() => {})
     void gate($)
       .then(isStarted => {
         if (isActive && !isStarted) void refreshSnapshot($).catch(() => {})
@@ -877,7 +923,32 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // A drawing that throws closes the pane with nothing said: it draws its reason instead, and the trace keeps it.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    try {
+      return await drawPane($, e)
+    } catch (error) {
+      const reason = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+      const isNew = reason !== lastDrawFailure
+      lastDrawFailure = reason
+      if (isNew) void paneLog($, `drawing threw: ${reason} ${(error instanceof Error ? error.stack ?? '' : '').split('\n').slice(1, 3).join(' | ')}`).catch(() => {})
+      const { Box, Text } = $.ui.resolve(e)
+      return (
+        <Box flexDirection="column">
+          <Text color={PALETTE.fail} wrap="wrap">
+            The harness pane could not draw: {reason}
+          </Text>
+          <Text dimColor wrap="wrap">
+            ~/.cache/harness-view/pane.log has the trace
+          </Text>
+        </Box>
+      )
+    }
+  })
+}
+
+async function drawPane($: EngineInterface, e: RenderInput<'Pane'>) {
+  {
     const table = $.ui.resolve(e)
     const { Box, Button } = table
     // Every text cut at its end, never wrapped, its styled runs too: the
@@ -1970,5 +2041,5 @@ export const register: Register = on => {
         </Box>
       </Box>
     )
-  })
+  }
 }

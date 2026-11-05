@@ -31,26 +31,35 @@ const PANE = {
 
 /** The engine beneath the mod: a family session on the desktop, the pane shown unless told otherwise. */
 type Agent = { id: string; type: string; description: string; status: string }
-function world(on: On, opts: { calm?: string; snapshot?: () => Snapshot; isShown?: boolean | (() => boolean); events?: () => number; surface?: 'desktop' | 'terminal'; agents?: () => Agent[] } = {}) {
+function world(on: On, opts: { calm?: string; snapshot?: () => Snapshot; isShown?: boolean | (() => boolean); events?: () => number; surface?: 'desktop' | 'terminal'; agents?: () => Agent[]; roster?: () => boolean; opens?: string[] } = {}) {
   const runs: string[][] = []
+  // The pane's own trace (a `sh` appending to pane.log), kept apart from the snapshot reads.
+  const trace: string[] = []
   mock.env(on, { HOME: '/Users/someone', HARNESS_CALM: opts.calm ?? 'off' })
   const clock = mock.clock(on, { now: AT })
   on('session.root', () => ({ value: FAMILY }))
   on('session.surfaces', () => ({ value: [opts.surface ?? 'desktop'] }))
   on('process.run', ($, e) => {
+    if (e.argv[0] === '/bin/sh' && e.argv[2]?.includes('pane.log')) {
+      trace.push(e.argv[5] ?? '')
+      return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
     runs.push([...e.argv])
     return { value: { exitCode: 0, stdout: JSON.stringify((opts.snapshot ?? snap)()), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('ui.status', () => ({ value: undefined }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('ui.panes', () => ({ value: [{ id: 'harness', title: 'Harness', isShown: typeof opts.isShown === 'function' ? opts.isShown() : (opts.isShown ?? true), isFocused: false, isPlaced: true }] }))
+  on('ui.open', () => {
+    opts.opens?.push('open')
+    return { value: { isPlaced: true } }
+  })
+  on('ui.panes', () => ({ value: (opts.roster?.() ?? true) === false ? [] : [{ id: 'harness', title: 'Harness', isShown: typeof opts.isShown === 'function' ? opts.isShown() : (opts.isShown ?? true), isFocused: false, isPlaced: true }] }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('agent.list', () => ({ value: opts.agents?.() ?? [] }))
   on('fs.stat', () => ({ value: { kind: 'file', size: opts.events?.() ?? 1, mtimeMs: opts.events?.() ?? 1, isLink: false } }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
-  return { runs, clock }
+  return { runs, clock, trace }
 }
 
 describe('the pulse', () => {
@@ -345,6 +354,38 @@ for (const [where, isShown, most] of [
     expect(isShown ? runs.length >= 5 : runs.length <= most).toBe(true)
   })
 }
+
+test('a pane missing from the roster is opened again, three times in ten minutes at most, and says so in its trace', async ($, on) => {
+  const opens: string[] = []
+  const { clock, trace } = world(on, { roster: () => false, opens })
+  await $.session.start({ cwd: FAMILY, surface: 'desktop', isInteractive: true })
+  expect(opens.length).toBe(1)
+  await clock.advance(60_000)
+  expect(opens.length).toBe(4)
+  expect(trace.filter(l => /pane gone \(not in the roster\), opened again: placed/.test(l)).length).toBe(3)
+  await clock.advance(10 * 60_000)
+  expect(opens.length).toBeGreaterThan(4)
+})
+
+test('a pane in the roster is left alone', async ($, on) => {
+  const opens: string[] = []
+  const { clock } = world(on, { opens })
+  await $.session.start({ cwd: FAMILY, surface: 'desktop', isInteractive: true })
+  await clock.advance(60_000)
+  expect(opens.length).toBe(1)
+})
+
+test('a drawing that throws shows its reason in the pane and leaves a line in the trace', async ($, on) => {
+  const { trace } = world(on, { snapshot: () => ({ ...snap(), events: [null] }) as unknown as Snapshot })
+  const ui = await $.ui.mount({ plugin: 'harness-view', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'refresh' })
+  expect(await ui.find({ text: /The harness pane could not draw/ })).toBeDefined()
+  await ui.unmount()
+  const again = await $.ui.mount({ plugin: 'harness-view', surface: 'desktop', ...PANE })
+  await again.unmount()
+  // Drawn again and failing again: one line, not one a redraw.
+  expect(trace.filter(l => l.includes('drawing threw')).length).toBe(1)
+})
 
 describe('the vector parts', () => {
   test('a bar fills its share and slides from its last value', async () => {
