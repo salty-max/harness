@@ -4,7 +4,8 @@
  *   bun doctor.ts [project folder]     exit 1 when anything is
  *
  * The config's unknown keys and missing paths, a repository with no check
- * known, hooks that aren't ours, copies that aren't the harness's.
+ * known, hooks that aren't ours, copies that aren't the harness's, the
+ * template's permission asks missing from .claude/settings.json.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -40,7 +41,25 @@ export function problems(project: string): string[] {
     const p = Bun.spawnSync(["bun", vendored, "status"], { cwd: conf.root, env: { ...process.env, HARNESS_ROOT: conf.root }, stderr: "pipe" });
     if (p.exitCode !== 0) out.push(`hooks: ${(p.stdout.toString() + p.stderr.toString()).trim().split("\n").filter((l) => /want|gone|not|husky/.test(l)).join("; ") || "bun " + conf.toolsDir + "/hooks.ts status says a repository wants a hand"}`);
   }
+  out.push(...missingAsks(conf.root));
   return out;
+}
+
+/** The template's permission asks a project's .claude/settings.json lacks (init.ts merges them in). */
+export function missingAsks(root: string): string[] {
+  const asks = JSON.parse(readFileSync(join(import.meta.dir, "templates", "settings-asks.json"), "utf8")) as string[];
+  const file = join(root, ".claude", "settings.json");
+  let have: string[] = [];
+  try {
+    const ask = JSON.parse(readFileSync(file, "utf8"))?.permissions?.ask;
+    if (Array.isArray(ask)) have = ask;
+  } catch {
+    return [`.claude/settings.json: ${existsSync(file) ? "not valid JSON" : "not there"}, so none of the template's ${asks.length} asks (bun init.ts merges them)`];
+  }
+  const missing = asks.filter((a) => !have.includes(a));
+  if (!missing.length) return [];
+  const shown = missing.slice(0, 3).join(", ");
+  return [`.claude/settings.json: ${missing.length} of the template's asks missing (bun init.ts merges them): ${shown}${missing.length > 3 ? ", …" : ""}`];
 }
 
 if (import.meta.main) {

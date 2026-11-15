@@ -37,8 +37,11 @@ It writes:
 2. the tools and githooks, vendored and stamped into `harness/` (`--tools`
    to rename the folder)
 3. the hooks installed in each repository
-4. `.claude/settings.json`: asks before push, release, deploy, secrets,
-   `core.hooksPath` and `--no-verify`, merged in, never replacing a key
+4. `.claude/settings.json`: asks before push, release, deploy (any path,
+   any runner), a production or project change on Vercel, a write through
+   `gh api` or `vercel api`, a repository created, edited or deleted,
+   secrets, `core.hooksPath` and `--no-verify`, merged in, never replacing
+   a key (`doctor.ts` names the template's asks a project lacks)
 5. `.claude/agents/reviewer.md` and `architect.md`, where there are none
 6. a Harness block in `CLAUDE.md` between `<!-- harness:start -->` and
    `<!-- harness:end -->`: a later run replaces only the block

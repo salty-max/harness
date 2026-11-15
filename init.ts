@@ -10,7 +10,7 @@
  *      (package.json's `check`, else its `test`, else `bun test`)
  *   2. the tools and git hooks, vendored and stamped into <tools dir> (harness-sync.ts)
  *   3. the git hooks installed in each repository (hooks.ts install --all)
- *   4. .claude/settings.json: the asks (push, release, deploy, secrets) merged
+ *   4. .claude/settings.json: the asks (push, release, deploy, GitHub and Vercel writes, secrets) merged
  *      into what is there, never replacing a key
  *   5. .claude/agents/reviewer.md and architect.md, where there are none
  *   6. a "Harness" section in CLAUDE.md between <!-- harness:start --> and
@@ -191,7 +191,7 @@ if (import.meta.main) {
   const merged = withAsks(settings, asks);
   if (JSON.stringify(merged) === JSON.stringify(settings)) console.log(".claude/settings.json: the asks are there");
   else {
-    say(`merge ${asks.length} asks (push, release, deploy, secrets) into .claude/settings.json`);
+    say(`merge ${asks.length} asks (push, release, deploy, GitHub and Vercel writes, secrets) into .claude/settings.json`);
     put(".claude/settings.json", JSON.stringify(merged, null, 2) + "\n");
   }
 

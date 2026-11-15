@@ -156,8 +156,9 @@ project: `bun ~/code/wow-addons/harness/init.ts [dir] [--name n] [--check
 3. vendors the tools into `harness/` (stamped);
 4. installs the git hooks in each repository (`hooks install`, chaining a
    husky folder as today);
-5. writes `.claude/settings.json` asks (push, release, deploy, secrets:
-   merged into an existing file, never replacing a key) and
+5. writes `.claude/settings.json` asks (push, release, deploy, GitHub and
+   Vercel writes, secrets: merged into an existing file, never replacing a
+   key; `templates/settings-asks.json`, tested by `asks.test.ts`) and
    `.claude/agents/{reviewer,architect}.md` with the project's rules file
    named;
 6. appends a marked "Harness" section (about 250 words: one task per
