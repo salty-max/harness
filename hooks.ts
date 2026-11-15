@@ -17,11 +17,17 @@
  * worktree at this one's copy of the hooks. What install writes is the
  * absolute path of this copy's githooks/ (run from the main checkout, the
  * main checkout's): a worktree's own copy of the tools is never the hooks that
- * run. A hooksPath that is relative (husky's `.husky/_`) is resolved from
- * each worktree, and is a folder of its own there.
+ * run, so run from one (a one-repository project's branch carries its own
+ * copy) it writes the main checkout's copy of the folder, and refuses when
+ * the main checkout has none (or there is no main checkout to name: a bare
+ * repository's worktree). status reads the same way: the main checkout's
+ * githooks is ours from a worktree's copy too (a bare repository's worktrees
+ * have none: there the copy's own folder is the only one). A
+ * hooksPath that is relative (husky's `.husky/_`) is resolved from each
+ * worktree, and is a folder of its own there.
  */
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { headTree, stampOf } from "./q";
 import { linkedWorktree, loadConfig, repoDir, repoNames, toolCmd } from "./config";
 
@@ -40,6 +46,32 @@ function git(cwd: string, ...args: string[]): string | undefined {
   const p = Bun.spawnSync(["git", ...args], { cwd, stderr: "ignore" });
   return p.exitCode === 0 ? p.stdout.toString().trim() : undefined;
 }
+
+let mainHooks: string | undefined | null = null;
+/**
+ * The main checkout's copy of this copy's githooks/, when this copy of the tools
+ * sits in a linked worktree and the main checkout has that folder: the one
+ * core.hooksPath names (it is the repository's, so every worktree's, and what
+ * install wrote came from the main checkout). Undefined from a plain checkout
+ * (the family's), a bare repository's worktree, or where main has no such folder.
+ */
+export function mainCopy(): string | undefined {
+  if (mainHooks !== null) return mainHooks;
+  mainHooks = undefined;
+  const own = linkedWorktree(import.meta.dir);
+  const common = own && git(import.meta.dir, "rev-parse", "--path-format=absolute", "--git-common-dir");
+  if (!own || !common?.endsWith("/.git")) return mainHooks;
+  const rel = relative(real(own.top), real(HOOKS));
+  // (a copy symlinked in from outside its worktree has no place in main's)
+  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) return mainHooks;
+  const there = join(dirname(common), rel);
+  // (the harness's own folder, as previous() tells it: some other folder at that path is not ours)
+  if (existsSync(join(there, "_chain"))) mainHooks = there;
+  return mainHooks;
+}
+
+/** The githooks/ folder core.hooksPath should name, per this copy: its own, or the main checkout's copy of it from a worktree's. */
+export const hooksHome = () => mainCopy() ?? HOOKS;
 
 export function repos(): string[] {
   return repoNames()
@@ -79,7 +111,7 @@ export function state(dir: string): State {
   const at = hooksPath ? resolve(dir, hooksPath) : undefined;
   return {
     dir,
-    ours: !!at && real(at) === real(HOOKS),
+    ours: !!at && [HOOKS, mainCopy()].some((h) => h !== undefined && real(at) === real(h)),
     hooksPath,
     missing: !!at && (!isExec(join(at, "pre-push")) || !isExec(join(at, "commit-msg"))) && !(at.includes(".husky") && existsSync(at)),
     chain: git(dir, "config", "--get", "harness.chain"),
@@ -98,11 +130,21 @@ export function install(dir: string): string {
     const common = git(dir, "rev-parse", "--path-format=absolute", "--git-common-dir");
     return `${dir}: a linked worktree, and core.hooksPath is shared by every worktree of the repository: install from the main checkout${common?.endsWith("/.git") ? ` (${common.slice(0, -5)})` : ""}`;
   }
+  // (this copy of the tools in a linked worktree with no copy of the hooks in the main checkout: nothing durable to point at)
+  const own = linkedWorktree(import.meta.dir);
+  if (own && !mainCopy()) {
+    const common = git(import.meta.dir, "rev-parse", "--path-format=absolute", "--git-common-dir");
+    return common?.endsWith("/.git")
+      ? `${dir}: this copy of the tools is in a linked worktree (${own.top}) and the main checkout (${dirname(common)}) has no githooks/ of its own to name: install from a copy of the tools in the main checkout`
+      : `${dir}: this copy of the tools is in a linked worktree (${own.top}) of a repository with no main checkout to name (a bare repository, a separate git dir): install from a copy of the tools outside a worktree`;
+  }
   const s = state(dir);
-  if (s.ours && !s.missing) return `${dir}: already`;
+  const home = hooksHome();
+  // (a worktree's own copy named by hand reads as ours, but dies with the worktree: it is written over with the main checkout's)
+  if (s.ours && !s.missing && s.hooksPath && real(resolve(dir, s.hooksPath)) === real(home)) return `${dir}: already`;
   const prev = previous(dir);
   if (prev) git(dir, "config", "harness.chain", prev);
-  git(dir, "config", "core.hooksPath", HOOKS);
+  git(dir, "config", "core.hooksPath", home);
   return `${dir}: installed${prev ? `, its own ${prev} chained` : ""}`;
 }
 

@@ -143,7 +143,16 @@ repository it starts in, so a root of many repositories gets none asked
 shared by all of them, and what install writes is the absolute path of the
 main checkout's githooks, so a worktree's own copy of the tools is never the
 hooks that run (a relative one, husky's `.husky/_`, is resolved from each
-worktree). A config the hooks can't read is said on stderr by
+worktree). The copy of the tools in a worktree (a one-repository project's
+branch carries its own) reads and writes it the same way: `hooks.ts status`
+takes the main checkout's copy of its `githooks/` as ours beside its own (so
+`status.ts` and `hooks.ts status` run from a worktree don't call installed hooks
+missing), and `install` run from such a copy writes the main checkout's folder,
+or refuses when the main checkout has none (the tools not merged yet) or there
+is no main checkout to name (a bare repository's worktree, a separate git dir):
+never a path that goes with the worktree. Another worktree's copy is neither.
+A plain checkout, the family's, reads and writes its own folder only, as
+before, and so does `status` in a worktree with no main checkout to name. A config the hooks can't read is said on stderr by
 `config.ts hook` (answering `on`: every gate stays on, none quietly off).
 
 *Leftovers* (15 November 2026, the same project using it):

@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { add, before, cardId, cards, conflicts, format, holders, holding, isHeld, lines, mayWrite, options, parseCard, repoList, set, setSection, slug, strangers, waitingOn, warnings } from "./board";
 import { eventLine, eventsPath, logEvent, repoOf } from "./events";
-import { HOOKS } from "./hooks";
+import { HOOKS, hooksHome } from "./hooks";
 import { packet, sizeLine, packetRange, range, subjectProblem, trailerProblem } from "./packet";
 import { clean, headTree, matters, parse, stampDir, stampOf, verdict, workTree } from "./q";
 import { parseReview, pushProblem, record, reviewOf, waived } from "./review";
@@ -326,7 +326,7 @@ describe("git hooks", () => {
   function hooked() {
     const f = family();
     expect(run(f.repo, ["bun", join(KIT, "hooks.ts"), "install", f.repo], { CI: "" }).out).toContain("installed");
-    expect(git(f.repo, "config", "core.hooksPath").out.trim()).toBe(HOOKS);
+    expect(git(f.repo, "config", "core.hooksPath").out.trim()).toBe(hooksHome());
     const remote = join(f.root, "remote.git");
     git(f.root, "init", "-q", "--bare", remote);
     git(f.repo, "remote", "add", "origin", remote);
@@ -440,7 +440,7 @@ describe("git hooks", () => {
     const { repo } = hooked();
     // the chain pointed at our own folder by another path: a commit still ends
     const link = join(tmp, `hooks-link-${n}`);
-    Bun.spawnSync(["ln", "-s", HOOKS, link]);
+    Bun.spawnSync(["ln", "-s", hooksHome(), link]);
     git(repo, "config", "harness.chain", link);
     const p = Bun.spawnSync(["git", "commit", "-q", "--allow-empty", "-m", "chore: chained"], { cwd: repo, timeout: 10_000, stderr: "pipe", env: { ...process.env } });
     expect([p.exitCode, p.stderr.toString()]).toEqual([0, ""]);
