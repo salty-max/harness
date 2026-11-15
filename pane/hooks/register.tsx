@@ -1070,6 +1070,11 @@ async function drawPane($: EngineInterface, e: RenderInput<'Pane'>) {
     // The gates at work: a q.ts run going on, in any session (the hooks are done in an instant).
     const gates = snap?.gates ?? []
     const isGating = gates.length > 0
+    // The checks waiting their turn in the machine's queue ([checks] queue): said under the run, never lit.
+    const queued = snap?.queued ?? []
+    // The projects whose board is a list, not a lock ([hooks] lock = false): a running card there holds nothing and blocks nobody.
+    const unlocked = new Set(snap?.unlocked ?? [])
+    const isListed = (c: BoardCard) => unlocked.has(c.project ?? '')
     // A helper just handed back: the way back to the lead lights up a few seconds (HANDBACK_MS).
     const isReturning = back !== null
     // A spinner inside a line's words: `words [ ⠋ ]`.
@@ -1412,8 +1417,16 @@ async function drawPane($: EngineInterface, e: RenderInput<'Pane'>) {
                 gates.length > 1 ? [` +${gates.length - 1}`, { dim: true, fixed: true }] : null,
               ])
             : null}
+          {queued[0]
+            ? runs('gate-queued', [
+                ['waiting · ', { dim: true, fixed: true }],
+                [`q ${queued[0].name}`, { color: PALETTE.gate }],
+                [` · ${queued[0].repo}`, { dim: true }],
+                queued.length > 1 ? [` +${queued.length - 1}`, { dim: true, fixed: true }] : null,
+              ])
+            : null}
         </>,
-        { running: isGating ? { lines: 6 } : undefined },
+        { running: isGating ? { lines: queued[0] ? 7 : 6 } : undefined },
       )
     }
 
@@ -1657,7 +1670,9 @@ async function drawPane($: EngineInterface, e: RenderInput<'Pane'>) {
       // What a blocked card waits for: the repositories other sessions' running cards hold of its own (board.ts's
       // lock: only a running card holds; its holder may drop one, another come to hold one), before the title so
       // it is never cut; "free now" once nothing holds them.
-      const blocker = (c: BoardCard): Run => {
+      const blocker = (c: BoardCard): Run | null => {
+        // (a list, not a lock: nothing holds a repository, so only a card it was told to wait on is named)
+        if (isListed(c)) return c.waits ? [` · on ${c.waits}`, { color: PALETTE.fail, fixed: true }] : null
         const isOther = (b: BoardCard) => !(c.session && b.session === c.session)
         const held = [...new Set(board.filter(b => b.id !== c.id && HOLDS(b) && isOther(b)).flatMap(b => reposOf(b).filter(r => reposOf(c).includes(r))))]
         if (held.length === 0) return [' · free now', { color: PALETTE.ok, fixed: true }]
@@ -1708,11 +1723,16 @@ async function drawPane($: EngineInterface, e: RenderInput<'Pane'>) {
       const inner = w - 4
       const colW = Math.floor((inner - (columns - 1) * 2) / columns)
       // A dot before the name: a session at work there (cyan), or cards waiting on you there (amber).
-      const held = holds(board)
+      const held = holds(board.filter(c => !isListed(c)))
+      // (where the lock is off a running card holds nothing: it is a session at work there, and the word is running)
+      const working = holds(board.filter(isListed))
+      const markOf = (name: string) => held.get(name) ?? working.get(name)
       const heldN = [...held.values()].filter(k => k === 'held').length
+      const workingN = [...working.values()].filter(k => k === 'held').length
+      const isBusyTree = (t: NonNullable<RepoRow['trees']>[number]) => t.dirty > 0 || t.ahead > 0
       const [nameW = 10, markW = 13] = fit([Math.min(20, Math.max(10, ...repos.map(r => r.name.length + 3))), 13], colW, 8)
       // A quiet repository (stamped with no edits since, nothing to push, not held, no failed check) is a count, not a row.
-      const isQuiet = (r: RepoRow) => !r.failed && !!r.check?.isFresh && !!r.check.isWorkFresh && (r.ahead ?? 0) === 0 && !held.has(r.name)
+      const isQuiet = (r: RepoRow) => !r.failed && !!r.check?.isFresh && !!r.check.isWorkFresh && (r.ahead ?? 0) === 0 && !markOf(r.name) && !(r.trees ?? []).some(isBusyTree)
       const loud = repos.filter(r => !isQuiet(r))
       const quiet = repos.length - loud.length
       const perColumn = Math.ceil(loud.length / columns)
@@ -1721,9 +1741,11 @@ async function drawPane($: EngineInterface, e: RenderInput<'Pane'>) {
         const verdict = r.review?.verdict ?? null
         // Said first, a verdict being long: one on an older commit, or HEAD's that didn't read all a push sends.
         const state = !r.review ? null : !r.review.isCurrent ? 'older' : (r.ahead ?? 0) > 0 && verdict && !r.review.covers ? (r.review.base ? 'partial' : 'no packet') : null
-        const kind = held.get(r.name)
+        const kind = markOf(r.name)
+        const trees = (r.trees ?? []).filter(isBusyTree)
         return (
-          <Box key={`repo-${r.name}`} width={colW}>
+          <Box key={`repo-${r.name}`} width={colW} flexDirection="column">
+            <Box width={colW}>
             {cell(
               nameW,
               runs(`repo-${r.name}-name`, [
@@ -1740,6 +1762,17 @@ async function drawPane($: EngineInterface, e: RenderInput<'Pane'>) {
                   ])
                 : line('no review', { dim: true })}
             </Box>
+            </Box>
+            {/* a linked worktree with work in it: its branch, what no remote has, what is uncommitted */}
+            {trees.map(t => (
+              <Box key={`repo-${r.name}-tree-${t.path}`} width={colW}>
+                {runs(`repo-${r.name}-tree-${t.path}`, [
+                  ['  ↳ ', { dim: true, fixed: true }],
+                  [t.branch ?? '(detached)', {}],
+                  [`${t.ahead > 0 ? ` ↑${t.ahead}` : ''}${t.dirty > 0 ? ` ±${t.dirty}` : ''}`, { color: PALETTE.wait }],
+                ])}
+              </Box>
+            ))}
           </Box>
         )
       }
@@ -1752,6 +1785,7 @@ async function drawPane($: EngineInterface, e: RenderInput<'Pane'>) {
             {line(inner >= 56 ? 'REPOSITORIES · checks and reviews' : 'REPOSITORIES', { bold: true, color: PALETTE.gate })}
             {runs('repos-counts', [
               heldN > 0 ? [`● ${heldN} held · `, { color: PALETTE.ask }] : null,
+              workingN > 0 ? [`● ${workingN} running · `, { color: PALETTE.ask }] : null,
               [`${fresh}/${repos.length} pushable`, { color: fresh === repos.length ? PALETTE.ok : PALETTE.wait }],
             ])}
           </Box>
@@ -1786,6 +1820,9 @@ async function drawPane($: EngineInterface, e: RenderInput<'Pane'>) {
       const quiet = (locks ?? []).filter(l => !l.holder)
       const queued = held.reduce((n, l) => n + l.later.length, 0)
       const nameW = Math.min(18, Math.max(10, ...held.map(l => l.repo.length + 3), ...slips.map(x => x.repo.length + 3)))
+      // Every project shown keeps a list, not a lock ([hooks] lock = false): nothing is held, and the box says why, not "nothing held".
+      const shown = new Set([...(snap?.repos ?? []), ...(snap?.board ?? [])].map(r => r.project).filter((n): n is string => !!n))
+      const isLockOff = unlocked.size > 0 && shown.size > 0 && [...shown].every(n => unlocked.has(n))
       const row = (l: RepoLock) => {
         const top = l.holder as LockCard
         return (
@@ -1817,7 +1854,7 @@ async function drawPane($: EngineInterface, e: RenderInput<'Pane'>) {
             ])}
           </Box>
           <Box flexDirection="column">
-            {!snap ? line('reading…', { dim: true }) : !locks ? line("no lock data (needs the project's board.ts)", { dim: true }) : held.length === 0 && slips.length === 0 ? line('nothing held', { dim: true }) : null}
+            {!snap ? line('reading…', { dim: true }) : isLockOff ? line('the lock is off ([hooks] lock = false): the board is a list', { dim: true }) : !locks ? line("no lock data (needs the project's board.ts)", { dim: true }) : held.length === 0 && slips.length === 0 ? line('nothing held', { dim: true }) : null}
             {held.map(row)}
             {slips.map(x => (
               <Box key={`slip-${x.session}-${x.repo}`}>

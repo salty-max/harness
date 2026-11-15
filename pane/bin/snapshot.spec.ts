@@ -1,11 +1,12 @@
 import { describe, expect, test } from 'bun:test'
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, utimesSync, writeFileSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
 
 import type { ModelDay } from '../types'
 import { momentOf } from '../hooks/format'
 import * as boardKit from '../../board'
+import { queueDir } from '../../queue'
 import {
   agentDefs,
   agentModels,
@@ -28,7 +29,11 @@ import {
   readSlips,
   readEventLog,
   readGates,
+  queueDirOf,
+  readQueued,
+  switchesOf,
   readRepo,
+  readRepos,
   readSessions,
   readTranscripts,
   repoMarks,
@@ -519,6 +524,58 @@ describe('past midnight', () => {
   })
 })
 
+describe('the project switches and the check queue', () => {
+  test("[hooks] lock and [checks] queue: the defaults are the family's (lock on, queue off), an include is read, a broken file is the defaults", () => {
+    const dir = temp()
+    expect(switchesOf(dir)).toEqual({ lock: true, queue: false })
+    writeFileSync(join(dir, 'harness.toml'), '[hooks]\nlock = false\n[checks]\nqueue = true\n')
+    expect(switchesOf(dir)).toEqual({ lock: false, queue: true })
+    // anything but the literal false keeps the lock (config.ts refuses it, every gate stays on), anything but true no queue
+    writeFileSync(join(dir, 'harness.toml'), '[hooks]\nlock = "false"\n[checks]\nqueue = "true"\n')
+    expect(switchesOf(dir)).toEqual({ lock: true, queue: false })
+    // the family's way: the root file only includes a versioned one, and its own keys override it
+    mkdirSync(join(dir, 'addon-kit'))
+    writeFileSync(join(dir, 'addon-kit', 'harness.family.toml'), '[hooks]\nlock = false\n[checks]\nqueue = true\n')
+    writeFileSync(join(dir, 'harness.toml'), 'include = "addon-kit/harness.family.toml"\n')
+    expect(switchesOf(dir)).toEqual({ lock: false, queue: true })
+    writeFileSync(join(dir, 'harness.toml'), 'include = "addon-kit/harness.family.toml"\n[checks]\nqueue = false\n')
+    expect(switchesOf(dir)).toEqual({ lock: false, queue: false })
+    writeFileSync(join(dir, 'harness.toml'), 'this is = = not toml')
+    expect(switchesOf(dir)).toEqual({ lock: true, queue: false })
+    writeFileSync(join(dir, 'harness.toml'), 'include = "nowhere.toml"\n')
+    expect(switchesOf(dir)).toEqual({ lock: true, queue: false })
+  })
+
+  test('the queue: the waiting checks whose process lives, in their turn; HARNESS_QUEUE says where, off says none', () => {
+    const dir = temp()
+    mkdirSync(join(dir, 'waiting'))
+    const ticket = (pid: number, at: number, extra: Record<string, unknown> = {}) =>
+      writeFileSync(join(dir, 'waiting', `${String(at).padStart(13, '0')}-${pid}.json`), JSON.stringify({ pid, at, name: 'check', repo: 'hundo', where: '/p/hundo/.claude/worktrees/a', ...extra }))
+    ticket(51, 1_700_000_000_000)
+    ticket(52, 1_700_000_005_000, { repo: 'yonder', where: '/f/yonder' })
+    // gone, a pid since reused by a later process, a broken file, a file that isn't a ticket's name
+    ticket(53, 1_700_000_006_000)
+    ticket(54, 1_700_000_007_000)
+    writeFileSync(join(dir, 'waiting', `1700000008000-55.json`), 'not json')
+    writeFileSync(join(dir, 'waiting', 'notes.json'), '{}')
+    writeFileSync(join(dir, 'lock.json'), JSON.stringify({ pid: 50, at: 1_699_999_000_000, name: 'check', repo: 'hundo', where: '/p/hundo' }))
+    const starts = (pids: number[]) => new Map(pids.filter(p => p !== 53).map(p => [p, p === 54 ? 1_700_000_100_000 : 1_699_999_999_000] as [number, number]))
+    expect(readQueued(dir, starts)).toEqual([
+      { pid: 51, name: 'check', repo: 'hundo', where: '/p/hundo/.claude/worktrees/a', at: 1_700_000_000_000 },
+      { pid: 52, name: 'check', repo: 'yonder', where: '/f/yonder', at: 1_700_000_005_000 },
+    ])
+    expect(readQueued(join(dir, 'missing'), starts)).toEqual([])
+    expect(readQueued(undefined, starts)).toEqual([])
+    expect(readQueued(dir, () => null)).toEqual([])
+    expect(queueDirOf({ HARNESS_QUEUE: '/q' }, '/home/u')).toBe('/q')
+    expect(queueDirOf({ HARNESS_QUEUE: 'off' }, '/home/u')).toBeUndefined()
+    expect(queueDirOf({ XDG_CACHE_HOME: '/x' }, '/home/u')).toBe('/x/harness/queue')
+    expect(queueDirOf({}, '/home/u')).toBe('/home/u/.cache/harness/queue')
+    // the pane finds the folder where queue.ts does
+    for (const env of [{ HARNESS_QUEUE: '/q' }, { HARNESS_QUEUE: 'off' }, { XDG_CACHE_HOME: '/x' }, {}]) expect(queueDirOf(env, homedir())).toBe(queueDir(env))
+  })
+})
+
 describe('repositories', () => {
   const git = (dir: string, ...args: string[]) => {
     const run = Bun.spawnSync(['git', '-C', dir, ...args], { stderr: 'pipe' })
@@ -535,6 +592,36 @@ describe('repositories', () => {
     mkdirSync(join(dir, '.git', 'harness'))
     return dir
   }
+
+  test("a repository's linked worktrees ride on its row when the project's trees.ts is there, and move its cached row", () => {
+    const dir = repo()
+    const wt = join(realpathSync(temp()), 'kid')
+    const trees = {
+      worktreesOf: (d: string) => {
+        const text = git(d, 'worktree', 'list', '--porcelain')
+        return text.split('\n\n').slice(1).map(b => ({ path: /^worktree (.+)$/m.exec(b)![1]!, branch: /^branch refs\/heads\/(.+)$/m.exec(b)?.[1] }))
+      },
+      treeState: (t: { path: string; branch?: string }) => ({ ...t, dirty: 2, ahead: 1 }),
+    }
+    const cache = temp()
+    expect(readRepos(dirname(dir), undefined, trees)[0]?.trees).toBeUndefined()
+    const before = repoMarks(dirname(dir))
+    git(dir, 'worktree', 'add', '-q', '-b', 'side', wt)
+    expect(repoMarks(dirname(dir))).not.toBe(before)
+    const row = readRepos(dirname(dir), undefined, trees)[0]
+    expect(row?.trees).toEqual([{ path: wt, branch: 'side', dirty: 2, ahead: 1 }])
+    // a commit made in the worktree moves the marks, so the cached row is read anew
+    cachedRepos(dirname(dir), cache, undefined, true, 'repos.json', trees)
+    const marks = repoMarks(dirname(dir))
+    writeFileSync(join(wt, 'w.txt'), 'w\n')
+    git(wt, 'add', '.')
+    git(wt, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'w')
+    expect(repoMarks(dirname(dir))).not.toBe(marks)
+    // a kit that throws is no worktrees, never a broken row
+    expect(readRepos(dirname(dir), undefined, { worktreesOf: () => { throw new Error('git gone') }, treeState: trees.treeState })[0]?.trees).toBeUndefined()
+    // without the kit, the main checkout alone
+    expect(readRepos(dirname(dir))[0]?.trees).toBeUndefined()
+  })
 
   test('a stamp for HEAD is fresh, a recorded verdict is read', () => {
     const dir = repo()
@@ -951,7 +1038,7 @@ describe('several projects', () => {
     expect(tomlStrings('[tools]\ndir = "h"\n# x = "no"\n[state]\nboard = "cards"')).toEqual({ tools: { dir: 'h' }, state: { board: 'cards' } })
     const { family, puzzles } = world()
     expect(projectOf(family)).toMatchObject({ isFamily: true, board: join(family, 'board'), events: join(family, '.cache', 'harness', 'events.log') })
-    expect(projectOf(puzzles)).toEqual({ name: 'warcraft-puzzles', dir: puzzles, isFamily: false, tools: join(puzzles, 'harness'), board: join(puzzles, '.harness', 'board'), events: join(puzzles, '.harness', 'cache', 'events.log') })
+    expect(projectOf(puzzles)).toEqual({ name: 'warcraft-puzzles', dir: puzzles, isFamily: false, tools: join(puzzles, 'harness'), board: join(puzzles, '.harness', 'board'), events: join(puzzles, '.harness', 'cache', 'events.log'), lock: true, queue: false })
   })
 
   test('a standalone project is one repository row, named as its folder', () => {

@@ -605,6 +605,73 @@ test("the repositories' box says first why a verdict doesn't count: older, parti
   await ui.unmount()
 })
 
+test("the repositories' box: a worktree with work is a row under its repository, a lock-off project says running, not held", async ($, on) => {
+  const repo = (extra: object) => ({ ...SNAPSHOT.repos[0]!, name: 'hundo', project: 'hundo', check: { tree: 't', at: SNAPSHOT.at, isFresh: true, isWorkFresh: true }, ahead: 0, ...extra })
+  const card = (id: string, status: string, extra: object = {}) => ({ id, project: 'hundo', repo: 'hundo', title: id, status, session: id, updated: '2026-10-20T09:00:00+02:00', summary: '', ...extra })
+  const base: Snapshot = { ...SNAPSHOT, repos: [repo({})], board: [card('a-run', 'running'), card('b-wait', 'blocked', { waits: 'a-run' })] }
+  let snap: Snapshot = base
+  mock.env(on, { HOME: '/Users/someone', HARNESS_CALM: 'off' })
+  mock.clock(on, { now: SNAPSHOT.at })
+  on('process.run', () => ({ value: { exitCode: 0, stdout: JSON.stringify(snap), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('ui.status', () => ({ value: undefined }))
+  on('session.surfaces', () => ({ value: ['desktop'] }))
+  const look = async (shown: Snapshot, test: (has: (text: string | RegExp, isThere?: boolean) => Promise<void>) => Promise<void>) => {
+    snap = shown
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await $.ui.mount({ plugin: 'harness-view', surface, ...PANE, props: { ...PANE.props, bodyColumns: 110 } })
+      await ui.press({ key: 'refresh' })
+      const has = async (text: string | RegExp, isThere = true) => expect([surface, text, (await ui.find({ text })) !== undefined]).toEqual([surface, text, isThere])
+      await test(has)
+      await ui.unmount()
+    }
+  }
+  // a lock: a running card holds, the blocked one names what holds its repository
+  await look(base, async has => {
+    await has('● 1 held · ')
+    await has(' · on hundo')
+    await has('1 more stamped, nothing to push', false)
+  })
+  // a list: the same card is a session at work, nothing is held, the blocked card names the card it waits on
+  await look({ ...base, unlocked: ['hundo'] }, async has => {
+    await has('● 1 running · ')
+    await has('● 1 held · ', false)
+    await has(' · on a-run')
+    await has(' · on hundo', false)
+    await has('the lock is off ([hooks] lock = false): the board is a list')
+    await has('nothing held', false)
+  })
+  // a worktree with work: its row, with what no remote has and what is uncommitted, and the repository is not quiet; a clean one is no row
+  const quietRepo = repo({})
+  await look({ ...base, board: [], repos: [{ ...quietRepo, trees: [{ path: '/w/side', branch: 'side', dirty: 3, ahead: 2 }, { path: '/w/tidy', branch: 'tidy-branch', dirty: 0, ahead: 0 }] }] }, async has => {
+    await has('side')
+    await has(' ↑2 ±3')
+    await has('tidy-branch', false)
+    await has('1 more stamped, nothing to push', false)
+  })
+  await look({ ...base, board: [], repos: [{ ...quietRepo, trees: [{ path: '/w/tidy', branch: 'tidy-branch', dirty: 0, ahead: 0 }] }] }, async has => {
+    await has('1 more stamped, nothing to push')
+    await has('tidy-branch', false)
+  })
+})
+
+test('the gates say a check waits its turn in the queue, and stay unlit for it', async ($, on) => {
+  const snap: Snapshot = { ...SNAPSHOT, queued: [{ pid: 7, name: 'check', repo: 'hundo', where: '/p/hundo', at: SNAPSHOT.at - 5_000 }, { pid: 8, name: 'check', repo: 'yonder', where: '/f/yonder', at: SNAPSHOT.at - 1_000 }] }
+  mock.env(on, { HOME: '/Users/someone', HARNESS_CALM: 'off' })
+  mock.clock(on, { now: SNAPSHOT.at })
+  on('process.run', () => ({ value: { exitCode: 0, stdout: JSON.stringify(snap), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('ui.status', () => ({ value: undefined }))
+  on('session.surfaces', () => ({ value: ['desktop'] }))
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'harness-view', surface, ...PANE, props: { ...PANE.props, bodyColumns: 110 } })
+    await ui.press({ key: 'refresh' })
+    expect([surface, await ui.find({ text: 'waiting · ' }) !== undefined]).toEqual([surface, true])
+    expect([surface, await ui.find({ text: 'q check' }) !== undefined]).toEqual([surface, true])
+    expect([surface, await ui.find({ text: ' · hundo' }) !== undefined]).toEqual([surface, true])
+    expect([surface, await ui.find({ text: ' +1' }) !== undefined]).toEqual([surface, true])
+    await ui.unmount()
+  }
+})
+
 test("the gates' meters and the status bar: what waits to be pushed, or nothing to push", async ($, on) => {
   let snap: Snapshot = SNAPSHOT
   mock.env(on, { HOME: '/Users/someone', HARNESS_CALM: 'off' })

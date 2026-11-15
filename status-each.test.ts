@@ -1,11 +1,11 @@
 // status.ts's and each.ts's pure parts (bun test).
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { argvOf, parse, pick, unknown } from "./each";
 import { scopedRoot, useBoardGuard } from "./testing";
-import { attention, latestPerWorkflow, slugOf, type Repo, type Run } from "./status";
+import { attention, latestPerWorkflow, read, slugOf, treeAttention, type Repo, type Run } from "./status";
 
 useBoardGuard();
 
@@ -46,6 +46,61 @@ describe("status", () => {
     expect(attention({ ...r, upstream: undefined, ahead: 0, dirty: 0, runs: [], prs: [], extra: undefined })).toEqual([
       "no upstream (local only)",
     ]);
+  });
+});
+
+describe("status: worktrees", () => {
+  const GIT = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com" };
+  const g = (cwd: string, ...args: string[]) => {
+    const p = Bun.spawnSync(["git", ...args], { cwd, env: GIT, stdout: "pipe", stderr: "pipe" });
+    if (p.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${p.stderr.toString()}`);
+    return p.stdout.toString().trim();
+  };
+
+  test("a worktree with uncommitted files or unpushed commits wants a hand, a clean one doesn't", () => {
+    const t = { path: "/w/side", head: "abc", branch: "side" };
+    expect(treeAttention({ ...t, dirty: 3, ahead: 2 })).toEqual(["worktree side (/w/side): 3 files uncommitted, 2 commits to push"]);
+    expect(treeAttention({ ...t, dirty: 1, ahead: 0 })).toEqual(["worktree side (/w/side): 1 file uncommitted"]);
+    expect(treeAttention({ ...t, dirty: 0, ahead: 1 })).toEqual(["worktree side (/w/side): 1 commit to push"]);
+    // nothing in it, or no remote to say (-1): nothing to ask
+    expect(treeAttention({ ...t, dirty: 0, ahead: 0 })).toEqual([]);
+    expect(treeAttention({ ...t, dirty: 0, ahead: -1 })).toEqual([]);
+    expect(treeAttention({ path: "/w/x", head: "abc", dirty: 1, ahead: 0 })).toEqual(["worktree (detached) (/w/x): 1 file uncommitted"]);
+  });
+
+  test("read() carries each linked worktree's own state, and attention lists it", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "status-wt-")));
+    writeFileSync(join(root, "harness.toml"), "");
+    const repo = join(root, "repo");
+    mkdirSync(repo);
+    g(repo, "init", "-q", "-b", "main");
+    g(repo, "commit", "-q", "--allow-empty", "-m", "chore: first");
+    const remote = join(root, "remote.git");
+    g(root, "init", "-q", "--bare", remote);
+    g(repo, "remote", "add", "origin", remote);
+    g(repo, "push", "-q", "-u", "origin", "main");
+    const restore = scopedRoot(root);
+    try {
+      expect((await read("repo", false)).trees).toBeUndefined();
+      const wt = join(realpathSync(mkdtempSync(join(tmpdir(), "status-wt2-"))), "kid");
+      g(repo, "worktree", "add", "-q", "-b", "side", wt);
+      writeFileSync(join(wt, "work.txt"), "x\n");
+      g(wt, "add", "-A");
+      g(wt, "commit", "-q", "-m", "feat: work");
+      writeFileSync(join(wt, "more.txt"), "y\n");
+      const r = await read("repo", false);
+      expect(r.trees).toMatchObject([{ path: wt, branch: "side", dirty: 1, ahead: 1 }]);
+      // (the main checkout itself is clean and level with origin)
+      expect(r).toMatchObject({ dirty: 0, ahead: 0 });
+      expect(attention(r)).toContain(`worktree side (${wt}): 1 file uncommitted, 1 commit to push`);
+      // once its commit is pushed the branch has nothing of its own left, and nothing is asked
+      g(wt, "add", "-A");
+      g(wt, "commit", "-q", "-m", "feat: more");
+      g(wt, "push", "-q", "origin", "side");
+      expect(attention(await read("repo", false)).some((l) => l.startsWith("worktree"))).toBe(false);
+    } finally {
+      restore();
+    }
   });
 });
 

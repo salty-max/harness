@@ -140,7 +140,16 @@ holds the gates, the part of the harness that runs in code.
   amber while one isn't; with nothing to push the box is its title and
   `nothing to push`, no meters. At work only while a
   q.ts run goes on, in any session, the run named under the meters (`q
-  check · yonder`, `+1` for more).
+  check · yonder`, `+1` for more). A check waiting its turn in the machine's
+  queue (`[checks] queue = true`, queue.ts) is said under it, dim, `waiting ·
+  q check · hundo +1` (the next to run first), and never lights the box: only
+  what runs does. The snapshot's `queued` reads the queue's `waiting/<ms>-<pid>.json`
+  tickets, read only (queue.ts sweeps the dead ones, the pane never writes),
+  those whose process lives and started no later than the ticket; the folder is
+  `HARNESS_QUEUE` (`off`: none), else `~/.cache/harness/queue`, and it is read only
+  while a project's `[checks] queue` is on. A ticket belongs to the project whose
+  folder holds its `where` (a worktree under it too), else to the one that has
+  a repository of its name.
 - **Helpers**, fanned out from the gates (up to four from 100 columns,
   three from 66): running ones first, then the family's that worked today,
   the busiest first (by runs, then the latest), the Opus ones (the
@@ -182,9 +191,17 @@ holds the gates, the part of the harness that runs in code.
   name says who holds it (`addon-kit/board.ts`'s lock): `●` cyan while a
   running card names it (a session is at work there), `○` amber while
   only cards stopped mid-task do (blocked, or waiting on the user: their
-  commits go out with its next push); the header counts the held ones.
-  A quiet repository (stamped with no edits since, nothing to push, not held, no failed
-  check) isn't a row: "12 more stamped, nothing to push".
+  commits go out with its next push); the header counts the held ones. In a
+  project whose board is a list, not a lock (`[hooks] lock = false`, the
+  snapshot's `unlocked`), a running card holds nothing: the dot stays (a
+  session is at work there) and the header says `● 1 running`, never `held`.
+  A repository's linked worktrees (the project's own `trees.ts`, through the
+  snapshot's `trees` on the row: its branch, the commits no remote has by
+  content, the files uncommitted) are a row each under it, `↳ side ↑2 ±3`,
+  only for one with work in it. A quiet repository (stamped with no edits since,
+  nothing to push, not held, no failed check, no worktree with work) isn't a
+  row: "12 more stamped, nothing to push". Without `trees.ts` (older tools)
+  the rows show the main checkout alone.
 - **Sessions** (this project's): one row a live session, waiting on you first, then busy,
   then idle: its status (a spinner while busy, amber while it waits on
   you, with what for: "permission prompt"), its title, its main loop's
@@ -232,7 +249,9 @@ holds the gates, the part of the harness that runs in code.
   blocked, or waiting on the user). A session's own later cards hold with it
   and are not queued. One row per held repository, the others (stopped cards
   only) folded into one line. Without `board.ts` there is no `locks`: the
-  box says so and the Repositories' dots remain. **Off the lock** (red
+  box says so and the Repositories' dots remain. A project that keeps a list
+  (`[hooks] lock = false`) has no lock rows and no off-the-lock marks: the box
+  says "the lock is off" when every project shown is one. **Off the lock** (red
   `⚠`): the snapshot's `slips`, a session that wrote lately (20 minutes) in
   a repository where `board.ts`'s `mayWrite` refuses it, its words kept: no
   running card of its own names it, or another session's came to hold it
@@ -254,7 +273,8 @@ holds the gates, the part of the harness that runs in code.
   in its colour (waiting on you amber, running cyan, blocked red, done
   green); a blocked card says the repositories it waits for (those of its
   own another session's running card holds; that card is on the board
-  too), or "free now" once nothing holds them. The header counts what waits on you,
+  too), or "free now" once nothing holds them (in a project with no lock,
+  only the card it was told to wait on, `blocked --on`). The header counts what waits on you,
   what runs and what is blocked.
 - **Session log**: the last 6 events of today, or of the last 12 hours until midday (just after midnight it isn't blank), newest first: the time, the
   source in its colour (a helper as `opus:reviewer`), the repository and
@@ -280,6 +300,12 @@ holds the gates, the part of the harness that runs in code.
   Beside the log, `running/<pid>.json` is a q.ts run going on (written
   as it starts, removed before its verdict is logged): the snapshot's
   `gates`, those whose process lives and started no later than the run.
+
+  Each project's switches are read from its `harness.toml` by the snapshot
+  itself (`switchesOf`, its `include` followed, a file it can't parse the
+  defaults: the lock on, no queue; never config.ts, whose `HARNESS_ROOT` may name
+  another project): `[hooks] lock` (a project with it false is in `unlocked`),
+  `[checks] queue`.
 
 ### Skills
 

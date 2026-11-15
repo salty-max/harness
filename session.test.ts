@@ -428,7 +428,10 @@ console.log("backgrounded · abc12345 · " + name + "\\n  claude agents         
       git("push", "-q", "-u", "origin", "main");
     }
     git("checkout", "-q", "-b", "work");
-    git("commit", "-q", "--allow-empty", "--no-verify", "-m", "work");
+    // (a commit that changes nothing has nothing to lose: unpushed work is a change the remote lacks)
+    writeFileSync(join(dir, "work.txt"), `${name} work\n`);
+    git("add", "-A");
+    git("commit", "-q", "--no-verify", "-m", "work");
     return git;
   };
   const child = (id: string, repo: string, at: string, status = "done") => {
@@ -661,6 +664,55 @@ describe("session: a project whose children work in worktrees", () => {
     } finally {
       back();
     }
+  });
+
+  test('decisions = "opener": the child asks the user nothing, sends every question and go to its opener; the default keeps them in the child', () => {
+    const opener = { name: "Hundo dispatcher", socket: "/tmp/cc-socks/1.sock" };
+    const ask = { title: "T", repos: ["a"], kind: "code" as const, plan: false, task: "x" };
+    // the family's way, unchanged
+    const own = prompt(ask, opener, true);
+    expect(own).toContain("A go to push is asked of the user in your own session (the question tool), never left to your opener to ask");
+    expect(own).not.toContain("decisions");
+    const dir = temp();
+    mkdirSync(join(dir, "a"));
+    writeFileSync(join(dir, "harness.toml"), '[session]\ndecisions = "opener"\n');
+    const restore = scopedRoot(dir);
+    try {
+      const p = prompt(ask, opener, true);
+      expect(p).toContain('Report to the session that opened you with SendMessage, to "uds:/tmp/cc-socks/1.sock" (else to its name, "Hundo dispatcher")');
+      expect(p).toContain("you do not ask the user anything");
+      expect(p).toContain("send every question (a push, a merge, any choice) to your opener with the options and your recommendation, then stop");
+      expect(p).toContain("Your opener asks the user in its own session, then pushes on their answer or relays it to you quoted");
+      expect(p).toContain("A push go never covers a deploy or a release");
+      expect(p).not.toContain("asked of the user in your own session");
+      expect(p).not.toContain("plan's approval");
+      // a plan child: leaving plan mode asks the user in the child, said plainly
+      expect(prompt({ ...ask, plan: true }, opener, true)).toContain("Your plan's approval is the one exception: leaving plan mode always asks the user, in your own session");
+      // no opener to send to: the question rides in its last message, it still asks nobody
+      const alone = prompt(ask, undefined, true);
+      expect(alone).toContain("No live opener could be named");
+      expect(alone).toContain("put every question (a push, a merge, any choice) in that message with the options and your recommendation, then stop");
+      expect(alone).not.toContain("SendMessage");
+    } finally {
+      restore();
+    }
+    // a word that is neither is an error, never the default
+    const typo = temp();
+    mkdirSync(join(typo, "a"));
+    writeFileSync(join(typo, "harness.toml"), '[session]\ndecisions = "dispatch"\n');
+    const back = scopedRoot(typo);
+    try {
+      expect(() => prompt(ask, opener, true)).toThrow('[session] decisions is "child" or "opener", not "dispatch"');
+    } finally {
+      back();
+    }
+  });
+
+  test("a verdict says the unpushed count is against the remote as last fetched", () => {
+    const clean = { repo: "yonder", ahead: 0, dirty: false, running: [] as string[], open: [] as string[] };
+    const v = verdict({ live: { pid: 1, sessionId: "abc12345-x", job: "abc12345", status: "idle" }, cards: [{ id: "c", status: "done" } as never], repos: [{ ...clean, ahead: 1 }], force: false });
+    expect(v.ok).toBe(false);
+    expect(v.notes).toEqual(["yonder: unpushed is by content against the remote as last fetched: if the branch was merged since, git fetch first"]);
   });
 
   test("a project that shares one checkout hears nothing of worktrees", () => {

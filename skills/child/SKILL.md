@@ -23,7 +23,10 @@ bun $HARNESS/config.ts show
 
 Read `root`, `toolsDir`, `term`, `session.rules`, `session.models` (the
 model by kind, `code` and `prose`), `session.worktrees` (every child works
-in a git worktree of its own: false unless the project says so) and
+in a git worktree of its own: false unless the project says so),
+`session.decisions` (`child`, the default: the user answers a child's
+questions and gives its go in the child's own session; `opener`: the user
+takes every decision in the opener, the child asks them nothing) and
 `hooks.lock` (whether the board is a lock). Every command below is `bun
 <toolsDir>/<tool>.ts` from `root` (the tools folder is a project's choice:
 `addon-kit`, `harness`, ...). The guards, before anything else:
@@ -106,27 +109,44 @@ Write nothing for the task here: no card, no file, no helper.
 ## Seeing it through
 
 The child reports here by SendMessage each time its card stops running
-and once its commits are pushed (by this session, on its quoted go: the
+and once its commits are pushed (by this session, on the user's go: the
 child never pushes; a desktop child's turns also reach this session as the
-app's notes).
+app's notes). Where the user is asked depends on `session.decisions`, and
+the child's prompt (from `session.ts`) says which:
 
-- **Waiting on the user** (a test, a review, a push's go): relay in one
-  line "child X waits for your <test|review|go>" and where (its name, the
-  sidebar or `claude attach <id>`). Never ask the user the child's go here:
-  the child asks it in its own session and the user answers there. It stays
-  open.
-- **A go reported**: the child's report quotes the user's words and says
-  what they cover (repository, sha range, push only). Verify before
-  pushing: the quote says go, its scope names this repository and range
-  (what is on origin/main..<sha> is that range, nothing more), and it
-  does not reach a deploy or a release (each its own go, never implied by
-  a push go). No quote, or a doubtful one: SendMessage the child to quote
-  it, never push on its summary alone. A go the user gave in this very
-  session is valid too. Then `git -C <repo> log --oneline
-  origin/main..<sha>` first, and if commits of another card sit below the
-  child's, name them to the user before pushing (they go out too). Then
-  `git -C <repo> push origin <sha>:main` and tell the child to set its
-  card done.
+- **`child` (the default): the user decides in the child.** A child
+  that waits on the user asks them in its own session (the question tool)
+  and its report quotes their words. Never ask the user the child's go
+  here.
+- **`opener`: the user decides here, in this session, never in a child.**
+  The child asks the user nothing: its report carries each question (a
+  push, a merge, any choice) with the options and its recommendation, and
+  it stops. This session asks the user through the question tool, the
+  recommended answer first, then pushes on their answer or relays it to
+  the child quoted (SendMessage). A decision the child needs and the user
+  has not given is never made here on the child's recommendation alone.
+
+- **Waiting on the user** (a test, a review, a push's go): in `child`
+  mode, relay in one line "child X waits for your <test|review|go>" and
+  where (its name, the sidebar or `claude attach <id>`); the user answers
+  there and the child stays open. In `opener` mode, a test or a review is
+  still the user's to do (relay the same line), but a question or a go is
+  asked here, now.
+- **A go reported**: in `child` mode the report quotes the user's words
+  and says what they cover (repository, sha range, push only). Verify
+  before pushing: the quote says go, its scope names this repository and
+  range (what is on origin/main..<sha> is that range, nothing more), and
+  it does not reach a deploy or a release (each its own go, never implied
+  by a push go). No quote, or a doubtful one: SendMessage the child to
+  quote it, never push on its summary alone. In `opener` mode the child
+  reports a push as ready (repository, sha range) and this session asks
+  the user for the go itself; their answer, in this session, is the quote.
+  A go the user gave in this very session is valid in either mode. Then
+  `git -C <repo> log --oneline origin/main..<sha>` first, and if commits
+  of another card sit below the child's, name them to the user before
+  pushing (they go out too). Then `git -C <repo> push origin <sha>:main`
+  and tell the child to set its card done (in `opener` mode, tell it what
+  the user decided too).
 - **Pushed**: check its work before closing it:
   - its card is done: `bun <toolsDir>/board.ts list --all`;
   - the range is on origin: `git -C <repo> log --oneline @{u} -5` (its

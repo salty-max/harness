@@ -14,7 +14,11 @@
  * .husky/_: status says so, install again. install does nothing in CI (CI
  * set): a job's push has no check stamp to show. install refuses in a linked
  * worktree: core.hooksPath is the repository's, so it would point every
- * worktree at this one's copy of the hooks.
+ * worktree at this one's copy of the hooks. What install writes is the
+ * absolute path of this copy's githooks/ (run from the main checkout, the
+ * main checkout's): a worktree's own copy of the tools is never the hooks that
+ * run. A hooksPath that is relative (husky's `.husky/_`) is resolved from
+ * each worktree, and is a folder of its own there.
  */
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";

@@ -18,7 +18,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, 
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 
-import type { BoardCard, GateRun, HarnessEvent, HelperDay, HelperDef, LiveSession, LockCard, ModelDay, RepoLock, RepoRow, Slip, Snapshot } from '../types'
+import type { BoardCard, GateRun, HarnessEvent, HelperDay, HelperDef, LiveSession, LockCard, ModelDay, QueuedRun, RepoLock, RepoRow, Slip, Snapshot, TreeRow } from '../types'
 
 const CHUNK = 16 * 1024 * 1024
 
@@ -102,6 +102,24 @@ export type StampKit = {
   lastStamp: (dir: string) => { tree: string; at: string } | undefined
 }
 
+/** The project's own trees.ts (the harness copy beside q.ts), when it is there: a repository's linked worktrees and what each carries. */
+export type TreeKit = {
+  worktreesOf: (dir: string) => { path: string; head?: string; branch?: string }[]
+  treeState: (t: { path: string; head?: string; branch?: string }) => { path: string; head?: string; branch?: string; dirty: number; ahead: number }
+}
+
+/** A repository's linked worktrees as the rows carry them; none when git or the kit can't say. */
+function readTrees(dir: string, kit: TreeKit): TreeRow[] {
+  try {
+    return kit.worktreesOf(dir).map(t => {
+      const s = kit.treeState(t)
+      return { path: s.path, ...(s.branch ? { branch: s.branch } : {}), dirty: s.dirty, ahead: s.ahead }
+    })
+  } catch {
+    return []
+  }
+}
+
 export function readRepo(dir: string, kit?: StampKit): RepoRow | null {
   const ids = git(dir, ['rev-parse', 'HEAD', 'HEAD^{tree}'])
   if (ids === null) return null
@@ -172,9 +190,13 @@ const repoDirs = (root: string) =>
         .filter(e => e.isDirectory() && existsSync(join(root, e.name, '.git', 'HEAD')))
         .map(e => join(root, e.name))
 
-export function readRepos(root: string, kit?: StampKit): RepoRow[] {
+export function readRepos(root: string, kit?: StampKit, trees?: TreeKit): RepoRow[] {
   return repoDirs(root)
-    .map(dir => readRepo(dir, kit))
+    .map(dir => {
+      const row = readRepo(dir, kit)
+      const own = row && trees ? readTrees(dir, trees) : []
+      return row && own.length > 0 ? { ...row, trees: own } : row
+    })
     .filter((r): r is RepoRow => r !== null)
     .sort((a, b) => a.name.localeCompare(b.name))
 }
@@ -197,10 +219,17 @@ function upstreamLog(dir: string): string | null {
  */
 export function repoMarks(root: string): string {
   const parts = ['.git/HEAD', '.git/logs/HEAD', '.git/index', '.git/harness', '.cache/logs/check.log', '.cache/review']
+  const at = (path: string) => (existsSync(path) ? statSync(path).mtimeMs : 0)
   return repoDirs(root)
     .map(dir => {
       const upstream = upstreamLog(dir)
-      return `${basename(dir)}:${[...parts, ...(upstream ? [upstream] : [])].map(p => (existsSync(join(dir, p)) ? statSync(join(dir, p)).mtimeMs : 0)).join(',')}`
+      // (a linked worktree's own HEAD, log and index: a commit or an add made in one moves its row)
+      let trees: string[] = []
+      try {
+        trees = readdirSync(join(dir, '.git', 'worktrees')).sort()
+      } catch {}
+      const own = trees.map(t => ['HEAD', 'logs/HEAD', 'index'].map(f => at(join(dir, '.git', 'worktrees', t, f))).join('.')).join(';')
+      return `${basename(dir)}:${[...parts, ...(upstream ? [upstream] : [])].map(p => at(join(dir, p))).join(',')}${own ? `;${own}` : ''}`
     })
     .join('|')
 }
@@ -209,7 +238,7 @@ export function repoMarks(root: string): string {
 const REPOS_MS = 20_000
 
 /** The rows again when nothing of the repositories moved since their last read, else read anew. */
-export function cachedRepos(root: string, cacheDir: string, kit: StampKit | undefined, isFresh: boolean, file = 'repos.json'): RepoRow[] {
+export function cachedRepos(root: string, cacheDir: string, kit: StampKit | undefined, isFresh: boolean, file = 'repos.json', trees?: TreeKit): RepoRow[] {
   const path = join(cacheDir, file)
   const marks = repoMarks(root)
   if (!isFresh && existsSync(path)) {
@@ -218,7 +247,7 @@ export function cachedRepos(root: string, cacheDir: string, kit: StampKit | unde
       if (was.marks === marks && Date.now() - was.at < REPOS_MS) return was.repos
     } catch {}
   }
-  const repos = readRepos(root, kit)
+  const repos = readRepos(root, kit, trees)
   mkdirSync(cacheDir, { recursive: true })
   const tmp = `${path}.${process.pid}`
   writeFileSync(tmp, JSON.stringify({ marks, at: Date.now(), repos }))
@@ -1132,6 +1161,43 @@ export function readGates(dir: string, starts: (pids: number[]) => Map<number, n
   return found.filter(r => (alive.get(r.pid) ?? Number.POSITIVE_INFINITY) <= r.at).sort((a, b) => a.at - b.at)
 }
 
+/**
+ * The machine's check queue (queue.ts, `<dir>/waiting/<ms>-<pid>.json`): the
+ * checks waiting their turn, the next to run first. Read-only (queue.ts sweeps
+ * dead tickets, the pane never writes): a ticket whose process is gone, or
+ * started after the ticket was written (a pid reused), is left out. `dir` is
+ * undefined when the queue is off (`HARNESS_QUEUE=off`).
+ */
+export function readQueued(dir: string | undefined, starts: (pids: number[]) => Map<number, number> | null = startsOf): QueuedRun[] {
+  if (!dir) return []
+  let names: string[]
+  try {
+    names = readdirSync(join(dir, 'waiting'))
+      .filter(n => /^\d{13}-\d+\.json$/.test(n))
+      .sort()
+  } catch {
+    return []
+  }
+  const found: QueuedRun[] = []
+  for (const name of names) {
+    try {
+      const r = JSON.parse(readFileSync(join(dir, 'waiting', name), 'utf8')) as Partial<QueuedRun>
+      if (Number.isInteger(r.pid) && typeof r.name === 'string' && typeof r.repo === 'string' && typeof r.where === 'string' && Number.isFinite(r.at))
+        found.push({ pid: r.pid as number, name: r.name, repo: r.repo, where: r.where, at: r.at as number })
+    } catch {}
+  }
+  const alive = found.length > 0 ? starts(found.map(r => r.pid)) : null
+  if (!alive) return []
+  // (ps's start is cut to the second, never later than the real one: a second's slack is the queue's own)
+  return found.filter(r => (alive.get(r.pid) ?? Number.POSITIVE_INFINITY) <= r.at + 1000).sort((a, b) => a.at - b.at)
+}
+
+/** The queue's folder as queue.ts finds it: HARNESS_QUEUE (`off`: none), else the user's cache; undefined when it is off. */
+export function queueDirOf(env: Record<string, string | undefined>, home: string): string | undefined {
+  if (env.HARNESS_QUEUE === 'off') return undefined
+  return env.HARNESS_QUEUE || join(env.XDG_CACHE_HOME || join(home, '.cache'), 'harness', 'queue')
+}
+
 // --- the command ----------------------------------------------------------
 
 function arg(name: string): string | undefined {
@@ -1152,6 +1218,37 @@ export type ProjectRoot = {
   tools: string
   board: string
   events: string
+  /** `[hooks] lock` (true unless the file says false): whether the board is a lock; false, a list. */
+  lock: boolean
+  /** `[checks] queue` (false unless the file says true): whether its checks wait their turn on the machine. */
+  queue: boolean
+}
+
+type Table = Record<string, unknown>
+const isTable = (v: unknown): v is Table => !!v && typeof v === 'object' && !Array.isArray(v)
+const mergeTables = (a: Table, b: Table): Table => {
+  const out: Table = { ...a }
+  for (const [k, v] of Object.entries(b)) out[k] = isTable(v) && isTable(out[k]) ? mergeTables(out[k] as Table, v) : v
+  return out
+}
+
+/** A harness.toml's tables with its `include` read first (three deep, as config.ts does); `{}` when it can't be read. */
+function readTomlTables(file: string, root: string, depth = 0): Table {
+  try {
+    const own = Bun.TOML.parse(readFileSync(file, 'utf8')) as Table
+    const inc = own.include
+    if (typeof inc !== 'string' || depth > 3) return own
+    const path = inc.startsWith('/') ? inc : join(root, inc)
+    return mergeTables(readTomlTables(path, dirname(path), depth + 1), own)
+  } catch {
+    return {}
+  }
+}
+
+/** A root's `[hooks] lock` and `[checks] queue`: the pane's own reading (never config.ts: HARNESS_ROOT in its environment may name another project). */
+export function switchesOf(dir: string): { lock: boolean; queue: boolean } {
+  const toml = readTomlTables(join(dir, 'harness.toml'), dir)
+  return { lock: !isTable(toml.hooks) || toml.hooks.lock !== false, queue: isTable(toml.checks) && toml.checks.queue === true }
 }
 
 /** The strings of a harness.toml's tables, `[section] key = "value"` (all the roots need of it). */
@@ -1173,7 +1270,7 @@ export function tomlStrings(text: string): Record<string, Record<string, string>
 /** A root's tools, board and events where its kind keeps them (harness.toml's [tools] and [state] for a standalone repository). */
 export function projectOf(dir: string): ProjectRoot {
   const name = basename(dir)
-  if (existsSync(join(dir, 'addon-kit', 'q.ts'))) return { name, dir, isFamily: true, tools: join(dir, 'addon-kit'), board: join(dir, 'board'), events: join(dir, '.cache', 'harness', 'events.log') }
+  if (existsSync(join(dir, 'addon-kit', 'q.ts'))) return { name, dir, isFamily: true, tools: join(dir, 'addon-kit'), board: join(dir, 'board'), events: join(dir, '.cache', 'harness', 'events.log'), ...switchesOf(dir) }
   let toml: Record<string, Record<string, string>> = {}
   try {
     toml = tomlStrings(readFileSync(join(dir, 'harness.toml'), 'utf8'))
@@ -1187,6 +1284,7 @@ export function projectOf(dir: string): ProjectRoot {
     tools: join(dir, toml.tools?.dir ?? 'harness'),
     board: join(dir, state.board ?? join(stateDir, 'board')),
     events: join(dir, state.cache ? join(state.cache, 'events.log') : join(stateDir, 'cache', 'events.log')),
+    ...switchesOf(dir),
   }
 }
 
@@ -1244,8 +1342,14 @@ async function readProject(
     const kit = (await import(join(p.tools, 'board.ts'))) as Partial<CardKit>
     if (typeof kit.parseCard === 'function') cards = kit as CardKit
   } catch {}
+  let trees: TreeKit | undefined
+  try {
+    const kit = (await import(join(p.tools, 'trees.ts'))) as Partial<TreeKit>
+    // (older tools have no trees.ts: the rows show the main checkout alone)
+    if (typeof kit.worktreesOf === 'function' && typeof kit.treeState === 'function') trees = kit as TreeKit
+  } catch {}
   const tag = <T extends object>(x: T): T & { project: string } => ({ ...x, project: p.name })
-  const repos = (existsSync(p.dir) ? cachedRepos(p.dir, o.cacheDir, stamps, o.isFresh, o.isFirst ? 'repos.json' : `repos-${p.name}.json`) : []).map(tag)
+  const repos = (existsSync(p.dir) ? cachedRepos(p.dir, o.cacheDir, stamps, o.isFresh, o.isFirst ? 'repos.json' : `repos-${p.name}.json`, trees) : []).map(tag)
   const board = readBoard(p.board, o.day, cards).map(tag)
   const sessions = readSessions(o.sessionsDir, p.dir, o.transcripts.sessions)?.map(tag)
   const log = o.eventsFile ? readEventLog(o.eventsFile, o.since).map(tag) : []
@@ -1336,6 +1440,8 @@ if (import.meta.main) {
     let isSlipped = true
     roots.forEach((p, i) => {
       const mine = out[i]
+      // (a project whose board is a list holds nothing: no lock rows, no off-the-lock slips; the pane says so)
+      if (!p.lock) return
       // (every live session: one started in another project may hold a card here)
       const l = readLocks(mine.board, snapshot.sessions, mine.cards)
       if (l) locks.push(...l.map(x => ({ ...x, project: p.name })))
@@ -1347,6 +1453,15 @@ if (import.meta.main) {
     })
     snapshot.locks = isLocked ? locks : undefined
     snapshot.slips = isSlipped ? slips : undefined
+    const unlocked = roots.filter(r => !r.lock).map(r => r.name)
+    if (unlocked.length > 0) snapshot.unlocked = unlocked
+    // (the queue is the machine's, one folder for every project: read only while some project queues its checks)
+    if (roots.some(r => r.queue)) {
+      snapshot.queued = readQueued(queueDirOf(process.env, home)).map(q => {
+        const owner = roots.find(r => q.where === r.dir || q.where.startsWith(`${r.dir}/`)) ?? roots.find((r, i) => out[i].repos.some(x => x.name === q.repo))
+        return owner ? { ...q, project: owner.name } : q
+      })
+    }
     const text = JSON.stringify(snapshot)
     const tmp = `${shared}.${process.pid}`
     writeFileSync(tmp, text)

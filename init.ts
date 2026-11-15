@@ -16,16 +16,20 @@
  *   6. a "Harness" section in CLAUDE.md between <!-- harness:start --> and
  *      <!-- harness:end --> markers, so a later run replaces only that block
  *      (its text follows the config: `[hooks] lock = false` leaves the lock out of
- *      it, `[session] worktrees = true` adds the worktree rules)
+ *      it, `[session] worktrees = true` adds the worktree rules, `[session] decisions
+ *      = "opener"` moves the questions and the go to the opener)
  *   7. .gitignore: .harness/ and .cache/
  * Commits nothing: review the diff. --dirty is harness-sync.ts's trial copy.
+ * Run in a linked worktree of the project, it adopts that worktree's own files
+ * (its copies, CLAUDE.md, settings), never the main checkout's, and leaves the
+ * hooks to the main checkout.
  * --section-only does step 6 alone, for a folder that already has its harness.toml
  * (the WoW family's root, no repository, tools vendored elsewhere).
  */
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { sync } from "./harness-sync";
-import { type Config, loadConfig, parseConfig, readToml } from "./config";
+import { type Config, linkedWorktree, parseConfig, projectTree, readToml, treeConfig } from "./config";
 
 const SRC = dirname(new URL(import.meta.url).pathname);
 const read = (p: string) => readFileSync(p, "utf8");
@@ -84,14 +88,16 @@ rules = "CLAUDE.md"
 # (nothing is shared to queue for) and:
 # [session]
 # worktrees = true
+# A project whose user takes every decision in the dispatch session (never in a child):
+# decisions = "opener"   # a child asks the user nothing, it sends each question to its opener
 `;
 }
 
-/** The switches a template's blocks follow: `lock` is `[hooks] lock`, `worktrees` is `[session] worktrees`. */
-export type Flags = { lock: boolean; worktrees: boolean };
-/** What the family's own sessions run on: the lock, and every child in the one shared checkout. */
-export const DEFAULT_FLAGS: Flags = { lock: true, worktrees: false };
-export const flagsOf = (c: Pick<Config, "hooks" | "session">): Flags => ({ lock: c.hooks.lock, worktrees: c.session.worktrees });
+/** The switches a template's blocks follow: `lock` is `[hooks] lock`, `worktrees` is `[session] worktrees`, `opener` is `[session] decisions = "opener"`. */
+export type Flags = { lock: boolean; worktrees: boolean; opener: boolean };
+/** What the family's own sessions run on: the lock, every child in the one shared checkout, the decisions in the child. */
+export const DEFAULT_FLAGS: Flags = { lock: true, worktrees: false, opener: false };
+export const flagsOf = (c: Pick<Config, "hooks" | "session">): Flags => ({ lock: c.hooks.lock, worktrees: c.session.worktrees, opener: c.session.decisions === "opener" });
 
 /**
  * A template filled in: its `{{#name}}…{{/name}}` blocks kept when that switch is on (`{{^name}}` when off),
@@ -162,8 +168,9 @@ if (import.meta.main) {
       console.error("init: --section-only wants an existing harness.toml");
       process.exit(2);
     }
-    const c = loadConfig(resolve(o.dir));
-    if (realpathSync(c.root) !== realpathSync(resolve(o.dir))) {
+    const c = treeConfig(resolve(o.dir));
+    // (a linked worktree of the project is its own tree: its CLAUDE.md is the one written)
+    if (realpathSync(projectTree(resolve(o.dir))) !== realpathSync(resolve(o.dir))) {
       console.error(`init: the config found is ${c.root}'s, not ${resolve(o.dir)}'s (HARNESS_ROOT or WOW_ADDONS_ROOT set?)`);
       process.exit(2);
     }
@@ -203,8 +210,9 @@ if (import.meta.main) {
     console.log(`${tools}/: ${res.length ? `${res.length} files written` : "the copies are current"}`);
   }
 
-  // 3. the hooks
-  if (o.dry) console.log("would install the git hooks in each repository");
+  // 3. the hooks (core.hooksPath is the repository's, every worktree's: never set from a worktree)
+  if (linkedWorktree(o.dir)) console.log(`hooks: not installed from a linked worktree (core.hooksPath is shared by all of them): from the main checkout, bun ${tools}/hooks.ts install --all`);
+  else if (o.dry) console.log("would install the git hooks in each repository");
   else {
     const p = Bun.spawnSync(["bun", join(o.dir, tools, "hooks.ts"), "install", "--all"], { cwd: o.dir, env: { ...process.env, HARNESS_ROOT: o.dir } });
     const text = (p.stdout.toString() + p.stderr.toString()).trim();

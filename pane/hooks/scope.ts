@@ -23,6 +23,8 @@ export function scopeSnapshot(snap: Snapshot, project: string | undefined): Snap
     events: mine(snap.events),
     sessions: snap.sessions ? mine(snap.sessions) : undefined,
     gates: snap.gates ? mine(snap.gates) : undefined,
+    queued: snap.queued ? mine(snap.queued) : undefined,
+    unlocked: snap.unlocked?.includes(project) ? [project] : undefined,
     locks: snap.locks ? mine(snap.locks) : undefined,
     slips: snap.slips ? mine(snap.slips) : undefined,
     usage: { ...snap.usage, models: snap.usage.byProject?.[project] ?? [] },

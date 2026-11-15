@@ -36,8 +36,10 @@ below are checked by git hooks or by tools, so they are not advice.
   (`[session] worktrees = true`): commit there, never in the main checkout. The board,
   its cards and the check stamps are shared by every worktree, and `{{TOOLS}}/packet.ts`,
   `review.ts` and `session.ts check` act on the worktree they are run from or asked
-  about. The git hooks and `harness.toml` come from the main checkout: install the
-  hooks there (`bun {{TOOLS}}/hooks.ts install .`), never from a worktree.
+  about. The git hooks run from the main checkout (`core.hooksPath` is the absolute
+  path `hooks.ts install` wrote there, so a worktree's own copy of the tools is never
+  the one that runs) and the tools read `harness.toml` from it: install the hooks
+  there (`bun {{TOOLS}}/hooks.ts install .`), never from a worktree.
 {{/worktrees}}
 - **Review before the commit**: `bun {{TOOLS}}/packet.ts <repo>` on the uncommitted files,
   the `reviewer` helper reads the packet, fix what it finds, then
@@ -53,6 +55,20 @@ How sessions work together (behaviour: no hook checks these):
 - **A new task asked in a session that has its own is opened as a child** (the `child`
   skill): tell the user its name and where to find it, write nothing for it here. A
   small follow-up of the same thread stays.
+{{#opener}}
+- **Every decision is taken in the opener, never in a child**
+  (`[session] decisions = "opener"`). A child asks the user nothing: it sends each
+  question (a push, a merge, any choice) to its opener with the options and its
+  recommendation, and stops. The opener asks the user through the question tool
+  (`AskUserQuestion`, or `wrap_up`'s ask), the recommended answer first and marked
+  "(Recommended)". Never a question buried in prose.
+- **A go is the user's, asked in the opener.** A child never pushes and never asks
+  for a go: its report says what is committed and what a push would send
+  (repository, sha range, push only). The opener asks the user, then pushes on their
+  answer or relays it to the child quoted. A push go never covers a deploy or a
+  release: each is asked again.
+{{/opener}}
+{{^opener}}
 - **Questions go through the question tool** (`AskUserQuestion`, or `wrap_up`'s ask),
   the recommended answer first and marked "(Recommended)". Never a question buried in
   prose.
@@ -60,6 +76,7 @@ How sessions work together (behaviour: no hook checks these):
   session and never pushes. Its opener pushes only on a go the user gave in the opener,
   or on the child's quote of the user's words with their scope (repository, sha range,
   push only). A push go never covers a deploy or a release: each is asked again.
+{{/opener}}
 - **Close a finished child yourself**: its work pushed (or dropped) and its card done,
   then `bun {{TOOLS}}/session.ts check <local_id>` and archive it (desktop) or
   `session.ts close` (CLI). Never wait to be told. Never one that waits on the user,

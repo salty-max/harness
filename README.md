@@ -16,8 +16,10 @@ dependencies). What it gives a project:
   unchecked or unreviewed tree
 - **a review packet and a verdict** (`packet.ts`, `review.ts`): the reviewer
   reads the packet, the verdict attests the tree, before the commit
-- **status, each, usage, events, session**: every repository at a glance, one
-  command in each, the cost of a card, the event log, sessions opened by sessions
+- **status, each, usage, events, session**: every repository at a glance (its
+  linked worktrees too, and what each carries), one command in each, the cost
+  of a card, the event log, sessions opened by sessions (`[session] decisions =
+  "opener"` for a project whose user decides in the dispatch, never in a child)
 
 Design and the reasoning: `docs/design.md`. Config: `harness.toml`.
 

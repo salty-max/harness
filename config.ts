@@ -51,8 +51,10 @@ export type Config = {
   /** queue: one `check` at a time on the machine, the others wait (queue.ts). */
   checks: { queue: boolean };
   /** worktrees: the project opens each child session in a worktree of its own (a project that shares one checkout leaves it false). */
-  session: { rules: string; models: { code: string; prose: string }; worktrees: boolean };
+  session: { rules: string; models: { code: string; prose: string }; worktrees: boolean; decisions: Decisions };
 };
+/** Where a child's questions and go-aheads are asked of the user: in the child's own session (the family), or in its opener, the child sending them there (a project whose user takes every decision in the dispatch). */
+export type Decisions = "child" | "opener";
 
 const isDir = (p: string) => existsSync(p) && statSync(p).isDirectory();
 const git = (cwd: string, ...args: string[]) => {
@@ -138,6 +140,13 @@ const flag = (v: unknown, d: boolean, label: string): boolean => {
   throw new Error(`${CONFIG_FILE}: ${label} is true or false, not ${JSON.stringify(v)}`);
 };
 
+/** One of a few words, the default when unset. Anything else is a typo, and must not pass for the default. */
+const word = <T extends string>(v: unknown, allowed: readonly T[], d: T, label: string): T => {
+  if (v === undefined) return d;
+  if (typeof v === "string" && (allowed as readonly string[]).includes(v)) return v as T;
+  throw new Error(`${CONFIG_FILE}: ${label} is ${allowed.map((a) => `"${a}"`).join(" or ")}, not ${JSON.stringify(v)}`);
+};
+
 /** The repositories: those listed, else the root itself when it is one, else every folder under it with a .git. */
 function discover(root: string, name: string, ignore: string[]): string[] {
   if (existsSync(join(root, ".git"))) return [name];
@@ -201,6 +210,7 @@ export function parseConfig(root: string, raw: Table): Config {
       rules: str(session.rules) ?? str(defaults.rules) ?? "CLAUDE.md",
       models: { code: str(models.code) ?? "opusplan", prose: str(models.prose) ?? "opus" },
       worktrees: flag(session.worktrees, false, "[session] worktrees"),
+      decisions: word(session.decisions, ["child", "opener"], "child", "[session] decisions"),
     },
   };
 }
@@ -246,6 +256,40 @@ export function workDir(name: string, from: string = process.cwd()): string {
   const home = own && mainCheckout(own.top);
   return own && home && realpath(home) === realpath(main) ? own.top : main;
 }
+
+/**
+ * The folder of the project's own tree that `from` is in: the linked worktree
+ * when `from` is in one of the root's repository (a one-repository project: its
+ * root is the main checkout, whatever worktree the config is read from), else
+ * the root. What a tool writes or judges of the project's tracked files (the
+ * vendored tools, CLAUDE.md, .claude/settings.json) is read there, never at
+ * `root`: that would be the main checkout. A project whose root is no
+ * repository (the family's) has no worktree of it: the root, unchanged.
+ */
+export function projectTree(from: string = process.cwd()): string {
+  const root = loadConfig(from).root;
+  const own = linkedWorktree(from);
+  const home = own && mainCheckout(own.top);
+  return own && home && realpath(home) === realpath(root) ? own.top : root;
+}
+
+/**
+ * The config of the tree `from` is in, for what is written into that tree: its
+ * own harness.toml when it is a linked worktree of the root's repository and
+ * carries one (a branch may change a switch or the tools folder, and its
+ * CLAUDE.md is rendered from its own), else the shared config. Only the
+ * switches and names are the tree's: the board, the lock and the stamps stay
+ * the shared one's (`loadConfig`), and its `root` and paths are the tree's.
+ */
+export function treeConfig(from: string = process.cwd()): Config {
+  const shared = loadConfig(from);
+  const tree = projectTree(from);
+  const file = join(tree, CONFIG_FILE);
+  return tree === shared.root || !existsSync(file) ? shared : parseConfig(tree, readToml(file, tree));
+}
+
+/** The harness's tools folder in the tree `from` is in (a worktree's own copy, else the root's). */
+export const toolsPath = (from?: string): string => join(projectTree(from), treeConfig(from).toolsDir);
 
 /** The repository's name from any folder in it, a worktree too: the configured one, else the main checkout's folder name. */
 export function repoName(cwd: string = process.cwd()): string {

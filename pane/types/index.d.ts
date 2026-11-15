@@ -28,7 +28,12 @@ export type RepoRow = {
   review: ReviewMark | null
   /** The commits a push would send (`@{u}..HEAD`, else those no remote has); null with no remote; absent in an older snapshot. */
   ahead?: number | null
+  /** Its linked worktrees (a project whose children each work in one), each with its own uncommitted files and commits no remote has by patch (-1: no remote); absent when it has none, or without the project's trees.ts. */
+  trees?: TreeRow[]
 }
+
+/** One linked worktree of a repository: where it is, its branch (none when detached) and what it carries. */
+export type TreeRow = { path: string; branch?: string; head?: string; dirty: number; ahead: number }
 
 /**
  * One line of the panel's log: a tool's line in the harness's events.log
@@ -144,6 +149,9 @@ export type LiveSession = {
 /** A q.ts run going on now (addon-kit's events.ts, `running/<pid>.json`): the gates at work. */
 export type GateRun = { project?: string; pid: number; name: string; repo: string; at: number }
 
+/** A check waiting its turn in the machine's queue (queue.ts, `waiting/<ms>-<pid>.json`): `where` is the folder it runs in, `at` when it took its place. */
+export type QueuedRun = { project?: string; pid: number; name: string; repo: string; where: string; at: number }
+
 /** What `bin/snapshot.ts` prints: the numbers every session shares. */
 export type Snapshot = {
   at: number
@@ -162,6 +170,10 @@ export type Snapshot = {
   sessions?: LiveSession[]
   /** The q.ts runs going on, the oldest first; absent in an older snapshot. */
   gates?: GateRun[]
+  /** The checks waiting in the machine's queue, in their turn (the first runs next); absent in an older snapshot, or when no project queues. */
+  queued?: QueuedRun[]
+  /** The projects whose board is a list, not a lock (`[hooks] lock = false`); absent when every project locks, or in an older snapshot. */
+  unlocked?: string[]
   /** Who works in each repository some card names (board.ts's lock); absent without board.ts or in an older snapshot. */
   locks?: RepoLock[]
   /** Sessions that wrote in a repository their cards don't hold, lately; absent like `locks`. */

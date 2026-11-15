@@ -83,6 +83,7 @@ import { join } from "node:path";
 import { type Card, cards, holders, repoList, slug, strangers } from "./board";
 import { logEvent } from "./events";
 import { linkedWorktree, loadConfig, projectPath, projectRoot, repoDir, toolCmd, workDir } from "./config";
+import { unpushed } from "./trees";
 
 export const KINDS = { code: "opusplan", prose: "opus" } as const;
 export type Kind = keyof typeof KINDS;
@@ -139,6 +140,20 @@ const dq = (s: string) => `"${s.replace(/\p{Cc}/gu, " ").replace(/(["\\$`])/g, "
 /** Who opened the new session: the name it is known by, the socket SendMessage reaches it on. */
 export type Opener = { name?: string; socket?: string };
 
+/**
+ * What a child is told when its project takes every decision in the opener
+ * (`[session] decisions = "opener"`): it asks the user nothing, it sends each
+ * question or go to its opener with the options and its recommendation and
+ * stops, and the opener asks the user, then pushes or relays the answer quoted.
+ * `to` is where SendMessage reaches the opener; without one the child's last
+ * message carries the question instead.
+ */
+export function reportToOpener(to: string, plan = false): string {
+  const send = to ? `Report to the session that opened you with SendMessage, ${to}: a few lines each time your card stops running (waiting on a decision or on another card, ready to push), saying what is committed and what you need decided, and again once your commits are pushed: the range, CI's verdict, your card done.` : "No live opener could be named, so your last message of a turn carries what a report would: what is committed, what you need decided.";
+  const ask = to ? "send every question (a push, a merge, any choice) to your opener with the options and your recommendation, then stop" : "put every question (a push, a merge, any choice) in that message with the options and your recommendation, then stop";
+  return `${send} You do not push yourself, and you do not ask the user anything (this project takes every decision in the session that opened you, \`[session] decisions = "opener"\`): ${ask}. Your opener asks the user in its own session, then pushes on their answer or relays it to you quoted. A push go never covers a deploy or a release, each is its own go. ${plan ? "Your plan's approval is the one exception: leaving plan mode always asks the user, in your own session, and your opener can't answer it for them. " : ""}Your opener checks your work and closes this session: never close it yourself, and after your last report write nothing more.`;
+}
+
 /** The new session's first words: the maps, its card, its model, the task, how it ends. */
 export function prompt(a: Pick<Ask, "title" | "repos" | "kind" | "plan" | "task">, opener?: Opener, desktop = false): string {
   const [repo] = a.repos;
@@ -169,7 +184,8 @@ export function prompt(a: Pick<Ask, "title" | "repos" | "kind" | "plan" | "task"
     ? `You work in a git worktree of your own, on a branch of your own (this ${conf.term} opens every child that way, \`[session] worktrees = true\`): commit there, never in the main checkout, and push as the ${conf.term}'s rules say. If you were not started in one, say so first. The board, its cards and the check stamps are shared by every worktree: ${toolCmd("packet")} <repo> and ${toolCmd("review")} <repo> from inside yours act on yours.`
     : undefined;
   const to = [opener?.socket && `to ${dq(`uds:${opener.socket}`)}`, opener?.name && `${opener.socket ? "(else to its name, " : "to "}${dq(opener.name)}${opener.socket ? ")" : ""}`].filter(Boolean).join(" ");
-  const report = to
+  // (the family's words stay for a decision taken in the child; `decisions = "opener"` takes it to the opener, the user asked there)
+  const report = conf.session.decisions === "opener" ? reportToOpener(to, a.plan) : to
     ? `Report to the session that opened you with SendMessage, ${to}: a few lines each time your card stops running (waiting on the user or on another card, ready to push), saying what is committed and what is asked of whom, and again once your commits are pushed: the range, CI's verdict, your card done. You do not push yourself: with the user's go, report the quote and your opener pushes, then tells you to set your card done. A go to push is asked of the user in your own session (the question tool), never left to your opener to ask: your next report quotes their words and says what they cover (repository, range by sha, push only). A push go never covers a deploy or a release, each is its own go. Without a quoted go your opener will not push. It checks your work and closes this session: never close it yourself, and after that last report write nothing more.`
     : undefined;
   return [
@@ -350,6 +366,8 @@ export function verdict(o: { live?: Live; cards: Card[]; repos: RepoState[]; for
     if (r.dirty && r.running.length === 0 && !(n && !r.open.length)) soft.push(`${r.repo}: uncommitted changes`);
     else if (r.dirty && r.running.length) notes.push(`${r.repo}: uncommitted changes, ${r.running.join(", ")} ${r.running.length === 1 ? "is" : "are"} running there too: check they aren't this session's`);
     if (r.ahead === -1) notes.push(`${r.repo}: no remote to compare`);
+    // (unpushed is counted against the remotes as last fetched: a branch merged since reads unpushed until they are)
+    if (r.ahead > 0) notes.push(`${r.repo}: unpushed is by content against the remote as last fetched: if the branch was merged since, git fetch first`);
     // (a worktree project's main checkout is always clean: reading it says nothing of the child's work)
     if (r.unseen) soft.push(r.unseen);
   }
@@ -401,8 +419,10 @@ export function lookIn(repo: string, homes: (string | undefined)[], notes: strin
 
 /**
  * Each repository's state for `id`: HEAD's commits on no remote at all
- * (`--not --remotes`, never other local branches) committed since the child
- * started (its record's time; no record: every one), -1 with no remote; dirty; other sessions' cards there.
+ * (`--not --remotes`, never other local branches), and whose patch no remote
+ * has either (a rebase-merged commit is pushed: trees.ts), committed since the
+ * child started (its record's time; no record: every one), -1 with no remote;
+ * dirty; other sessions' cards there.
  * `homes` are folders the child may work in (its cards' `worktree`, its live session's cwd): a repository is
  * read in the linked worktree of it among them, else in its main checkout (`lookIn`).
  */
@@ -416,13 +436,10 @@ export function repoStates(repos: string[], id: string, all: Card[], notes: stri
     }
     // (not its cards' `since`: a card stops holding, and keeps none, once done)
     const start = at && !Number.isNaN(Date.parse(at)) ? at : undefined;
-    const remote = git(dir, "remote");
-    const hasRemote = remote.exitCode === 0 && remote.stdout.toString().trim() !== "";
-    const ahead = hasRemote ? git(dir, "rev-list", "--count", ...(start ? [`--since=${start}`] : []), "HEAD", "--not", "--remotes") : undefined;
-    const n = ahead && ahead.exitCode === 0 ? Number.parseInt(ahead.stdout.toString(), 10) : -1;
+    const n = unpushed(dir, start);
     const dirty = git(dir, "status", "--porcelain").stdout.toString().trim() !== "";
     const open = all.filter((c) => c.status !== "done" && !c.session.startsWith(id) && (c.repo === repo || c.repos.includes(repo)));
-    out.push({ repo, ahead: Number.isNaN(n) ? -1 : n, dirty, running: open.filter((c) => c.status === "running").map((c) => c.id), open: open.map((c) => c.id), ...(unseen ? { unseen } : {}) });
+    out.push({ repo, ahead: n, dirty, running: open.filter((c) => c.status === "running").map((c) => c.id), open: open.map((c) => c.id), ...(unseen ? { unseen } : {}) });
   }
   return out;
 }

@@ -27,6 +27,7 @@ describe("harness-sync", () => {
   test("what is vendored: the tools and every hook, never a test or the setup scripts", () => {
     expect(VENDORED).toContain("board.ts");
     expect(VENDORED).toContain("config.ts");
+    expect(VENDORED).toContain("trees.ts");
     expect(VENDORED).toContain("githooks/pre-push");
     expect(VENDORED).toContain("githooks/_ai");
     expect(VENDORED.some((f) => f.includes("test") || f === "init.ts" || f === "harness-sync.ts" || f === "doctor.ts")).toBe(false);
@@ -158,13 +159,13 @@ describe("init: the section follows the config", () => {
 
   test("a block is kept when its switch is on, its inverse when off, and the markers leave no trace", () => {
     const t = "a\n{{#lock}}\nL on\n{{/lock}}\n{{^lock}}\nL off\n{{/lock}}\n{{#worktrees}}\nW on\n{{/worktrees}}\nz {{TOOLS}}/x {{RULES}}\n";
-    expect(fill(t, "kit", "R.md", { lock: true, worktrees: false })).toBe("a\nL on\nz kit/x R.md\n");
-    expect(fill(t, "kit", "R.md", { lock: false, worktrees: true })).toBe("a\nL off\nW on\nz kit/x R.md\n");
+    expect(fill(t, "kit", "R.md", { lock: true, worktrees: false, opener: false })).toBe("a\nL on\nz kit/x R.md\n");
+    expect(fill(t, "kit", "R.md", { lock: false, worktrees: true, opener: false })).toBe("a\nL off\nW on\nz kit/x R.md\n");
     expect(() => fill("{{#nope}}\nx\n{{/nope}}\n", "k", "r")).toThrow("no switch");
   });
 
   test("the defaults are the family's: the lock, no worktree rules", () => {
-    expect(DEFAULT_FLAGS).toEqual({ lock: true, worktrees: false });
+    expect(DEFAULT_FLAGS).toEqual({ lock: true, worktrees: false, opener: false });
     const text = renderSection(conf(""));
     expect(text).toContain("- **The board is the lock.**");
     expect(text).toContain("It holds the repositories it names, and a commit by a Claude session is refused unless");
@@ -189,7 +190,7 @@ describe("init: the section follows the config", () => {
   });
 
   test("no line of any rendering passes 88 columns but a lone code span", () => {
-    for (const flags of [DEFAULT_FLAGS, { lock: false, worktrees: false }, { lock: false, worktrees: true }, { lock: true, worktrees: true }]) {
+    for (const flags of [DEFAULT_FLAGS, { lock: false, worktrees: false, opener: false }, { lock: false, worktrees: true, opener: false }, { lock: true, worktrees: true, opener: false }, { lock: true, worktrees: false, opener: true }, { lock: false, worktrees: true, opener: true }]) {
       const over = fill(template, "harness", "CLAUDE.md", flags).split("\n").filter((l) => l.length > 88 && !/^\s*`[^`]*`[.,]?$/.test(l));
       expect(over).toEqual([]);
     }
@@ -226,9 +227,103 @@ describe("init: the section follows the config", () => {
     try {
       const found = problems(dir);
       expect(found).toContain("harness.toml: unknown key lok in [hooks] (trailers, lock, stamp, review)");
-      expect(found).toContain("harness.toml: unknown key worktree in [session] (rules, models, worktrees)");
+      expect(found).toContain("harness.toml: unknown key worktree in [session] (rules, models, worktrees, decisions)");
     } finally {
       restore();
     }
+  });
+});
+
+describe("a worktree of a one-repository project: its own files, never the main checkout's", () => {
+  const GIT = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com" };
+  const g = (cwd: string, ...args: string[]) => {
+    const p = Bun.spawnSync(["git", ...args], { cwd, env: GIT, stdout: "pipe", stderr: "pipe" });
+    if (p.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${p.stderr.toString()}`);
+    return p.stdout.toString().trim();
+  };
+  // (no project named by the environment: the config is found from the folder asked about)
+  const bare = { ...process.env, HARNESS_ROOT: "", WOW_ADDONS_ROOT: "" } as Record<string, string>;
+  const unset = () => {
+    const saved = { h: process.env.HARNESS_ROOT, w: process.env.WOW_ADDONS_ROOT };
+    delete process.env.HARNESS_ROOT;
+    delete process.env.WOW_ADDONS_ROOT;
+    return () => {
+      if (saved.h !== undefined) process.env.HARNESS_ROOT = saved.h;
+      if (saved.w !== undefined) process.env.WOW_ADDONS_ROOT = saved.w;
+    };
+  };
+  function oneRepo() {
+    const main = temp();
+    g(main, "init", "-q", "-b", "main");
+    writeFileSync(join(main, "harness.toml"), '[tools]\ndir = "harness"\n[hooks]\nlock = false\n');
+    writeFileSync(join(main, "CLAUDE.md"), "# P\n");
+    g(main, "add", "-A");
+    g(main, "commit", "-q", "-m", "chore: start");
+    const wt = join(temp(), "kid");
+    g(main, "worktree", "add", "-q", "-b", "side", wt);
+    return { main, wt };
+  }
+
+  test("sync writes and check reads the worktree's own tools folder", () => {
+    const { main, wt } = oneRepo();
+    const restore = unset();
+    try {
+      const res = sync(wt, true);
+      if (!Array.isArray(res)) throw new Error(res.error);
+      expect(res.length).toBe(VENDORED.length);
+      expect(existsSync(join(wt, "harness", "config.ts"))).toBe(true);
+      // (the main checkout stays as it was: no folder, nothing to commit)
+      expect(existsSync(join(main, "harness"))).toBe(false);
+      expect(g(main, "status", "--porcelain")).toBe("");
+      expect(check(wt).problems.some((p) => p.includes("missing"))).toBe(false);
+      expect(check(main).problems.some((p) => p.includes("harness/config.ts") && p.includes("missing"))).toBe(true);
+      // a worktree given by a folder inside it is the same tree
+      mkdirSync(join(wt, "sub"));
+      expect(sync(join(wt, "sub"), true)).toEqual([]);
+    } finally {
+      restore();
+    }
+  });
+
+  test("a branch's own harness.toml renders its own section, and doctor judges the tree it is given", () => {
+    const { main, wt } = oneRepo();
+    const restore = unset();
+    try {
+      writeFileSync(join(wt, "harness.toml"), '[tools]\ndir = "harness"\n[hooks]\nlock = false\n[session]\ndecisions = "opener"\n');
+      const run = (dir: string) => Bun.spawnSync(["bun", join(import.meta.dir, "init.ts"), dir, "--section-only"], { env: bare });
+      expect(run(wt).exitCode).toBe(0);
+      expect(readFileSync(join(wt, "CLAUDE.md"), "utf8")).toContain("Every decision is taken in the opener");
+      // the main checkout's file is not the one written
+      expect(readFileSync(join(main, "CLAUDE.md"), "utf8")).toBe("# P\n");
+      expect(run(main).exitCode).toBe(0);
+      expect(readFileSync(join(main, "CLAUDE.md"), "utf8")).toContain("Questions go through the question tool");
+      expect(readFileSync(join(main, "CLAUDE.md"), "utf8")).not.toContain("Every decision is taken in the opener");
+      const stale = (dir: string) => problems(dir).filter((l) => l.includes("Harness section"));
+      expect(stale(wt)).toEqual([]);
+      expect(stale(main)).toEqual([]);
+      // the worktree's section rendered from the main's config is stale for the worktree's own
+      writeFileSync(join(wt, "CLAUDE.md"), readFileSync(join(main, "CLAUDE.md"), "utf8"));
+      expect(stale(wt)).toHaveLength(1);
+      expect(stale(wt)[0]).toContain(`bun init.ts ${wt} --section-only`);
+      expect(stale(main)).toEqual([]);
+    } finally {
+      restore();
+    }
+  });
+
+  test("a full init in a worktree adopts it there and leaves the hooks to the main checkout", () => {
+    const { main, wt } = oneRepo();
+    const p = Bun.spawnSync(["bun", join(import.meta.dir, "init.ts"), wt, "--dirty"], { env: bare, stdout: "pipe", stderr: "pipe" });
+    expect(p.stderr.toString()).toBe("");
+    expect(p.exitCode).toBe(0);
+    const out = p.stdout.toString();
+    expect(out).toContain("hooks: not installed from a linked worktree");
+    expect(out).toContain(`bun harness/hooks.ts install --all`);
+    expect(existsSync(join(wt, "harness", "config.ts"))).toBe(true);
+    expect(existsSync(join(wt, ".claude", "settings.json"))).toBe(true);
+    expect(readFileSync(join(wt, "CLAUDE.md"), "utf8")).toContain("<!-- harness:start -->");
+    // nothing of it in the main checkout, and no hooks path set for the repository
+    expect(g(main, "status", "--porcelain")).toBe("");
+    expect(Bun.spawnSync(["git", "config", "--get", "core.hooksPath"], { cwd: main, env: GIT }).exitCode).not.toBe(0);
   });
 });

@@ -11,7 +11,7 @@ with `bun init.ts <project>`.
 |---|---|
 | The design and the decisions | `docs/design.md` |
 | The config and the root finder (every tool reads it) | `config.ts` |
-| The tools | `board.ts q.ts queue.ts hooks.ts review.ts packet.ts each.ts status.ts usage.ts session.ts events.ts`, `githooks/` |
+| The tools | `board.ts q.ts queue.ts trees.ts hooks.ts review.ts packet.ts each.ts status.ts usage.ts session.ts events.ts`, `githooks/` (`trees.ts`: what a repository's worktrees hold, and the commits no remote has, counted by content) |
 | Adopting, copying, checking (`templates/rules-section.md` is the one source of the generic session rules: `init.ts` writes it into CLAUDE.md, `--section-only` refreshes it alone) | `init.ts`, `harness-sync.ts`, `doctor.ts`, `templates/` |
 | The adopt procedure as a skill (link `skills/harness-init` into `~/.claude/skills/`) | `skills/harness-init/SKILL.md` |
 | The child skill (open a task in its own session, see it through, the dispatch; link `skills/child` into `~/.claude/skills/`; finds the project's tools dir through `config.ts show`) | `skills/child/SKILL.md` |
@@ -24,7 +24,10 @@ with `bun init.ts <project>`.
   `config.ts` (`repoDir`, `workDir`, `repoName`, `toolCmd`, `loadConfig`).
   `repoDir` is the main checkout (what status, hooks and doctor read); a tool
   that reads or writes a repository's files takes `workDir`, which is the
-  worktree the working directory is in when it is that repository's. A name
+  worktree the working directory is in when it is that repository's. What a
+  tool writes into the project's own files (the vendored copies, CLAUDE.md,
+  `.claude/settings.json`) takes `projectTree`/`toolsPath`/`treeConfig`: the
+  worktree it is given, never `root` (that is the main checkout). A name
   that looks like the WoW family's belongs in the family's `harness.toml` or
   its extension modules (`[extensions]`), never here.
 - `pane/` is loaded live by every new session through its link in
@@ -34,8 +37,9 @@ with `bun init.ts <project>`.
   to its own folder.
 - A new tool file goes into `TOOLS` in `harness-sync.ts`; a test or a setup
   script never does.
-- Every switch (`[hooks]`, `[session] worktrees`) defaults to what the WoW
-  family runs: the lock on, one shared checkout. A message or a line of the
+- Every switch (`[hooks]`, `[session] worktrees`, `[session] decisions`,
+  `[checks] queue`) defaults to what the WoW family runs: the lock on, one shared
+  checkout, a decision asked of the user in the child, no queue. A message or a line of the
   rules template that speaks of the lock follows `hooks.lock`
   (`{{#lock}}`/`{{^lock}}` blocks in `templates/rules-section.md`, rendered
   by `init.ts`); the family's own section must stay byte for byte what it

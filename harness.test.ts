@@ -12,7 +12,7 @@ import { HOOKS } from "./hooks";
 import { packet, sizeLine, packetRange, range, subjectProblem, trailerProblem } from "./packet";
 import { clean, headTree, matters, parse, stampDir, stampOf, verdict, workTree } from "./q";
 import { parseReview, pushProblem, record, reviewOf, waived } from "./review";
-import { linkedWorktree, loadConfig, projectRoot, repoDir, repoName, workDir } from "./config";
+import { linkedWorktree, loadConfig, projectRoot, projectTree, repoDir, repoName, toolsPath, treeConfig, workDir } from "./config";
 import { FAMILY_TOML, useBoardGuard, writeFamilyConfig } from "./testing";
 
 const KIT = import.meta.dir;
@@ -656,6 +656,13 @@ describe("config: the switches", () => {
     expect([c.hooks.lock, c.session.worktrees]).toEqual([false, true]);
   });
 
+  test("decisions are asked of the user in the child unless the file says the opener", () => {
+    expect(loadConfig(rootWith("")).session.decisions).toBe("child");
+    expect(loadConfig(rootWith('[session]\ndecisions = "opener"\n')).session.decisions).toBe("opener");
+    expect(() => loadConfig(rootWith('[session]\ndecisions = "dispatch"\n'))).toThrow('[session] decisions is "child" or "opener", not "dispatch"');
+    expect(() => loadConfig(rootWith("[session]\ndecisions = true\n"))).toThrow('[session] decisions is "child" or "opener", not true');
+  });
+
   test("a switch that is not true or false is an error, never the default", () => {
     expect(() => loadConfig(rootWith('[hooks]\nlock = "false"\n'))).toThrow('[hooks] lock is true or false, not "false"');
     expect(() => loadConfig(rootWith("[session]\nworktrees = 1\n"))).toThrow("[session] worktrees is true or false, not 1");
@@ -715,6 +722,43 @@ describe("worktrees", () => {
     const owt = join(tmp, `owt-${++n}`);
     expect(git(other, "worktree", "add", "-q", "-b", "oside", owt).code).toBe(0);
     expect(workDir("repo", owt)).toBe(repo);
+  });
+
+  test("projectTree: the worktree of a one-repository project's root is its own tree, the main checkout and the family's root stay the root", () => {
+    // a one-repository project: harness.toml inside the repository
+    const main = join(tmp, `one-${++n}`);
+    mkdirSync(main);
+    git(main, "init", "-q", "-b", "main");
+    writeFileSync(join(main, "harness.toml"), '[tools]\ndir = "tools"\n');
+    git(main, "add", "-A");
+    git(main, "commit", "-q", "-m", "chore: first");
+    const wt = join(tmp, `onewt-${++n}`);
+    expect(git(main, "worktree", "add", "-q", "-b", "side", wt).code).toBe(0);
+    mkdirSync(join(wt, "sub"));
+    expect(projectTree(main)).toBe(main);
+    expect(projectTree(wt)).toBe(wt);
+    expect(projectTree(join(wt, "sub"))).toBe(wt);
+    expect(loadConfig(wt).root).toBe(main);
+    expect(toolsPath(wt)).toBe(join(wt, "tools"));
+    expect(toolsPath(main)).toBe(join(main, "tools"));
+    // the worktree's own file is the tree's config (a branch may change a switch); the shared one is the main's
+    writeFileSync(join(wt, "harness.toml"), '[tools]\ndir = "kit"\n[session]\ndecisions = "opener"\n');
+    expect([treeConfig(wt).session.decisions, treeConfig(wt).toolsDir]).toEqual(["opener", "kit"]);
+    expect(toolsPath(wt)).toBe(join(wt, "kit"));
+    expect(loadConfig(wt).session.decisions).toBe("child");
+    expect(treeConfig(main)).toBe(loadConfig(main));
+    // a worktree without its own file reads the shared one
+    rmSync(join(wt, "harness.toml"));
+    expect(treeConfig(wt).toolsDir).toBe("tools");
+    // the family's shape: a worktree of one of its repositories is no tree of the root, which is no repository
+    const { root, repo } = family();
+    setRoot(root);
+    const fwt = join(tmp, `fwt-${++n}`);
+    expect(git(repo, "worktree", "add", "-q", "-b", "fside", fwt).code).toBe(0);
+    expect(projectTree(root)).toBe(root);
+    expect(projectTree(repo)).toBe(root);
+    expect(projectTree(fwt)).toBe(root);
+    expect(toolsPath(fwt)).toBe(join(root, "addon-kit"));
   });
 
   test("packet.ts and review.ts given a repository's name, from its worktree, read and record that worktree", () => {

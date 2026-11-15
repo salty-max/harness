@@ -58,13 +58,25 @@ branch each, the work meeting in pull requests) says so in `harness.toml`:
 lock = false        # nothing is shared to queue for: the board is a list
 [session]
 worktrees = true    # session.ts and the child skill open every child in one
+decisions = "opener"  # only if the user takes every decision in the dispatch session:
+                      # a child asks them nothing, it sends each question and go to its opener
+[checks]
+queue = true        # optional: one check at a time on the machine, the others wait
 ```
 
 and renders its Harness block again (`bun init.ts <project> --section-only`):
-the lock's words go, the worktree rules come. `doctor.ts` names a block that
-no longer matches the config. Install the hooks from the main checkout only
+the lock's words go, the worktree rules come, and with `decisions = "opener"`
+the questions and the go are the opener's. `doctor.ts` names a block that no
+longer matches the config. Install the hooks from the main checkout only
 (`hooks.ts install .` refuses a worktree: `core.hooksPath` is the
-repository's, every worktree's).
+repository's, every worktree's, and what it writes is the absolute path of the
+main checkout's githooks, so a worktree's own copy of the tools never replaces
+them).
+
+Given a worktree of the project, `init.ts`, `harness-sync.ts` and `doctor.ts`
+write and judge that worktree's own files (its copies, `CLAUDE.md`,
+`.claude/settings.json`, the config text a branch changed), never the main
+checkout's; `init.ts` leaves the hooks to the main checkout and says so.
 
 ## 3. Check it took
 

@@ -96,6 +96,7 @@ queue = false                     # true: one `check` at a time on this machine,
 rules  = "CLAUDE.md"              # what a child reads first
 models = { code = "opusplan", prose = "opus" }
 worktrees = false                 # true: every child works in a git worktree of its own (see "Worktrees" below)
+decisions = "child"               # "opener": a child asks the user nothing, it sends each question and go to its opener
 ```
 
 The reader (`config.ts`), in this order: `HARNESS_ROOT` (and `WOW_ADDONS_ROOT`
@@ -139,8 +140,52 @@ is clean whatever its children did. `worktrees = true` is for a project that
 is one repository: `claude --bg --worktree` makes the worktree of the
 repository it starts in, so a root of many repositories gets none asked
 (`doctor.ts` says so). `hooks.ts install` refuses in a linked worktree: `core.hooksPath` is
-shared by all of them. A config the hooks can't read is said on stderr by
+shared by all of them, and what install writes is the absolute path of the
+main checkout's githooks, so a worktree's own copy of the tools is never the
+hooks that run (a relative one, husky's `.husky/_`, is resolved from each
+worktree). A config the hooks can't read is said on stderr by
 `config.ts hook` (answering `on`: every gate stays on, none quietly off).
+
+*Leftovers* (15 November 2026, the same project using it):
+
+- A tool that writes the project's own files given a worktree writes that worktree's:
+  `config.ts`'s `projectTree` (the linked worktree of the root's repository `from`
+  is in, else the root), `toolsPath` and `treeConfig` (the worktree's own
+  `harness.toml`, for what is rendered into it: a branch may change a switch).
+  `harness-sync.ts` writes and checks the worktree's copies, `init.ts` adopts the worktree
+  (the hooks left to the main checkout), `doctor.ts` judges its tools, `CLAUDE.md`
+  section, settings and config text, and the hooks as the repository has them. The
+  board, the lock and the stamps stay the shared config's. A root that is no
+  repository (the family's) has no worktree of it: nothing changes there.
+- *Unpushed* (`trees.ts`, used by `session.ts check|close|children`) is counted
+  by content, not by id: a project that merges by rebase leaves a child's
+  commits with new ids on the remote's branch, which read unpushed for good. Of
+  the commits of HEAD on no remote by id, none is left when `git merge-tree
+  --write-tree` of HEAD into the upstream or the remote's default branch is that
+  branch's own tree (its work is there, however the rebase moved the context
+  lines: `git cherry`'s patch id, which takes context in, misses those); else
+  the oldest ones that are, then those a `git cherry` `-` line says the branch has,
+  are set aside, and the rest counted. A patch changed on the way counts: the
+  safe side. A merge commit alone, with something no branch has, is 1. A commit
+  that changes nothing is nothing to lose. The remote as last fetched: a branch
+  merged since reads unpushed until `git fetch` (the close message says so).
+- `status.ts` and the pane read each repository's linked worktrees (`worktreesOf`,
+  only where `.git/worktrees` exists): a worktree with uncommitted files or commits
+  no remote has is a row under its repository and wants a hand; the pane's
+  Repositories box draws it, never `held` for a project whose lock is off
+  (`running`), nor a lock's "on X" on its blocked cards; its Gates box says a check
+  waits in the queue.
+- `[session] decisions = "opener"` is for a project whose user takes every
+  decision in the dispatch session, never in a child (hundo). `session.ts`'s
+  prompt then tells the child it asks the user nothing: each question or go (a
+  push, a merge, any choice) goes to its opener with the options and its
+  recommendation, and it stops; the opener asks, then pushes on the answer or
+  relays it quoted. One exception, said in the prompt of a `--plan` child:
+  leaving plan mode asks the user in the child's own session, and nothing routes
+  that to the opener. The rules template's two bullets on questions and the go follow
+  the switch (`{{#opener}}`/`{{^opener}}`), and the `child` skill describes both
+  modes. The default is the family's: the question tool in the child, and the go
+  asked there.
 
 **The check queue** (15 November 2026, asked for by hundo: several child
 sessions in parallel worktrees each ran a heavy `check` at once, the load
@@ -167,7 +212,8 @@ running while the lock looks stale, and a Mac that sleeps through the hour
 makes a healthy holder look wedged (two checks overlap, load and never a
 wrong stamp); a queue orders q's runs and nothing
 else (a bare `bun test`, a check parallel inside itself, the sessions' own
-work); the panel does not show a waiting run.
+work); the panel says a check waits (under the run, never lit) but lights
+only what runs.
 
 A one-repository project: root = the repository; the repo's name is
 `project.name`; the lock's unit (a card's `repos`) is that name. The name need

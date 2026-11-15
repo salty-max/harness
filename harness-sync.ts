@@ -3,6 +3,7 @@
  * each file under a stamp line naming the harness commit it is a copy of:
  *
  *   bun harness-sync.ts <project folder>            write the copies into harness.toml's [tools] dir
+ *                                                   (a worktree of the project given: its own copies, never the main checkout's)
  *   bun harness-sync.ts --dirty <project folder>    a trial copy of uncommitted harness code ("<sha>+")
  *   bun harness-sync.ts --check <project folder>    fail if a copy isn't the harness's at its stamp
  *   --tools-only / --hooks-only                     half of the copies (a project whose hooks every repository runs swaps them last)
@@ -23,10 +24,10 @@
  */
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { loadConfig } from "./config";
+import { loadConfig, toolsPath, treeConfig } from "./config";
 
 const SRC = new URL(".", import.meta.url).pathname.replace(/\/$/, "");
-export const TOOLS = ["config", "events", "board", "q", "queue", "hooks", "review", "packet", "each", "status", "usage", "session"].map((t) => `${t}.ts`);
+export const TOOLS = ["config", "events", "board", "q", "queue", "trees", "hooks", "review", "packet", "each", "status", "usage", "session"].map((t) => `${t}.ts`);
 export const VENDORED = [...TOOLS, ...readdirSync(join(SRC, "githooks")).sort().map((h) => `githooks/${h}`)];
 const STAMP = /^(?:\/\/|#) harness ([0-9a-f]{7,40}\+?): a copy; edit it in the harness repository instead$/;
 
@@ -63,11 +64,11 @@ function stampNow(dirty: boolean): string | { error: string } {
 }
 
 export function sync(project: string, dirty = false, only?: "tools" | "hooks"): string[] | { error: string } {
-  const conf = loadConfig(project);
+  const conf = treeConfig(project);
   const sha = stampNow(dirty);
   if (typeof sha !== "string") return sha;
   const out: string[] = [];
-  const dest = join(conf.root, conf.toolsDir);
+  const dest = toolsPath(project);
   for (const f of VENDORED) {
     if (only === "tools" && shell(f)) continue;
     if (only === "hooks" && !shell(f)) continue;
@@ -98,8 +99,8 @@ export function sync(project: string, dirty = false, only?: "tools" | "hooks"): 
 
 /** Problems that fail the check, then notes (a stale copy). */
 export function check(project: string): { problems: string[]; notes: string[] } {
-  const conf = loadConfig(project);
-  const dest = join(conf.root, conf.toolsDir);
+  const conf = treeConfig(project);
+  const dest = toolsPath(project);
   const problems: string[] = [];
   const notes: string[] = [];
   const sources = existsSync(join(SRC, ".git"));

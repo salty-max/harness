@@ -3,7 +3,10 @@
  * stands against GitHub, what's left uncommitted, each workflow's last run on
  * its branch, the pull requests open, and whether its test build in iCloud
  * (the addon's zip, Ravenpost's Windows exe) is its HEAD, whether a check
- * passed on HEAD's tree (q.ts's stamp), and the task board's open cards.
+ * passed on HEAD's tree (q.ts's stamp), and the task board's open cards. A
+ * repository's linked worktrees (a project whose children each work in one)
+ * are read too: a worktree with uncommitted files or commits no remote has
+ * (by patch: a rebase-merged one is pushed) is a row of its own and wants a hand.
  * What wants a hand is listed last. A script, not a model: every answer here is mechanical.
  *
  *   bun status.ts             fetch first, then the table
@@ -21,6 +24,7 @@ import { cards, lines } from "./board";
 import { hooksWant, state } from "./hooks";
 import { checkCommand, headTree, stampOf } from "./q";
 import { loadConfig, repoDir, repoNames, toolCmdIn } from "./config";
+import { type TreeState, treeState, worktreesOf } from "./trees";
 import { lastSummary, line as usageLine } from "./usage";
 
 // the family folder, from a worktree too (root.ts); found when first asked,
@@ -54,6 +58,8 @@ export type Repo = {
   timedOut?: string[];
   /** The fetch failed: ahead and behind are against origin as last fetched. */
   fetchFailed?: boolean;
+  /** Its linked worktrees, each with its own uncommitted files and commits no remote has (-1: no remote); absent when it has none. */
+  trees?: TreeState[];
 };
 
 // ── helpers, pure (tools.test.ts) ───────────────────────────────────────────
@@ -87,6 +93,7 @@ export function attention(r: Repo): string[] {
   if (r.ahead) out.push(`${r.ahead} commit${r.ahead > 1 ? "s" : ""} to push`);
   if (r.behind) out.push(`${r.behind} commit${r.behind > 1 ? "s" : ""} to pull`);
   if (r.ahead && r.checked === false) out.push(`no passing check on HEAD's tree (${toolCmdIn("q", r.name)} check -- ${r.check ?? "bun run check"})`);
+  for (const t of r.trees ?? []) out.push(...treeAttention(t));
   for (const run of r.runs ?? []) {
     if (run.status === "completed" && !["success", "skipped", "cancelled"].includes(run.conclusion))
       out.push(`${run.workflow}: ${run.conclusion} (${run.sha.slice(0, 7)})`);
@@ -94,6 +101,12 @@ export function attention(r: Repo): string[] {
   for (const pr of r.prs ?? []) out.push(`pull request #${pr.number} open: ${pr.title}`);
   out.push(...(r.extra?.attention ?? []));
   return out;
+}
+
+/** What a linked worktree wants of a hand: its uncommitted files, its commits no remote has. Nothing when it holds neither (a finished one, its branch merged). */
+export function treeAttention(t: TreeState): string[] {
+  const what = [t.dirty ? `${t.dirty} file${t.dirty > 1 ? "s" : ""} uncommitted` : "", t.ahead > 0 ? `${t.ahead} commit${t.ahead > 1 ? "s" : ""} to push` : ""].filter(Boolean);
+  return what.length ? [`worktree ${t.branch ?? "(detached)"} (${t.path}): ${what.join(", ")}`] : [];
 }
 
 // ── reading the repositories ────────────────────────────────────────────────
@@ -178,6 +191,8 @@ export async function read(name: string, fetch: boolean): Promise<Repo> {
     r.ahead = a || 0;
     r.behind = b || 0;
   }
+  const trees = worktreesOf(dir).map(treeState);
+  if (trees.length) r.trees = trees;
   await github(r);
   await extend(r, dir);
   const tree = headTree(dir);
@@ -195,6 +210,11 @@ function table(repos: Repo[]) {
     console.log(
       `${r.name.padEnd(w)}  ${sync.padEnd(7)} ${r.dirty ? `±${r.dirty}`.padEnd(4) : "    "} ${check.padEnd(7)} ${zip.padEnd(7)} ${runs}`,
     );
+    // (a worktree is a row under its repository when it holds something; the clean ones are a count)
+    const busy = (r.trees ?? []).filter((t) => t.dirty || t.ahead > 0);
+    for (const t of busy) console.log(`${"".padEnd(w)}  ↳ ${(t.branch ?? "(detached)").padEnd(Math.max(7, ...busy.map((x) => (x.branch ?? "(detached)").length)))} ${t.ahead > 0 ? `↑${t.ahead}` : "  "} ${t.dirty ? `±${t.dirty}` : ""}`.trimEnd());
+    const idle = (r.trees ?? []).length - busy.length;
+    if (idle > 0) console.log(`${"".padEnd(w)}  ↳ ${idle} more worktree${idle > 1 ? "s" : ""}, nothing in ${idle > 1 ? "them" : "it"}`);
   }
   const todo = repos.flatMap((r) => attention(r).map((a) => `${r.name}: ${a}`));
   console.log(todo.length ? `\nWants a hand:\n${todo.map((t) => `  - ${t}`).join("\n")}` : "\nNothing wants a hand.");
