@@ -11,16 +11,24 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { check } from "./harness-sync";
 import { CONFIG_FILE, loadConfig, repoDir } from "./config";
+import { renderSection, withSection } from "./init";
 import { checkCommand } from "./q";
 
 const KNOWN = new Set(["include", "project", "state", "tools", "repos", "defaults", "groups", "hooks", "review", "extensions", "session"]);
+// (a misspelt switch is a switch that was never set: `lok = false` leaves the lock on, quietly)
+const KNOWN_KEYS: Record<string, string[]> = { hooks: ["trailers", "lock", "stamp", "review"], session: ["rules", "models", "worktrees"] };
 
 export function problems(project: string): string[] {
   const out: string[] = [];
   const conf = loadConfig(project);
   const file = join(conf.root, CONFIG_FILE);
   if (existsSync(file)) {
-    for (const k of Object.keys(Bun.TOML.parse(readFileSync(file, "utf8")))) if (!KNOWN.has(k)) out.push(`${CONFIG_FILE}: unknown key [${k}]`);
+    const own = Bun.TOML.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+    for (const k of Object.keys(own)) if (!KNOWN.has(k)) out.push(`${CONFIG_FILE}: unknown key [${k}]`);
+    for (const [table, keys] of Object.entries(KNOWN_KEYS)) {
+      const t = own[table];
+      if (t && typeof t === "object") for (const k of Object.keys(t)) if (!keys.includes(k)) out.push(`${CONFIG_FILE}: unknown key ${k} in [${table}] (${keys.join(", ")})`);
+    }
   } else out.push(`${CONFIG_FILE}: not there (running on defaults)`);
   for (const [what, p] of [["packet extension", conf.extensions.packet], ["status extension", conf.extensions.status]] as const)
     if (p && !existsSync(join(conf.root, p))) out.push(`[extensions] ${what} ${p}: no such file`);
@@ -39,10 +47,22 @@ export function problems(project: string): string[] {
   const vendored = join(conf.root, conf.toolsDir, "hooks.ts");
   if (existsSync(vendored)) {
     const p = Bun.spawnSync(["bun", vendored, "status"], { cwd: conf.root, env: { ...process.env, HARNESS_ROOT: conf.root }, stderr: "pipe" });
-    if (p.exitCode !== 0) out.push(`hooks: ${(p.stdout.toString() + p.stderr.toString()).trim().split("\n").filter((l) => /want|gone|not|husky/.test(l)).join("; ") || "bun " + conf.toolsDir + "/hooks.ts status says a repository wants a hand"}`);
+    if (p.exitCode !== 0) out.push(`hooks: ${(p.stdout.toString() + p.stderr.toString()).trim().split("\n").filter((l) => !l.includes("hooks ✓")).join("; ") || "bun " + conf.toolsDir + "/hooks.ts status says a repository wants a hand"}`);
   }
   out.push(...missingAsks(conf.root));
+  out.push(...staleSection(conf));
+  // (`claude --bg --worktree` makes the worktree of the repository it starts in: a root of many repositories has none to make)
+  if (conf.session.worktrees && !existsSync(join(conf.root, ".git"))) out.push(`[session] worktrees = true, but ${conf.root} is no git repository: it is for a project that is one repository (a CLI child gets no --worktree here)`);
   return out;
+}
+
+/** The Harness section of the project's CLAUDE.md when it isn't the one the config renders (the lock off, worktrees on, a newer template): init.ts --section-only writes it. */
+export function staleSection(conf: ReturnType<typeof loadConfig>): string[] {
+  const file = join(conf.root, "CLAUDE.md");
+  if (!existsSync(file)) return [];
+  const have = readFileSync(file, "utf8");
+  if (!have.includes("<!-- harness:start -->")) return [];
+  return withSection(have, renderSection(conf)) === have ? [] : [`CLAUDE.md: the Harness section isn't the one this config renders (bun init.ts ${conf.root} --section-only, from the harness repository)`];
 }
 
 /** The template's permission asks a project's .claude/settings.json lacks (init.ts merges them in). */

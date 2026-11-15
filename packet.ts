@@ -8,11 +8,15 @@
  *
  *   bun packet.ts <repo> [range]
  *
- *   repo   a repository's name in harness.toml, or a path
+ *   repo   a repository's name in harness.toml, or a path. A name, from
+ *          inside a worktree of that repository, is that worktree: the files
+ *          read are the ones in the folder the packet says it used
  *   range  a..b, a...b, or one commit; by default everything not on GitHub
  *          yet: @{u}..HEAD and the uncommitted files (with no upstream,
  *          everything no remote has, from where it left the remotes'
- *          history; with no remote either, the last commit)
+ *          history; with no remote at all, the whole history; with nothing
+ *          unpushed, the uncommitted files alone: name a range, HEAD for the
+ *          last commit, to read more)
  *
  * Writes <repo>/.cache/review/<sha>.md (<sha>: the range's tip) and prints
  * its path and one line. Under its title, `<!-- range: <base> <tip> -->`:
@@ -26,7 +30,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { cacheDir, checkCommand, stampOf, workTree, type Stamp } from "./q";
-import { loadConfig, repoDir, repoName } from "./config";
+import { linkedWorktree, loadConfig, repoName, workDir } from "./config";
 
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 const MAX_COMMITS = 100;
@@ -104,7 +108,8 @@ export function range(dir: string, arg?: string): Range | string {
     return { base: git(dir, "merge-base", tip, ...remotes) ?? EMPTY_TREE, tip, label: "everything no remote has (no upstream) and the uncommitted files", working: true };
   // (never pushed anywhere, no remote's ref at all: its first push sends all of it)
   if (!remotes.length) return { base: EMPTY_TREE, tip, label: "the whole history (never pushed) and the uncommitted files", working: true };
-  return { base: rev("HEAD^") ?? EMPTY_TREE, tip, label: "the last commit (no upstream) and the uncommitted files", working: true };
+  // (HEAD is on a remote already, nothing unpushed: only what is not committed is to read. A fresh branch cut from main must not drag in main's last commit)
+  return { base: tip, tip, label: "the uncommitted files (nothing unpushed: name a range, HEAD for the last commit, to read more)", working: true };
 }
 
 // ── the rules a script checks, pure (harness.test.ts) ───────────────────────
@@ -229,11 +234,13 @@ if (import.meta.main) {
     console.error("usage: bun packet.ts <repo> [range]");
     process.exit(2);
   }
-  const dir = isAbsolute(repo) || repo.startsWith(".") ? resolve(repo) : repoDir(repo);
+  const dir = isAbsolute(repo) || repo.startsWith(".") ? resolve(repo) : workDir(repo);
   const res = packet(dir, arg);
   if (typeof res === "string") {
     console.error(res);
     process.exit(1);
   }
   console.log(`${res.file}\n${res.summary}`);
+  const top = git(dir, "rev-parse", "--show-toplevel") ?? dir;
+  if (linkedWorktree(top)) console.error(`note: read in the worktree ${top}`);
 }

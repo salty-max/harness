@@ -6,14 +6,14 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } fr
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { add, before, cardId, cards, conflicts, format, holders, holding, isHeld, lines, options, parseCard, repoList, set, setSection, slug, strangers, waitingOn, warnings } from "./board";
+import { add, before, cardId, cards, conflicts, format, holders, holding, isHeld, lines, mayWrite, options, parseCard, repoList, set, setSection, slug, strangers, waitingOn, warnings } from "./board";
 import { eventLine, eventsPath, logEvent, repoOf } from "./events";
 import { HOOKS } from "./hooks";
 import { packet, sizeLine, packetRange, range, subjectProblem, trailerProblem } from "./packet";
 import { clean, headTree, matters, parse, stampDir, stampOf, verdict, workTree } from "./q";
 import { parseReview, pushProblem, record, reviewOf, waived } from "./review";
-import { loadConfig, projectRoot, repoDir, repoName } from "./config";
-import { useBoardGuard, writeFamilyConfig } from "./testing";
+import { linkedWorktree, loadConfig, projectRoot, repoDir, repoName, workDir } from "./config";
+import { FAMILY_TOML, useBoardGuard, writeFamilyConfig } from "./testing";
 
 const KIT = import.meta.dir;
 const GIT_ENV = {
@@ -471,6 +471,38 @@ describe("git hooks", () => {
     newEvents();
   });
 
+  test("a config that can't be read is said, never quietly: the gates stay on", () => {
+    const { root, repo } = hooked();
+    const env = { HARNESS_ROOT: root, WOW_ADDONS_ROOT: root, CLAUDE_CODE_SESSION_ID: "s-cfg", CI: "" };
+    writeFileSync(join(root, "harness.toml"), `${FAMILY_TOML}\n[hooks]\nlock = "false"\n`);
+    // a session's commit: refused, and the person is told why (the config's own words, not a bare "no card")
+    const session = run(repo, ["git", "commit", "-q", "--allow-empty", "-m", "chore: x"], env);
+    expect(session.code).not.toBe(0);
+    expect(session.err).toContain("the config can't be read");
+    expect(session.err).toContain('[hooks] lock is true or false, not "false"');
+    // a person's: let through (the gates can't be told off by a typo), the message still said
+    const person = run(repo, ["git", "commit", "-q", "--allow-empty", "-m", "chore: y"], { ...env, CLAUDE_CODE_SESSION_ID: "" });
+    expect(person.code).toBe(0);
+    expect(person.err).toContain("the config can't be read");
+    // mended: no card, no refusal, the switch read as off
+    writeFileSync(join(root, "harness.toml"), `${FAMILY_TOML}\n[hooks]\nlock = false\n`);
+    const free = run(repo, ["git", "commit", "-q", "--allow-empty", "-m", "chore: z"], env);
+    expect(free.code).toBe(0);
+    expect(free.err).toBe("");
+    newEvents();
+  });
+
+  test("hooks.ts install refuses in a linked worktree: core.hooksPath is every worktree's", () => {
+    const f = family();
+    const wt = join(tmp, `hookwt-${++n}`);
+    expect(git(f.repo, "worktree", "add", "-q", "-b", "hookside", wt).code).toBe(0);
+    const out = run(wt, ["bun", join(KIT, "hooks.ts"), "install", wt], { CI: "" }).out;
+    expect(out).toContain("a linked worktree");
+    expect(out).toContain(f.repo);
+    expect(git(f.repo, "config", "core.hooksPath").code).not.toBe(0);
+    expect(run(f.repo, ["bun", join(KIT, "hooks.ts"), "install", f.repo], { CI: "" }).out).toContain("installed");
+  });
+
   test("the repository's own hooks still run, and come back on uninstall", () => {
     const { repo } = family();
     mkdirSync(join(repo, ".husky", "_"), { recursive: true });
@@ -597,6 +629,221 @@ describe("config", () => {
     } finally {
       resetRoot();
     }
+  });
+});
+
+describe("config: the switches", () => {
+  beforeEach(() => {
+    delete process.env.HARNESS_ROOT;
+    delete process.env.WOW_ADDONS_ROOT;
+  });
+  afterEach(resetRoot);
+  const rootWith = (toml: string) => {
+    const root = join(tmp, `sw-${++n}`);
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, "harness.toml"), toml);
+    return root;
+  };
+  const hook = (root: string, name: string) => run(root, ["bun", join(KIT, "config.ts"), "hook", name], { HARNESS_ROOT: root });
+
+  test("the lock is on and the children share a checkout unless the file says otherwise", () => {
+    expect(loadConfig(rootWith("")).hooks).toEqual({ trailers: true, lock: true, stamp: true, review: true });
+    expect(loadConfig(rootWith("")).session.worktrees).toBe(false);
+    const c = loadConfig(rootWith("[hooks]\nlock = false\n[session]\nworktrees = true\n"));
+    expect([c.hooks.lock, c.session.worktrees]).toEqual([false, true]);
+  });
+
+  test("a switch that is not true or false is an error, never the default", () => {
+    expect(() => loadConfig(rootWith('[hooks]\nlock = "false"\n'))).toThrow('[hooks] lock is true or false, not "false"');
+    expect(() => loadConfig(rootWith("[session]\nworktrees = 1\n"))).toThrow("[session] worktrees is true or false, not 1");
+  });
+
+  test("config.ts hook: a name it knows, on or off; one it doesn't is refused", () => {
+    const root = rootWith("[hooks]\nlock = false\n");
+    expect(hook(root, "lock").out.trim()).toBe("off");
+    expect(hook(root, "stamp").out.trim()).toBe("on");
+    const bad = hook(root, "lok");
+    expect(bad.code).toBe(2);
+    expect(bad.err).toContain('no hook "lok"');
+    expect(hook(root, "").code).toBe(2);
+  });
+
+  test("config.ts hook: a file that can't be read says so on stderr and answers on", () => {
+    const syntax = hook(rootWith("[hooks\nlock = false\n"), "lock");
+    expect(syntax.code).toBe(0);
+    expect(syntax.out.trim()).toBe("on");
+    expect(syntax.err).toContain("the config can't be read, so every gate stays on");
+    const typo = hook(rootWith('[hooks]\nlock = "false"\n'), "lock");
+    expect([typo.out.trim(), typo.err.includes('lock is true or false, not "false"')]).toEqual(["on", true]);
+  });
+});
+
+describe("worktrees", () => {
+  beforeEach(() => {
+    delete process.env.HARNESS_ROOT;
+    delete process.env.WOW_ADDONS_ROOT;
+  });
+  afterEach(resetRoot);
+  function withWorktree() {
+    const f = family();
+    setRoot(f.root);
+    const wt = join(tmp, `wt-${++n}`);
+    expect(git(f.repo, "worktree", "add", "-q", "-b", "side", wt).code).toBe(0);
+    return { ...f, wt };
+  }
+
+  test("workDir: the worktree the working directory is in when it is the repository's, else the main checkout", () => {
+    const { root, repo, wt } = withWorktree();
+    mkdirSync(join(wt, "sub"));
+    expect(workDir("repo", wt)).toBe(wt);
+    expect(workDir("repo", join(wt, "sub"))).toBe(wt);
+    expect(workDir("repo", repo)).toBe(repo);
+    expect(workDir("repo", root)).toBe(repo);
+    // (what status, hooks and doctor want stays the main checkout)
+    expect(repoDir("repo", wt)).toBe(repo);
+    expect(linkedWorktree(wt)).toMatchObject({ top: wt, branch: "side" });
+    expect(linkedWorktree(repo)).toBeUndefined();
+    expect(linkedWorktree(root)).toBeUndefined();
+    // a worktree of another repository is none of this one's
+    const other = join(root, "other");
+    mkdirSync(other);
+    git(other, "init", "-q", "-b", "main");
+    git(other, "commit", "-q", "--allow-empty", "-m", "chore: first");
+    const owt = join(tmp, `owt-${++n}`);
+    expect(git(other, "worktree", "add", "-q", "-b", "oside", owt).code).toBe(0);
+    expect(workDir("repo", owt)).toBe(repo);
+  });
+
+  test("packet.ts and review.ts given a repository's name, from its worktree, read and record that worktree", () => {
+    const { root, repo, wt } = withWorktree();
+    writeFileSync(join(wt, "only-here.txt"), "x\n");
+    const p = run(wt, ["bun", join(KIT, "packet.ts"), "repo"], { HARNESS_ROOT: root });
+    expect(p.code).toBe(0);
+    expect(p.err).toContain(`the worktree ${wt}`);
+    const file = p.out.split("\n")[0]!;
+    expect(file.startsWith(wt)).toBe(true);
+    const text = readFileSync(file, "utf8");
+    expect(text).toContain("only-here.txt");
+    expect(text).not.toContain(repo + "/only-here");
+    const r = run(wt, ["bun", join(KIT, "review.ts"), "repo", "clean"], { HARNESS_ROOT: root });
+    expect(r.code).toBe(0);
+    expect(r.err).toContain(`the worktree ${wt}`);
+    // the verdict is of the worktree's tree, not the main checkout's
+    expect(existsSync(join(stampDir(wt)!, `review-tree-${workTree(wt)}`))).toBe(true);
+    expect(workTree(repo)).not.toBe(workTree(wt));
+    expect(existsSync(join(stampDir(repo)!, `review-tree-${workTree(repo)}`))).toBe(false);
+    // from the family folder the name is the main checkout again
+    const main = run(root, ["bun", join(KIT, "packet.ts"), "repo"], { HARNESS_ROOT: root });
+    expect(main.out.split("\n")[0]!.startsWith(repo)).toBe(true);
+    expect(main.err).toBe("");
+  });
+
+  test("a fresh branch with nothing unpushed: the uncommitted files alone, not the last commit", () => {
+    const { repo } = family();
+    const sha = (rev: string) => git(repo, "rev-parse", rev).out.trim();
+    const remote = join(tmp, `remote-${++n}.git`);
+    git(tmp, "init", "-q", "--bare", remote);
+    git(repo, "remote", "add", "origin", remote);
+    git(repo, "push", "-q", "origin", "main");
+    git(repo, "checkout", "-q", "-b", "fresh");
+    expect(range(repo)).toMatchObject({ base: sha("HEAD"), tip: sha("HEAD"), working: true });
+    expect((range(repo) as { label: string }).label).toContain("the uncommitted files (nothing unpushed");
+    writeFileSync(join(repo, "u.txt"), "u\n");
+    const res = packet(repo);
+    if (typeof res === "string") throw new Error(res);
+    const text = readFileSync(res.file, "utf8");
+    expect(text).toContain("## Commits (0)");
+    expect(text).toContain("u.txt");
+    expect(text).not.toContain("chore: first");
+    expect(res.summary).toContain("1 file");
+    // an explicit range still reads the last commit
+    expect(range(repo, "HEAD")).toMatchObject({ base: "4b825dc642cb6eb9a060e54bf8d69288fbee4904", tip: sha("HEAD"), working: false });
+  });
+
+  test("a card names the worktree its own session writes it from, and no other session's set changes it", () => {
+    const { root, repo, wt } = withWorktree();
+    const env = { HARNESS_ROOT: root, CLAUDE_CODE_SESSION_ID: "s-wtcard", CI: "" };
+    const board = (cwd: string, e: Record<string, string>, ...args: string[]) => run(cwd, ["bun", join(KIT, "board.ts"), ...args], { ...env, ...e });
+    const added = board(wt, {}, "add", "repo", "in a worktree");
+    expect(added.code).toBe(0);
+    const id = added.out.trim();
+    const read = () => readFileSync(join(root, "board", `${id}.md`), "utf8");
+    expect(read()).toContain(`worktree: ${wt}`);
+    expect(parseCard(id, read()).worktree).toBe(wt);
+    // an opener moving the card from the main checkout, as another session, leaves it
+    board(repo, { CLAUDE_CODE_SESSION_ID: "s-opener" }, "set", id, "--status", "waiting-test");
+    expect(parseCard(id, read())).toMatchObject({ worktree: wt, status: "waiting-test" });
+    // the card's own session, from the main checkout: kept, not cleared
+    board(repo, {}, "set", id, "--status", "running");
+    expect(parseCard(id, read()).worktree).toBe(wt);
+    // a card written from the main checkout, or by no session, names none
+    const plain = board(repo, {}, "add", "repo", "in the main one");
+    expect(readFileSync(join(root, "board", `${plain.out.trim()}.md`), "utf8")).not.toContain("worktree:");
+    const nobody = board(wt, { CLAUDE_CODE_SESSION_ID: "" }, "add", "repo", "no session");
+    expect(readFileSync(join(root, "board", `${nobody.out.trim()}.md`), "utf8")).not.toContain("worktree:");
+    // the format round-trips with a path that needs quoting
+    const odd = "/tmp/Application Support/x: y";
+    expect(parseCard("c", format({ ...parseCard("c", `---\nrepo: r\nstatus: running\nsession: s\nupdated: x\n---\n`), worktree: odd })).worktree).toBe(odd);
+  });
+});
+
+describe("the lock switch, in the board's words", () => {
+  const card = (id: string, status: string, session: string, repos: string[], since = "2026-10-20T21:00:00+02:00", waits = "") =>
+    parseCard(id, `---\nrepo: ${repos[0]}\nstatus: ${status}\nsession: ${session}\nupdated: "${since}"\nrepos: "${repos.join(", ")}"\nsince: "${since}"\n${waits ? `waits: ${waits}\n` : ""}---\n`);
+  const a = card("hundo-first", "running", "A", ["hundo"], "2026-10-20T20:00:00+02:00");
+  const b = card("hundo-second", "running", "B", ["hundo", "wow-data"], "2026-10-20T21:00:00+02:00");
+  const stopped = card("hundo-older", "waiting-test", "D", ["hundo"]);
+  const list = [a, b, stopped];
+
+  test("no lock: whoever else is running there is a note, nobody is told to wait or to write nothing", () => {
+    expect(warnings(b, list, undefined, false)).toEqual([
+      "note: hundo has hundo-first running too (since 20:00, session A): nothing makes either of you wait, so keep to your own files and say so to that session",
+      "note: hundo has hundo-older (waiting-test) with unpushed work: its commits go out with the next push",
+    ]);
+    // the first to run is told the same of the second: no queue, no "told to wait"
+    expect(warnings(a, list, undefined, false)[0]).toContain("has hundo-second running too");
+    expect(warnings(a, list, undefined, false).join("\n")).not.toMatch(/held|wait until|told to wait|write nothing/);
+    // the lock on, as ever
+    expect(warnings(b, list)[0]).toStartWith("held: hundo by hundo-first");
+  });
+
+  test("no lock: a blocked card is told what runs, or that it is free, and nothing holds", () => {
+    const blocked = card("hundo-third", "blocked", "C", ["hundo"], "2026-10-20T22:00:00+02:00", "hundo-first");
+    expect(warnings(blocked, list, undefined, false)).toEqual(["still running: hundo by hundo-first (running): you blocked this card on a choice, nothing makes it wait", "still running: hundo by hundo-second (running): you blocked this card on a choice, nothing makes it wait"]);
+    expect(warnings(blocked, [blocked, stopped], undefined, false)).toEqual(["free: no other card is running in hundo: set hundo-third --status running"]);
+    expect(warnings(blocked, list)[0]).toStartWith("still held: hundo by hundo-first");
+  });
+
+  test("mayWrite: the card is asked either way, the holder only with the lock", () => {
+    // B came second: held with the lock, free without
+    expect(mayWrite("hundo", list, "B")).toContain("is held by hundo-first");
+    expect(mayWrite("hundo", list, "B", false)).toBeUndefined();
+    // no card of its own: asked with the lock on or off (board.ts may says it as a note when the lock is off)
+    expect(mayWrite("hundo", list, "Z", false)).toContain("this session has no card");
+    expect(mayWrite("hundo", list, "")).toBeUndefined();
+  });
+
+  test("board.ts held and may, with the lock off: a list, never a refusal", () => {
+    const root = join(tmp, `lockoff-${++n}`);
+    mkdirSync(join(root, "hundo"), { recursive: true });
+    writeFileSync(join(root, "harness.toml"), '[hooks]\nlock = false\n[state]\nboard = "board"\n');
+    const env = { HARNESS_ROOT: root, CI: "" };
+    const board = (session: string, ...args: string[]) => run(root, ["bun", join(KIT, "board.ts"), ...args], { ...env, CLAUDE_CODE_SESSION_ID: session });
+    board("s-one", "add", "hundo", "first", "--repos", "hundo");
+    const second = board("s-two", "add", "hundo", "second", "--repos", "hundo");
+    expect(second.err).toContain("has hundo-first running too");
+    expect(second.err).not.toContain("held:");
+    const held = board("s-two", "held", "hundo");
+    expect(held.code).toBe(0);
+    expect(held.out).toContain("running");
+    expect(held.out).toContain("the lock is off");
+    const may = board("s-two", "may", "hundo");
+    expect(may.code).toBe(0);
+    expect(may.out).toContain("the lock is off");
+    // no card at all: still not a refusal, said as a note
+    const none = board("s-three", "may", "hundo");
+    expect(none.code).toBe(0);
+    expect(none.err).toContain("this session has no card");
   });
 });
 

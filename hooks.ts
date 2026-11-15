@@ -12,12 +12,14 @@
  *
  * husky's prepare script (`bun install`) points core.hooksPath back at
  * .husky/_: status says so, install again. install does nothing in CI (CI
- * set): a job's push has no check stamp to show.
+ * set): a job's push has no check stamp to show. install refuses in a linked
+ * worktree: core.hooksPath is the repository's, so it would point every
+ * worktree at this one's copy of the hooks.
  */
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { headTree, stampOf } from "./q";
-import { loadConfig, repoDir, repoNames, toolCmd } from "./config";
+import { linkedWorktree, loadConfig, repoDir, repoNames, toolCmd } from "./config";
 
 export const HOOKS = join(import.meta.dir, "githooks");
 
@@ -87,6 +89,11 @@ export function install(dir: string): string {
   // its pushes; its own check and the pull request's checks gate it there)
   if (process.env.CI) return `${dir}: skipped in CI`;
   if (!existsSync(join(dir, ".git"))) return `${dir}: not a repository`;
+  // (core.hooksPath is the repository's, every worktree's: here it would name this worktree's copy of the hooks, gone with it)
+  if (linkedWorktree(dir)) {
+    const common = git(dir, "rev-parse", "--path-format=absolute", "--git-common-dir");
+    return `${dir}: a linked worktree, and core.hooksPath is shared by every worktree of the repository: install from the main checkout${common?.endsWith("/.git") ? ` (${common.slice(0, -5)})` : ""}`;
+  }
   const s = state(dir);
   if (s.ours && !s.missing) return `${dir}: already`;
   const prev = previous(dir);

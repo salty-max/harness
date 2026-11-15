@@ -6,6 +6,7 @@
  *   bun harness/config.ts repo-name [dir]   the repository's name (cwd's by default)
  *   bun harness/config.ts events-path       the event log's file ("" when off)
  *   bun harness/config.ts show              the whole config as JSON
+ *   bun harness/config.ts hook <name>       a git hook's switch, on or off (trailers, lock, stamp, review)
  *
  * The root, in this order:
  *   1. HARNESS_ROOT, or WOW_ADDONS_ROOT as its alias (the family's name for
@@ -47,7 +48,8 @@ export type Config = {
   hooks: { trailers: boolean; lock: boolean; stamp: boolean; review: boolean };
   review: { waive: RegExp[]; copies: { patterns: RegExp[]; except: string[] } };
   extensions: { packet?: string; status?: string };
-  session: { rules: string; models: { code: string; prose: string } };
+  /** worktrees: the project opens each child session in a worktree of its own (a project that shares one checkout leaves it false). */
+  session: { rules: string; models: { code: string; prose: string }; worktrees: boolean };
 };
 
 const isDir = (p: string) => existsSync(p) && statSync(p).isDirectory();
@@ -109,7 +111,7 @@ const realpath = (p: string) => {
 
 export const projectPath = (...parts: string[]) => join(projectRoot(), ...parts);
 
-function readToml(file: string, root: string, depth = 0): Table {
+export function readToml(file: string, root: string, depth = 0): Table {
   const own = Bun.TOML.parse(readFileSync(file, "utf8")) as Table;
   const inc = own.include;
   if (typeof inc !== "string" || depth > 3) return own;
@@ -127,7 +129,12 @@ function merge(a: Table, b: Table): Table {
 }
 const table = (v: unknown): Table => (v && typeof v === "object" && !Array.isArray(v) ? (v as Table) : {});
 const str = (v: unknown): string | undefined => (typeof v === "string" && v ? v : undefined);
-const bool = (v: unknown, d: boolean) => (typeof v === "boolean" ? v : d);
+/** A switch: true or false, the default when unset. Anything else is a typo (`lock = "false"`), and must not pass for the default. */
+const flag = (v: unknown, d: boolean, label: string): boolean => {
+  if (v === undefined) return d;
+  if (typeof v === "boolean") return v;
+  throw new Error(`${CONFIG_FILE}: ${label} is true or false, not ${JSON.stringify(v)}`);
+};
 
 /** The repositories: those listed, else the root itself when it is one, else every folder under it with a .git. */
 function discover(root: string, name: string, ignore: string[]): string[] {
@@ -175,13 +182,22 @@ export function parseConfig(root: string, raw: Table): Config {
     repos,
     defaults: { check: str(defaults.check), rules: str(defaults.rules) ?? "CLAUDE.md" },
     groups,
-    hooks: { trailers: bool(hooks.trailers, true), lock: bool(hooks.lock, true), stamp: bool(hooks.stamp, true), review: bool(hooks.review, true) },
+    hooks: {
+      trailers: flag(hooks.trailers, true, "[hooks] trailers"),
+      lock: flag(hooks.lock, true, "[hooks] lock"),
+      stamp: flag(hooks.stamp, true, "[hooks] stamp"),
+      review: flag(hooks.review, true, "[hooks] review"),
+    },
     review: {
       waive: waive.map((w) => new RegExp(w, "i")),
       copies: { patterns: (Array.isArray(copies.patterns) ? (copies.patterns as string[]) : []).map((w) => new RegExp(w)), except: Array.isArray(copies.except) ? (copies.except as string[]) : [] },
     },
     extensions: { packet: str(ext.packet), status: str(ext.status) },
-    session: { rules: str(session.rules) ?? str(defaults.rules) ?? "CLAUDE.md", models: { code: str(models.code) ?? "opusplan", prose: str(models.prose) ?? "opus" } },
+    session: {
+      rules: str(session.rules) ?? str(defaults.rules) ?? "CLAUDE.md",
+      models: { code: str(models.code) ?? "opusplan", prose: str(models.prose) ?? "opus" },
+      worktrees: flag(session.worktrees, false, "[session] worktrees"),
+    },
   };
 }
 
@@ -203,6 +219,29 @@ export function repoDir(name: string, from?: string): string {
   return resolve(c.root, r ? r.path : name);
 }
 export const repoNames = (from?: string) => loadConfig(from).repos.map((r) => r.name);
+
+/** The linked worktree `from` is in (its folder and branch), or undefined: not in a repository, or in its main checkout. */
+export function linkedWorktree(from: string = process.cwd()): { top: string; branch?: string } | undefined {
+  const top = git(from, "rev-parse", "--show-toplevel");
+  const dir = git(from, "rev-parse", "--path-format=absolute", "--git-dir");
+  const common = git(from, "rev-parse", "--path-format=absolute", "--git-common-dir");
+  if (!top || !dir || !common || realpath(dir) === realpath(common)) return undefined;
+  const branch = git(from, "symbolic-ref", "--short", "-q", "HEAD");
+  return { top, ...(branch ? { branch } : {}) };
+}
+
+/**
+ * The folder to work in for the repository `name`: the worktree `from` (the
+ * working directory) is in when it is one of that repository's, else its main
+ * checkout (`repoDir`). A tool given a repository's name from inside a
+ * worktree reads and writes that worktree, never the main checkout beside it.
+ */
+export function workDir(name: string, from: string = process.cwd()): string {
+  const main = repoDir(name, from);
+  const own = linkedWorktree(from);
+  const home = own && mainCheckout(own.top);
+  return own && home && realpath(home) === realpath(main) ? own.top : main;
+}
 
 /** The repository's name from any folder in it, a worktree too: the configured one, else the main checkout's folder name. */
 export function repoName(cwd: string = process.cwd()): string {
@@ -263,18 +302,39 @@ export function eventsFile(): string | undefined {
   }
 }
 
+const HOOK_NAMES = ["trailers", "lock", "stamp", "review"] as const;
+
+/**
+ * What the git hooks ask: a switch's state, `on` or `off`. A config that can't
+ * be read says so on stderr (the hooks let it through to the person) and
+ * answers `on`: every gate stays on until the file is mended, never off, and
+ * never quietly.
+ */
+function hookSwitch(name: string | undefined): void {
+  if (!(HOOK_NAMES as readonly string[]).includes(name ?? "")) {
+    console.error(`config.ts hook: ${name ? `no hook ${JSON.stringify(name)}` : "a hook name"} (${HOOK_NAMES.join(", ")})`);
+    process.exit(2);
+  }
+  try {
+    console.log(loadConfig().hooks[name as (typeof HOOK_NAMES)[number]] === false ? "off" : "on");
+  } catch (e) {
+    console.error(`harness: the config can't be read, so every gate stays on until it is mended:\n  ${(e as Error).message}`);
+    console.log("on");
+  }
+}
+
 if (import.meta.main) {
   const [cmd, arg] = process.argv.slice(2);
   try {
     if (cmd === "root") console.log(projectRoot());
     else if (cmd === "repo-name") console.log(repoName(arg ?? process.cwd()));
-    else if (cmd === "hook") console.log(loadConfig().hooks[arg as "trailers" | "lock" | "stamp" | "review"] === false ? "off" : "on");
+    else if (cmd === "hook") hookSwitch(arg);
     else if (cmd === "check") console.log(checkHint(process.cwd()) ?? "");
     else if (cmd === "term") console.log(loadConfig().term);
     else if (cmd === "events-path") console.log(eventsFile() ?? "");
     else if (cmd === "show") console.log(JSON.stringify(loadConfig(), (k, v) => (v instanceof RegExp ? v.source : v), 2));
     else {
-      console.error("usage: config.ts root | repo-name [dir] | events-path | show");
+      console.error("usage: config.ts root | repo-name [dir] | events-path | show | hook <name>");
       process.exit(2);
     }
   } catch (e) {

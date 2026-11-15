@@ -5,17 +5,40 @@ below are checked by git hooks or by tools, so they are not advice.
 
 - **One task, one session, one card.** A session's first write is its card:
   `bun {{TOOLS}}/board.ts add <repo> "<title>" --repos <repo> --try "…" --committed "(none yet)" --left "…"`.
+{{#lock}}
   It holds the repositories it names, and a commit by a Claude session is refused unless
   its running card names the repository (`board.ts held` says who got there first). Move
   the card at each stop
+{{/lock}}
+{{^lock}}
+  It names the repositories the task writes. Nothing refuses a commit for want of it
+  (`[hooks] lock = false`): keeping it is the session's own rule. Move the card at each
+  stop
+{{/lock}}
   (`board.ts set <id> --status waiting-test|waiting-review|ready-to-push|done`).
 - **Checks go through q**: `bun {{TOOLS}}/q.ts check -- <the check>`. One verdict line,
   the log in `.cache/logs/`, the tree stamped. A push is refused for a tree with no
   passing check. Never pipe a check into `tail`; anything long goes to a file.
+{{#lock}}
 - **The board is the lock.** A `held:` line means another card got there first: drop
   that repository from yours (`set <id> --repos …` without it) and go on with the rest,
   or commit what you have, `set <id> --on <holder>` and write nothing. A card whose
   session is gone still holds until the user moves it.
+{{/lock}}
+{{^lock}}
+- **The board is a list, not a lock.** A `note:` that another card is running in a
+  repository only says who else is there: keep to your own files and talk to that
+  session by its id, don't wait for it. `board.ts held` shows who runs where. A card
+  can still be `blocked --on` another, as a choice.
+{{/lock}}
+{{#worktrees}}
+- **Each child works in a worktree of its own**, on a branch of its own
+  (`[session] worktrees = true`): commit there, never in the main checkout. The board,
+  its cards and the check stamps are shared by every worktree, and `{{TOOLS}}/packet.ts`,
+  `review.ts` and `session.ts check` act on the worktree they are run from or asked
+  about. The git hooks and `harness.toml` come from the main checkout: install the
+  hooks there (`bun {{TOOLS}}/hooks.ts install .`), never from a worktree.
+{{/worktrees}}
 - **Review before the commit**: `bun {{TOOLS}}/packet.ts <repo>` on the uncommitted files,
   the `reviewer` helper reads the packet, fix what it finds, then
   `bun {{TOOLS}}/review.ts <repo> "<verdict>"`, then one commit. A push is refused for a

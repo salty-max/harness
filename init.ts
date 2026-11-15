@@ -15,6 +15,8 @@
  *   5. .claude/agents/reviewer.md and architect.md, where there are none
  *   6. a "Harness" section in CLAUDE.md between <!-- harness:start --> and
  *      <!-- harness:end --> markers, so a later run replaces only that block
+ *      (its text follows the config: `[hooks] lock = false` leaves the lock out of
+ *      it, `[session] worktrees = true` adds the worktree rules)
  *   7. .gitignore: .harness/ and .cache/
  * Commits nothing: review the diff. --dirty is harness-sync.ts's trial copy.
  * --section-only does step 6 alone, for a folder that already has its harness.toml
@@ -23,7 +25,7 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { sync } from "./harness-sync";
-import { loadConfig, parseConfig } from "./config";
+import { type Config, loadConfig, parseConfig, readToml } from "./config";
 
 const SRC = dirname(new URL(import.meta.url).pathname);
 const read = (p: string) => readFileSync(p, "utf8");
@@ -78,10 +80,34 @@ rules = "CLAUDE.md"
 # lock     = true   # a Claude session's commit wants its running card
 # stamp    = true   # a push wants a passing check on the tree
 # review   = true   # a push wants a recorded review
+# A project whose every child session works in a git worktree of its own sets lock = false
+# (nothing is shared to queue for) and:
+# [session]
+# worktrees = true
 `;
 }
 
-const fill = (text: string, tools: string, rules: string) => text.replaceAll("{{TOOLS}}", tools).replaceAll("{{RULES}}", rules);
+/** The switches a template's blocks follow: `lock` is `[hooks] lock`, `worktrees` is `[session] worktrees`. */
+export type Flags = { lock: boolean; worktrees: boolean };
+/** What the family's own sessions run on: the lock, and every child in the one shared checkout. */
+export const DEFAULT_FLAGS: Flags = { lock: true, worktrees: false };
+export const flagsOf = (c: Pick<Config, "hooks" | "session">): Flags => ({ lock: c.hooks.lock, worktrees: c.session.worktrees });
+
+/**
+ * A template filled in: its `{{#name}}…{{/name}}` blocks kept when that switch is on (`{{^name}}` when off),
+ * each marker alone on its line and gone with it, then {{TOOLS}} and {{RULES}}. Blocks never nest.
+ */
+export function fill(text: string, tools: string, rules: string, flags: Flags = DEFAULT_FLAGS): string {
+  const kept = text.replace(/^\{\{([#^])(\w+)\}\}\n([\s\S]*?)^\{\{\/\2\}\}\n/gm, (_m, kind: string, name: string, body: string) => {
+    if (!(name in flags)) throw new Error(`the template has a block for ${name}, which is no switch (${Object.keys(flags).join(", ")})`);
+    return flags[name as keyof Flags] === (kind === "#") ? body : "";
+  });
+  return kept.replaceAll("{{TOOLS}}", tools).replaceAll("{{RULES}}", rules);
+}
+
+/** The Harness section a project's config renders. */
+export const renderSection = (c: Pick<Config, "toolsDir" | "defaults" | "hooks" | "session">): string =>
+  fill(read(join(SRC, "templates", "rules-section.md")), c.toolsDir, c.defaults.rules, flagsOf(c));
 const START = "<!-- harness:start -->";
 const END = "<!-- harness:end -->";
 
@@ -142,7 +168,7 @@ if (import.meta.main) {
       process.exit(2);
     }
     const path = join(o.dir, "CLAUDE.md");
-    const next = withSection(existsSync(path) ? read(path) : undefined, fill(read(join(SRC, "templates", "rules-section.md")), c.toolsDir, c.defaults.rules));
+    const next = withSection(existsSync(path) ? read(path) : undefined, renderSection(c));
     if (existsSync(path) && next === read(path)) console.log("CLAUDE.md: the harness section is current");
     else {
       say("put the Harness section into CLAUDE.md");
@@ -160,7 +186,8 @@ if (import.meta.main) {
     say(`write harness.toml (project ${name}, check "${check}", tools in ${o.tools}/)`);
     put("harness.toml", renderToml(name, check, o.tools));
   }
-  const conf = parseConfig(resolve(o.dir), existsSync(tomlPath) ? (Bun.TOML.parse(read(tomlPath)) as any) : (Bun.TOML.parse(renderToml(name, check, o.tools)) as any));
+  // (the merged file: an include's switches count as the project's own)
+  const conf = parseConfig(resolve(o.dir), existsSync(tomlPath) ? readToml(tomlPath, resolve(o.dir)) : (Bun.TOML.parse(renderToml(name, check, o.tools)) as any));
   const tools = conf.toolsDir;
   const rules = conf.defaults.rules;
   console.log(`shape: ${existsSync(join(o.dir, ".git")) ? "one repository" : `${conf.repos.length} repositories under the folder`} (${conf.repos.map((r) => r.name).join(", ") || "none yet"})`);
@@ -207,7 +234,7 @@ if (import.meta.main) {
 
   // 6. the rules section
   const claudePath = join(o.dir, "CLAUDE.md");
-  const claude = withSection(existsSync(claudePath) ? read(claudePath) : undefined, fill(read(join(SRC, "templates", "rules-section.md")), tools, rules));
+  const claude = withSection(existsSync(claudePath) ? read(claudePath) : undefined, renderSection(conf));
   if (existsSync(claudePath) && claude === read(claudePath)) console.log("CLAUDE.md: the harness section is current");
   else {
     say("put the Harness section into CLAUDE.md");

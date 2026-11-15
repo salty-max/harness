@@ -50,6 +50,22 @@ It writes:
 A vendored copy is never hand-edited: change the tool in `$HARNESS`, commit,
 then `bun harness-sync.ts <project>` (`--check` fails on a hand edit).
 
+A project whose every child session works in a git worktree of its own (a
+branch each, the work meeting in pull requests) says so in `harness.toml`:
+
+```toml
+[hooks]
+lock = false        # nothing is shared to queue for: the board is a list
+[session]
+worktrees = true    # session.ts and the child skill open every child in one
+```
+
+and renders its Harness block again (`bun init.ts <project> --section-only`):
+the lock's words go, the worktree rules come. `doctor.ts` names a block that
+no longer matches the config. Install the hooks from the main checkout only
+(`hooks.ts install .` refuses a worktree: `core.hooksPath` is the
+repository's, every worktree's).
+
 ## 3. Check it took
 
 ```bash

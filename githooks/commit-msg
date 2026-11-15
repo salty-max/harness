@@ -4,7 +4,7 @@
 # (HARNESS_NO_CHAIN=1: this check alone, as packet.ts runs it on commits).
 here=$(cd "$(dirname "$0")" && pwd)
 bad=""
-[ "$(bun "$here/../config.ts" hook trailers 2>/dev/null)" != off ] && bad=$("$here/_ai" <"$1")
+[ "$(bun "$here/../config.ts" hook trailers)" != off ] && bad=$("$here/_ai" <"$1")
 if [ -n "$bad" ]; then
   echo "commit-msg: the $(bun "$here/../config.ts" term 2>/dev/null || echo project)'s rule, no AI co-author or \"generated with\" line:" >&2
   printf '%s\n' "$bad" | sed 's/^/  /' >&2

@@ -10,6 +10,7 @@
  *   bun board.ts list [--all] [--json]
  *   bun board.ts held [repo…]
  *   bun board.ts may <repo>   exit 1 unless this session's running card may write it
+ *                             (`[hooks] lock = false`: says nothing stops it, exit 0)
  *
  *   repos    every repository the task writes (add: the card's repo); a
  *            running card holds them, the first to run there first
@@ -35,6 +36,14 @@
  * all), exit 1 when another session's card holds one named before this
  * session's own. A card that stops running names the blocked cards it frees.
  *
+ * With `[hooks] lock = false` (a project whose child sessions each work in a
+ * worktree of their own) the board is a list and no lock: the same overlaps
+ * are `note:` lines ("running too"), `held` lists who runs where and never
+ * exits 1, `may` never refuses, and the pre-commit hook asks nobody.
+ *
+ * A card the session that owns it writes from a linked worktree names it
+ * (`worktree:`): session.ts looks there for the child's unpushed work.
+ *
  * add prints the card's id: <repo>-<a slug of the title>. A card added or
  * moved to another status gets a line in the harness's event log (events.ts).
  */
@@ -42,7 +51,7 @@ import { existsSync, linkSync, mkdirSync, readdirSync, readFileSync, renameSync,
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { logEvent, type Tone } from "./events";
-import { loadConfig, repoDir, toolCmd } from "./config";
+import { linkedWorktree, loadConfig, repoDir, toolCmd } from "./config";
 
 // (in the order the list shows them: what waits on the user first, then
 // what waits on another card, then what runs)
@@ -60,6 +69,8 @@ export type Card = {
   /** A running card's place in each repository's queue: when it came to hold it. */
   since: Record<string, string>;
   body: string;
+  /** The linked worktree its own session works in, when it wrote the card from one (absent: the main checkout, or unknown). */
+  worktree?: string;
   /** Its front matter unreadable (cut short, never closed): it holds nothing it can say, and set refuses it. */
   broken?: boolean;
 };
@@ -100,6 +111,7 @@ export function format(c: Card): string {
   if (c.waits) keys.push(`waits: ${quote(c.waits)}`);
   const since = Object.entries(c.since).map(([r, t]) => `${r}@${t}`);
   if (since.length) keys.push(`since: ${quote(since.join(", "))}`);
+  if (c.worktree) keys.push(`worktree: ${quote(c.worktree)}`);
   return `---\n${keys.join("\n")}\n---\n${c.body.replace(/^\n+/, "").trimEnd()}\n`;
 }
 
@@ -140,6 +152,7 @@ export function parseCard(id: string, raw: string): Card {
     waits: fields.waits ?? "",
     since: sinceMap(fields.since ?? "", fields.repos !== undefined ? repoList(fields.repos) : ownRepos(fields.repo ?? "")),
     body: m ? m[2] : text,
+    ...(fields.worktree ? { worktree: fields.worktree } : {}),
     ...(m && fields.repo !== undefined && fields.status !== undefined ? {} : { broken: true }),
   };
 }
@@ -310,16 +323,29 @@ export function holding(card: Pick<Card, "session" | "repos">, list: Card[]): Ne
     .filter((h) => h.repos.length > 0);
 }
 
-/** What a session reads after writing its card: whether it may write, whether what it waits for still holds, why. */
-export function warnings(card: Card, list: Card[], live?: Set<string>): string[] {
+/**
+ * What a session reads after writing its card: whether it may write, whether what it waits for still holds, why.
+ * `lock` false (`[hooks] lock = false`): the same cards, said as who else is running there, never as a wait.
+ */
+export function warnings(card: Card, list: Card[], live?: Set<string>, lock = true): string[] {
   const gone = (c: Card) => (live && c.session && !live.has(c.session) ? "; its session looks gone: the user moves it, or a session does on their word" : "");
   if (card.status === "blocked") {
     const still = holding(card, list);
+    if (!lock) {
+      if (!still.length) return [`free: no other card is running in ${card.repos.join(", ") || "its repositories"}: set ${card.id} --status running`];
+      return still.map((h) => `still running: ${h.repos.join(", ")} by ${h.card.id} (running${gone(h.card)}): you blocked this card on a choice, nothing makes it wait`);
+    }
     if (!still.length) return [`free: nothing holds ${card.repos.join(", ") || "its repositories"}: set ${card.id} --status running (held again if another got there first)`];
     return still.map((h) => `still held: ${h.repos.join(", ")} by ${h.card.id} (running${gone(h.card)}): write nothing until it's free`);
   }
   if (!HOLDS.includes(card.status)) return [];
   const { held, later, pending } = conflicts(card, list);
+  if (!lock) {
+    // (no queue: whoever came first is no holder, and whoever came after was told nothing)
+    const out = [...held, ...later].map(({ card: c, repos }) => `note: ${repos.join(", ")} has ${c.id} running too (since ${clock(c, repos[0])}, session ${c.session || "?"}${gone(c)}): nothing makes either of you wait, so keep to your own files and say so to that session`);
+    for (const { card: c, repos } of pending) out.push(`note: ${repos.join(", ")} has ${c.id} (${c.status}) with unpushed work: its commits go out with the next push`);
+    return out;
+  }
   const taken = new Set(held.flatMap((h) => h.repos));
   const rest = card.repos.filter((r) => !taken.has(r));
   const out = held.map(({ card: c, repos }) => {
@@ -383,6 +409,19 @@ function apply(c: Card, o: Opts): Card {
   return next;
 }
 
+/**
+ * The card with the linked worktree its session works in, when this session
+ * is the card's own and runs in one: the card says where the session's work
+ * is, for whoever checks it later (session.ts check). Another session's `set`
+ * (an opener moving a child's card) leaves it as it was.
+ */
+function withWorktree(card: Card): Card {
+  const me = process.env.CLAUDE_CODE_SESSION_ID;
+  if (!me || card.session !== me) return card;
+  const w = linkedWorktree();
+  return w ? { ...card, worktree: w.top } : card;
+}
+
 // A card added or moved, in the harness's event log: what waits on the user amber, done green.
 function logCard(c: Card, text: string) {
   const tone: Tone = c.status === "done" ? "ok" : c.status === "running" ? "info" : "wait";
@@ -406,7 +445,7 @@ export function add(repo: string, title: string, o: Opts = {}): Card {
   for (let n = 1; ; n++) {
     const id = n === 1 ? base : `${base}-${n}`;
     if (existsSync(join(dir, `${id}.md`))) continue;
-    card = apply({ id, repo, title, status: "running", session, updated: "", repos: ownRepos(repo), waits: "", since: {}, body: blank }, o);
+    card = withWorktree(apply({ id, repo, title, status: "running", session, updated: "", repos: ownRepos(repo), waits: "", since: {}, body: blank }, o));
     if (createCard(join(dir, `${id}.md`), format(card))) break;
   }
   // (the status last: the panel's log shows a line's last word as its figure)
@@ -454,7 +493,7 @@ export function set(id: string, o: Opts): Card | string {
   const was = parseCard(id, readFileSync(file, "utf8"));
   if (was.broken) return `${id}'s front matter is unreadable (cut short?): look at ${file} and mend it by hand first`;
   if (o.on === id) return `${id} can't wait on itself`;
-  const card = apply(was, o);
+  const card = withWorktree(apply(was, o));
   writeCard(file, format(card));
   if (card.status !== was.status) logCard(card, `${card.title}${card.waits ? ` (on ${card.waits})` : ""} ${was.status} → ${card.status}`);
   return card;
@@ -465,8 +504,9 @@ export function set(id: string, o: Opts): Card | string {
  * its own names it (every task on the board), or another session's running
  * card came to hold it first. The pre-commit hook asks it of a session's
  * every commit; a person's own commit (no session) is never asked.
+ * `lock` false leaves out the second: with no lock, nobody holds a repository.
  */
-export function mayWrite(repo: string, list: Card[], session: string): string | undefined {
+export function mayWrite(repo: string, list: Card[], session: string, lock = true): string | undefined {
   if (!session) return undefined;
   const mine = list.filter((c) => c.session === session && HOLDS.includes(c.status) && c.repos.includes(repo));
   if (!mine.length) {
@@ -475,7 +515,7 @@ export function mayWrite(repo: string, list: Card[], session: string): string | 
       ? `no running card of this session names ${repo}: ${own.map((c) => `${c.id} (${c.status})`).join(", ")}; set it running with ${repo} in --repos first`
       : `this session has no card: its first write is its card (${toolCmd("board")} add ${repo} "<title>" --repos ${repo})`;
   }
-  if (isHeld(repo, list, session)) {
+  if (lock && isHeld(repo, list, session)) {
     const by = holders(list, [repo]).find((h) => h.kind === "held" && h.card.session !== session);
     return `${repo} is held by ${by?.card.id ?? "another session's card"}: commit nothing there until it's free (board.ts held ${repo})`;
   }
@@ -499,7 +539,7 @@ if (import.meta.main) {
   const tell = (card: Card) => {
     const list = cards();
     for (const r of strangers(card.repos)) console.error(`note: ${r} is no folder of the ${loadConfig().term}'s: it holds nothing`);
-    for (const w of warnings(card, list, liveSessions())) console.error(w);
+    for (const w of warnings(card, list, liveSessions(), loadConfig().hooks.lock)) console.error(w);
     for (const c of list.filter((c) => c.broken)) console.error(`note: ${c.id}'s front matter is unreadable: it holds nothing until it's mended`);
     if (card.status === "blocked" && !card.waits) console.error(`note: ${card.id} is blocked on nothing: name the card with --on <id>`);
     if (card.status !== "running") for (const c of waitingOn(card.id, list)) console.error(`frees ${c.id} (blocked on it, session ${c.session || "?"})`);
@@ -521,15 +561,23 @@ if (import.meta.main) {
     }
   } else if (cmd === "held") {
     const session = process.env.CLAUDE_CODE_SESSION_ID ?? "";
+    const lock = loadConfig().hooks.lock;
     const found = holders(cards(), rest);
-    for (const h of found) console.log(`${h.repo.padEnd(18)} ${h.kind.padEnd(8)} ${h.card.status.padEnd(14)} ${h.card.id}${h.card.session === session && session ? " (this session)" : ""}`);
-    if (!found.length) console.log(rest.length ? `${rest.join(", ")}: free` : "nothing held");
+    // (no lock: nothing is held, a running card is only running)
+    const kind = (h: (typeof found)[number]) => (lock ? h.kind : h.kind === "held" ? "running" : "waiting");
+    for (const h of found) console.log(`${h.repo.padEnd(18)} ${kind(h).padEnd(8)} ${h.card.status.padEnd(14)} ${h.card.id}${h.card.session === session && session ? " (this session)" : ""}`);
+    if (!found.length) console.log(rest.length ? `${rest.join(", ")}: free` : lock ? "nothing held" : "nothing running");
+    if (!lock) console.log("(the lock is off, [hooks] lock = false: this is who is running where, nothing makes a session wait)");
     // Scriptable: a named repository another session holds fails.
     const list = cards();
-    if (rest.some((r) => isHeld(r, list, session))) process.exit(1);
+    if (lock && rest.some((r) => isHeld(r, list, session))) process.exit(1);
   } else if (cmd === "may" && rest.length === 1) {
-    const why = mayWrite(rest[0], cards(), process.env.CLAUDE_CODE_SESSION_ID ?? "");
-    if (why) {
+    const lock = loadConfig().hooks.lock;
+    const why = mayWrite(rest[0], cards(), process.env.CLAUDE_CODE_SESSION_ID ?? "", lock);
+    if (!lock) {
+      console.log("board: the lock is off ([hooks] lock = false): nothing refuses a commit here");
+      if (why) console.error(`note: ${why}`);
+    } else if (why) {
       console.error(`board: ${why}`);
       logEvent("board", "fail", rest[0], `a commit refused: ${why}`);
       process.exit(1);

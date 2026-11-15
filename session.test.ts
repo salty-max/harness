@@ -4,7 +4,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { scopedRoot, useBoardGuard, useFixtureRoot, writeFamilyConfig } from "./testing";
-import { type Live, cleanEnv, command, idOf, openerOf, parse, pickOpener, prompt, registry, verdict } from "./session";
+import { problems } from "./doctor";
+import { type Live, cleanEnv, command, idOf, lookIn, notes, openerOf, parse, pickOpener, prompt, registry, repoStates, verdict, worktreeName } from "./session";
 
 useFixtureRoot();
 useBoardGuard();
@@ -619,5 +620,183 @@ console.log("backgrounded · abc12345 · " + name + "\\n  claude agents         
     const r = run(["T", "--repos", "new-addon", "--kind", "code", "--", "x"]);
     expect(r.code).toBe(0);
     expect(r.err).toContain("note: new-addon is no family folder yet");
+  });
+});
+
+
+describe("session: a project whose children work in worktrees", () => {
+  const temp = () => realpathSync(mkdtempSync(join(tmpdir(), "session-wt-")));
+  const GIT = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com" };
+  const g = (cwd: string, ...args: string[]) => {
+    const p = Bun.spawnSync(["git", ...args], { cwd, env: GIT, stdout: "pipe", stderr: "pipe" });
+    if (p.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${p.stderr.toString()}`);
+    return p.stdout.toString().trim();
+  };
+
+  test("the prompt says so, the command names the worktree before the prompt, the opener is told how to open it", () => {
+    const dir = temp();
+    g(dir, "init", "-q", "-b", "main");
+    mkdirSync(join(dir, "a"));
+    writeFileSync(join(dir, "harness.toml"), '[tools]\ndir = "harness"\n[hooks]\nlock = false\n[session]\nworktrees = true\n');
+    const restore = scopedRoot(dir);
+    try {
+      const p = prompt({ title: "T", repos: ["a"], kind: "code", plan: false, task: "x" });
+      expect(p).toContain("You work in a git worktree of your own");
+      expect(p).toContain("bun harness/packet.ts <repo>");
+      expect(p.indexOf("worktree of your own")).toBeLessThan(p.indexOf("The task:"));
+      expect(command({ title: "Kit: one dropdown", kind: "code", plan: false }, new Date("2026-11-15T01:50:00Z"))).toEqual(["claude", "--bg", "-n", "Kit: one dropdown", "--model", "opusplan", "--worktree", "kit-one-dropdown-11150150"]);
+      expect(notes(["a"]).some((l) => l.includes("use_worktree: true") && l.includes("a CLI one gets --worktree"))).toBe(true);
+    } finally {
+      restore();
+    }
+    // a root that is no repository (the family's shape) has no worktree to make: none is asked, and the note says so
+    const many = temp();
+    mkdirSync(join(many, "a"));
+    writeFileSync(join(many, "harness.toml"), "[session]\nworktrees = true\n");
+    const back = scopedRoot(many);
+    try {
+      expect(command({ title: "T", kind: "code", plan: false })).not.toContain("--worktree");
+      expect(notes(["a"]).some((l) => l.includes("is no repository: a CLI child gets no --worktree"))).toBe(true);
+      expect(problems(many).some((l) => l.includes("is no git repository: it is for a project that is one repository"))).toBe(true);
+    } finally {
+      back();
+    }
+  });
+
+  test("a project that shares one checkout hears nothing of worktrees", () => {
+    const p = prompt({ title: "T", repos: ["a"], kind: "code", plan: false, task: "x" });
+    expect(p.toLowerCase()).not.toContain("worktree");
+    expect(command({ title: "T", kind: "code", plan: false })).not.toContain("--worktree");
+    expect(notes(["a"]).join("\n")).not.toContain("worktree");
+  });
+
+  test("a worktree's name: the title as a slug, the minute", () => {
+    expect(worktreeName("Harness: worktree-aware tools and an optional lock", new Date("2026-11-15T01:50:00Z"))).toBe("harness-worktree-aware-tools-and-an-opti-11150150");
+    expect(worktreeName("???", new Date("2026-11-15T01:50:00Z"))).toBe("task-11150150");
+  });
+
+  test("with no lock the note is who runs there too, never that the new session will block", () => {
+    const dir = temp();
+    mkdirSync(join(dir, "a"));
+    mkdirSync(join(dir, ".harness", "board"), { recursive: true });
+    writeFileSync(join(dir, "harness.toml"), "[hooks]\nlock = false\n");
+    writeFileSync(join(dir, ".harness", "board", "a-other.md"), '---\nrepo: a\ntitle: other\nstatus: running\nsession: s-other\nupdated: "2026-11-15T01:00:00+01:00"\n---\n');
+    const restore = scopedRoot(dir);
+    try {
+      expect(notes(["a"])).toEqual(["note: a has a-other running too: nothing makes the new session wait"]);
+    } finally {
+      restore();
+    }
+    const locked = temp();
+    mkdirSync(join(locked, "a"));
+    mkdirSync(join(locked, ".harness", "board"), { recursive: true });
+    writeFileSync(join(locked, "harness.toml"), "");
+    writeFileSync(join(locked, ".harness", "board", "a-other.md"), '---\nrepo: a\ntitle: other\nstatus: running\nsession: s-other\nupdated: "2026-11-15T01:00:00+01:00"\n---\n');
+    const back = scopedRoot(locked);
+    try {
+      expect(notes(["a"])).toEqual(["note: a is held by a-other (running): the new session will block on it until it's free"]);
+    } finally {
+      back();
+    }
+  });
+
+  test("a child in a worktree is read there: its card's, else its session's, else the main checkout, said", () => {
+    const root = temp();
+    writeFileSync(join(root, "harness.toml"), "");
+    const repo = join(root, "repo");
+    mkdirSync(repo);
+    g(repo, "init", "-q", "-b", "main");
+    g(repo, "commit", "-q", "--allow-empty", "-m", "chore: first");
+    const remote = join(root, "remote.git");
+    g(root, "init", "-q", "--bare", remote);
+    g(repo, "remote", "add", "origin", remote);
+    g(repo, "push", "-q", "origin", "main");
+    const wt = join(temp(), "kid");
+    g(repo, "worktree", "add", "-q", "-b", "side", wt);
+    writeFileSync(join(wt, "work.txt"), "x\n");
+    g(wt, "add", "-A");
+    g(wt, "commit", "-q", "-m", "feat: work");
+    writeFileSync(join(wt, "more.txt"), "y\n");
+    const restore = scopedRoot(root);
+    try {
+      // the card's worktree: its unpushed commit and its dirty file
+      const said: string[] = [];
+      expect(repoStates(["repo"], "kid", [], said, undefined, [wt])).toMatchObject([{ repo: "repo", ahead: 1, dirty: true }]);
+      expect(said).toEqual([`repo: read in the worktree ${wt} (side)`]);
+      // no card names one, the live session's cwd does
+      const viaCwd: string[] = [];
+      expect(repoStates(["repo"], "kid", [], viaCwd, undefined, [undefined, wt])).toMatchObject([{ ahead: 1, dirty: true }]);
+      // neither: the main checkout looks clean, and the note says the child's own may be elsewhere
+      const lost: string[] = [];
+      expect(repoStates(["repo"], "kid", [], lost, undefined, [undefined, undefined])).toMatchObject([{ ahead: 0, dirty: false }]);
+      expect(lost).toEqual([`repo: read in the main checkout, no worktree of the child's is known, and 1 other worktree exists: its own may be one of them (git -C ${repo} worktree list)`]);
+      // a worktree gone: said, and the main checkout read
+      const gone: string[] = [];
+      expect(lookIn("repo", [join(root, "gone")], gone).dir).toBe(repo);
+      expect(gone[0]).toBe(`repo: the worktree ${join(root, "gone")} is gone`);
+      // a worktree of another repository is none of this one's
+      const other = join(root, "other");
+      mkdirSync(other);
+      g(other, "init", "-q", "-b", "main");
+      g(other, "commit", "-q", "--allow-empty", "-m", "chore: first");
+      const owt = join(temp(), "kid2");
+      g(other, "worktree", "add", "-q", "-b", "oside", owt);
+      expect(lookIn("repo", [owt], []).dir).toBe(repo);
+      // a repository with one worktree only, the family's own case, says nothing
+      const solo = join(root, "solo");
+      mkdirSync(solo);
+      g(solo, "init", "-q", "-b", "main");
+      g(solo, "commit", "-q", "--allow-empty", "-m", "chore: first");
+      const quiet: string[] = [];
+      expect(lookIn("solo", [], quiet)).toEqual({ dir: solo });
+      expect(quiet).toEqual([]);
+      expect(repoStates(["solo"], "kid", [], quiet)).toMatchObject([{ repo: "solo", ahead: -1, dirty: false }]);
+      expect(quiet).toEqual([]);
+    } finally {
+      restore();
+    }
+  });
+
+  test("a worktree project never passes a child on the main checkout's clean state", () => {
+    const root = temp();
+    writeFileSync(join(root, "harness.toml"), "[session]\nworktrees = true\n");
+    const repo = join(root, "repo");
+    mkdirSync(repo);
+    g(repo, "init", "-q", "-b", "main");
+    g(repo, "commit", "-q", "--allow-empty", "-m", "chore: first");
+    const wt = join(temp(), "kid");
+    g(repo, "worktree", "add", "-q", "-b", "side", wt);
+    const restore = scopedRoot(root);
+    try {
+      const done = [{ id: "kid-task", status: "done" }] as never;
+      const lost: string[] = [];
+      const [state] = repoStates(["repo"], "kid", [], lost, undefined, []);
+      expect(state?.unseen).toContain("the child's own worktree isn't known");
+      expect(lost).toEqual([]);
+      const v = verdict({ cards: done, repos: [state!], force: false });
+      expect(v.ok).toBe(false);
+      expect(v.why[0]).toContain("its work wasn't looked at");
+      // the user's --force goes past it, said
+      const forced = verdict({ cards: done, repos: [state!], force: true });
+      expect(forced.ok).toBe(true);
+      expect(forced.notes.some((l) => l.includes("forced past"))).toBe(true);
+      // its worktree known: read there, and a clean one may close
+      const found: string[] = [];
+      const [seen] = repoStates(["repo"], "kid", [], found, undefined, [wt]);
+      expect(seen?.unseen).toBeUndefined();
+      expect(verdict({ cards: done, repos: [seen!], force: false }).ok).toBe(true);
+    } finally {
+      restore();
+    }
+  });
+
+  test("the registry row carries the session's working directory", () => {
+    const dir = mkdtempSync(join(tmpdir(), "registry-cwd-"));
+    try {
+      writeFileSync(join(dir, `${process.pid}.json`), JSON.stringify({ pid: process.pid, sessionId: "aaaaaaaa-1111", cwd: "/p/.claude/worktrees/x" }));
+      expect(registry(dir)[0]?.cwd).toBe("/p/.claude/worktrees/x");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -21,8 +21,10 @@ From the project's folder (the working directory):
 bun $HARNESS/config.ts show
 ```
 
-Read `root`, `toolsDir`, `term`, `session.rules` and `session.models` (the
-model by kind, `code` and `prose`). Every command below is `bun
+Read `root`, `toolsDir`, `term`, `session.rules`, `session.models` (the
+model by kind, `code` and `prose`), `session.worktrees` (every child works
+in a git worktree of its own: false unless the project says so) and
+`hooks.lock` (whether the board is a lock). Every command below is `bun
 <toolsDir>/<tool>.ts` from `root` (the tools folder is a project's choice:
 `addon-kit`, `harness`, ...). The guards, before anything else:
 
@@ -69,11 +71,15 @@ Write nothing for the task here: no card, no file, no helper.
    prints the prompt alone and starts nothing.
 
    A `note:` that a repository is held means the child will block on it:
-   say so.
+   say so. With `hooks.lock` false the note says another card is running
+   there too and nothing blocks: say who, so the child can keep to its own
+   files.
 4. Open it:
    - **In the desktop app** (this session has the `start_session` tool):
      `start_session` with `initiation: "user_asked"`, `context: "fresh"`,
-     `use_worktree: false`, the title, a short `name`, `prompt` what
+     `use_worktree` (`false`, a shared checkout, unless `session.worktrees`
+     is true: then `true`, and `source_branch` set to the project's main
+     branch when this session isn't on it), the title, a short `name`, `prompt` what
      `--desktop` printed (all of it), `background` one line on the
      project's harness and where this task comes from. The model, from
      `session.models[kind]`: `sonnet` and `opusplan` start on Sonnet
@@ -91,8 +97,9 @@ Write nothing for the task here: no card, no file, no helper.
      refuses, so propose it instead (`initiation: "own_initiative"`, the
      same brief) and tell the user it waits on their click.
    - **From a CLI session** (no `start_session`): the same command without
-     `--desktop`. It runs `claude --bg`: in `claude agents` and the panel,
-     never in the desktop sidebar.
+     `--desktop`. It runs `claude --bg` (with `--worktree <name>` when
+     `session.worktrees` is true): in `claude agents` and the panel, never in
+     the desktop sidebar.
 5. Tell the user in a line: its name and where to find it (the sidebar, or
    `claude attach <id>`), and the plan's wait when there is one.
 
@@ -126,6 +133,14 @@ app's notes).
     branch's upstream, main as a rule);
   - CI: `bun <toolsDir>/status.ts`;
   - the change's shape: `git -C <repo> show --stat <range>`.
+
+  A child in a worktree has its work on its own branch there: `session.ts
+  check` and `close` read that worktree (the `worktree:` its card names,
+  else its live session's folder) and say which folder they read. A
+  `note:` that no worktree of the child's was found means they read the
+  main checkout: look with `git -C <repo> worktree list` before closing
+  (in a project of worktrees it is a refusal, past only with the user's
+  `--force`).
 
   Then close it, and one line to the user:
   - a desktop child: `bun <toolsDir>/session.ts check <local_id>`, then

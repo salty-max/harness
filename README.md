@@ -6,7 +6,10 @@ dependencies). What it gives a project:
 
 - **a task board** (`board.ts`): one Markdown card per task, and the board is
   the lock: a Claude session's commit is refused unless its running card names
-  the repository and nobody else's card came to hold it first
+  the repository and nobody else's card came to hold it first (a project whose
+  every child works in a git worktree of its own sets `[hooks] lock = false`
+  and `[session] worktrees = true`: the board is then a list, and the tools
+  read the worktree they are asked about)
 - **a quiet runner** (`q.ts`): one verdict line, the log in a file, the tree
   stamped when the check passes; **git hooks**: no AI trailers, no push of an
   unchecked or unreviewed tree

@@ -33,7 +33,8 @@
  *   the task  in the user's words, with what the opener knows
  *
  * It runs `claude --bg -n <title> --model <model> <prompt>` from the family
- * folder, without the running session's variables (CLAUDECODE and every
+ * folder (a project with `[session] worktrees = true` adds `--worktree <name>`,
+ * and the prompt says the child works in a worktree of its own), without the running session's variables (CLAUDECODE and every
  * CLAUDE_*, but CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR and the user's
  * CLAUDE_CONFIG_DIR): the board's lock tells sessions apart by
  * CLAUDE_CODE_SESSION_ID, and a session that inherited the opener's would
@@ -63,6 +64,10 @@
  *             remote at all, committed since it started: another open card
  *             there never excuses them, the reason names it) or uncommitted
  *             changes no other running card explains
+ *             a child that works in a worktree is looked for there: the
+ *             `worktree:` its card names (board.ts writes it from the child's
+ *             own session), else its live session's working directory, else
+ *             the main checkout, said when the repository has other worktrees
  *   check     a desktop child's verdict, for its opener to archive it (the
  *             desktop app's own session tool opens it, archiving closes it):
  *             close's verdict without the stop, the record or the log, and
@@ -75,9 +80,9 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { type Card, cards, holders, repoList, strangers } from "./board";
+import { type Card, cards, holders, repoList, slug, strangers } from "./board";
 import { logEvent } from "./events";
-import { loadConfig, projectPath, projectRoot, repoDir, toolCmd } from "./config";
+import { linkedWorktree, loadConfig, projectPath, projectRoot, repoDir, toolCmd, workDir } from "./config";
 
 export const KINDS = { code: "opusplan", prose: "opus" } as const;
 export type Kind = keyof typeof KINDS;
@@ -160,6 +165,9 @@ export function prompt(a: Pick<Ask, "title" | "repos" | "kind" | "plan" | "task"
               ? `You run on Opus and start in plan mode: ${planFirst}.`
               : `You start on Opus in plan mode: ${planFirst}, your opener then moves you to ${dm} for the build.`
           : `You run on ${desktop ? dm : m}. ${settle}`;
+  const worktree = conf.session.worktrees
+    ? `You work in a git worktree of your own, on a branch of your own (this ${conf.term} opens every child that way, \`[session] worktrees = true\`): commit there, never in the main checkout, and push as the ${conf.term}'s rules say. If you were not started in one, say so first. The board, its cards and the check stamps are shared by every worktree: ${toolCmd("packet")} <repo> and ${toolCmd("review")} <repo> from inside yours act on yours.`
+    : undefined;
   const to = [opener?.socket && `to ${dq(`uds:${opener.socket}`)}`, opener?.name && `${opener.socket ? "(else to its name, " : "to "}${dq(opener.name)}${opener.socket ? ")" : ""}`].filter(Boolean).join(" ");
   const report = to
     ? `Report to the session that opened you with SendMessage, ${to}: a few lines each time your card stops running (waiting on the user or on another card, ready to push), saying what is committed and what is asked of whom, and again once your commits are pushed: the range, CI's verdict, your card done. You do not push yourself: with the user's go, report the quote and your opener pushes, then tells you to set your card done. A go to push is asked of the user in your own session (the question tool), never left to your opener to ask: your next report quotes their words and says what they cover (repository, range by sha, push only). A push go never covers a deploy or a release, each is its own go. Without a quoted go your opener will not push. It checks your work and closes this session: never close it yourself, and after that last report write nothing more.`
@@ -169,15 +177,28 @@ export function prompt(a: Pick<Ask, "title" | "repos" | "kind" | "plan" | "task"
     `Read ${tilde(join(conf.root, conf.session.rules))} first, then the ${conf.session.rules} of each repository you write (${a.repos.join(", ")}).`,
     `Your first write, before any file, is your card:\n\n  ${toolCmd("board")} add ${repo} ${dq(a.title)} --repos ${a.repos.join(",")} --status running --try "…" --committed "(none yet)" --left "…"\n\nThis session already carries the card's title. Check the card's \`session\` is this session's own id ($CLAUDE_CODE_SESSION_ID), not the opener's: if it isn't, say so first.`,
     model,
+    ...(worktree ? [worktree] : []),
     `The task:\n\n${a.task}`,
     ...(report ? [report] : []),
     desktop ? "Narrate briefly, move your card at each stop, and end with a `result:` line." : "You run in the background: narrate briefly, move your card at each stop, and end with a `result:` line.",
   ].join("\n\n");
 }
 
-/** The command, without the prompt (its last argument). */
-export function command(a: Pick<Ask, "title" | "kind" | "plan">): string[] {
-  return ["claude", "--bg", "-n", a.title, "--model", loadConfig().session.models[a.kind], ...(a.plan ? ["--permission-mode", "plan"] : [])];
+/** The name of a child's worktree: its title, a slug, and the minute, so two children of one title never share one. */
+export const worktreeName = (title: string, at = new Date()) => `${slug(title) || "task"}-${at.toISOString().slice(5, 16).replace(/\D/g, "")}`;
+
+/** Whether the folder is a git repository's own (a family-shaped root of many repositories is none). */
+const isRepository = (dir: string) => existsSync(join(dir, ".git"));
+
+/**
+ * The command, without the prompt (its last argument). A project whose
+ * children work in worktrees names one (`--worktree` takes an optional name,
+ * so it never stands last: the prompt would be read as the name). A project
+ * whose root is no repository has no worktree to make there: none is asked.
+ */
+export function command(a: Pick<Ask, "title" | "kind" | "plan">, at = new Date()): string[] {
+  const conf = loadConfig();
+  return ["claude", "--bg", "-n", a.title, "--model", conf.session.models[a.kind], ...(a.plan ? ["--permission-mode", "plan"] : []), ...(conf.session.worktrees && isRepository(conf.root) ? ["--worktree", worktreeName(a.title, at)] : [])];
 }
 
 const KEEP = new Set(["CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR", "CLAUDE_CONFIG_DIR"]);
@@ -208,7 +229,7 @@ export function openerOf(session: string, agents: unknown, list: Pick<Card, "ses
   return list.filter((c) => c.session === session && c.status !== "done").sort((a, b) => b.updated.localeCompare(a.updated))[0]?.title;
 }
 
-export type Live = { pid: number; sessionId: string; job: string; name?: string; nameSource?: string; status?: string; socket?: string; host?: string };
+export type Live = { pid: number; sessionId: string; job: string; name?: string; nameSource?: string; status?: string; socket?: string; host?: string; cwd?: string };
 
 /**
  * The sessions alive on this computer, from Claude Code's own registry
@@ -229,7 +250,7 @@ export function registry(dir = join(process.env.CLAUDE_CONFIG_DIR ?? join(homedi
       if (!Number.isInteger(r.pid) || typeof r.sessionId !== "string") continue;
       process.kill(r.pid as number, 0);
       const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
-      out.push({ pid: r.pid as number, sessionId: r.sessionId, job: str(r.jobId) ?? r.sessionId.slice(0, 8), name: str(r.name), nameSource: str(r.nameSource), status: str(r.status), socket: str(r.messagingSocketPath), host: str(r.hostSessionId) });
+      out.push({ pid: r.pid as number, sessionId: r.sessionId, job: str(r.jobId) ?? r.sessionId.slice(0, 8), name: str(r.name), nameSource: str(r.nameSource), status: str(r.status), socket: str(r.messagingSocketPath), host: str(r.hostSessionId), cwd: str(r.cwd) });
     } catch {}
   }
   return out;
@@ -262,13 +283,15 @@ function openerInfo(session: string | undefined): Opener | undefined {
   }
 }
 
-/** What the new session will meet: its repositories another card holds now, a name that is no folder of the project. */
-function notes(repos: string[]): string[] {
-  const out = strangers(repos).map((r) => `note: ${r} is no ${loadConfig().term} folder yet`);
+/** What the new session will meet: its repositories another card holds now (no lock: only runs there too), a name that is no folder of the project. */
+export function notes(repos: string[]): string[] {
+  const conf = loadConfig();
+  const out = strangers(repos).map((r) => `note: ${r} is no ${conf.term} folder yet`);
   try {
     for (const h of holders(cards(), repos))
-      if (h.kind === "held") out.push(`note: ${h.repo} is held by ${h.card.id} (running): the new session will block on it until it's free`);
+      if (h.kind === "held") out.push(conf.hooks.lock ? `note: ${h.repo} is held by ${h.card.id} (running): the new session will block on it until it's free` : `note: ${h.repo} has ${h.card.id} running too: nothing makes the new session wait`);
   } catch {}
+  if (conf.session.worktrees) out.push(`note: this ${conf.term} works in worktrees: a desktop child is started with use_worktree: true (from the main branch: source_branch)${isRepository(conf.root) ? ", a CLI one gets --worktree" : `, and ${conf.root} is no repository: a CLI child gets no --worktree`}`);
   return out;
 }
 
@@ -304,7 +327,7 @@ function records(): Opened[] {
 
 // ── closing a child ─────────────────────────────────────────────────────────
 /** ahead: commits on no remote since the child started (-1: no remote to compare); running: other sessions' running cards there; open: all their open cards. */
-export type RepoState = { repo: string; ahead: number; dirty: boolean; running: string[]; open: string[] };
+export type RepoState = { repo: string; ahead: number; dirty: boolean; running: string[]; open: string[]; /** Why the child's own work wasn't looked at (a worktree project, its worktree unknown): a refusal, never a pass. */ unseen?: string };
 
 /** Whether a child may be closed: hard refusals (never overridden), soft ones (--force), notes. */
 export function verdict(o: { live?: Live; cards: Card[]; repos: RepoState[]; force: boolean; whose?: string }): { ok: boolean; why: string[]; notes: string[] } {
@@ -327,6 +350,8 @@ export function verdict(o: { live?: Live; cards: Card[]; repos: RepoState[]; for
     if (r.dirty && r.running.length === 0 && !(n && !r.open.length)) soft.push(`${r.repo}: uncommitted changes`);
     else if (r.dirty && r.running.length) notes.push(`${r.repo}: uncommitted changes, ${r.running.join(", ")} ${r.running.length === 1 ? "is" : "are"} running there too: check they aren't this session's`);
     if (r.ahead === -1) notes.push(`${r.repo}: no remote to compare`);
+    // (a worktree project's main checkout is always clean: reading it says nothing of the child's work)
+    if (r.unseen) soft.push(r.unseen);
   }
   const why = o.force ? hard : [...hard, ...soft];
   if (o.force && soft.length) notes.push(`forced past: ${soft.join("; ")}`);
@@ -336,14 +361,55 @@ export function verdict(o: { live?: Live; cards: Card[]; repos: RepoState[]; for
 const git = (dir: string, ...args: string[]) => Bun.spawnSync(["git", "-C", dir, ...args], { stdout: "pipe", stderr: "ignore" });
 
 /**
+ * The folder to read `repo`'s state in for a child: the linked worktree of it
+ * among `homes`, else its main checkout. A worktree named and gone is said.
+ * A main checkout read while the repository has other worktrees is said too,
+ * and in a project whose children all work in worktrees (`[session] worktrees`)
+ * it is `unseen`: that checkout is clean whatever the child did, so a verdict
+ * must not pass on it.
+ */
+export function lookIn(repo: string, homes: (string | undefined)[], notes: string[]): { dir: string; unseen?: string } {
+  const main = repoDir(repo);
+  for (const home of homes) {
+    if (!home) continue;
+    if (!existsSync(home)) {
+      notes.push(`${repo}: the worktree ${home} is gone`);
+      continue;
+    }
+    // (a folder of another project, or of another repository's worktree, is none of this repository's)
+    let dir: string;
+    try {
+      dir = workDir(repo, home);
+    } catch {
+      continue;
+    }
+    if (dir !== main && linkedWorktree(home)?.top === dir) {
+      const branch = git(dir, "symbolic-ref", "--short", "-q", "HEAD").stdout.toString().trim();
+      notes.push(`${repo}: read in the worktree ${dir}${branch ? ` (${branch})` : ""}`);
+      return { dir };
+    }
+  }
+  const trees = existsSync(main) ? git(main, "worktree", "list", "--porcelain").stdout.toString().split("\n").filter((l) => l.startsWith("worktree ")).length : 0;
+  if (trees > 1) {
+    const others = `${trees - 1} other worktree${trees > 2 ? "s exist" : " exists"}`;
+    const look = `git -C ${main} worktree list`;
+    if (loadConfig().session.worktrees) return { dir: main, unseen: `${repo}: the child's own worktree isn't known (its card names none, no live session of it), so its work wasn't looked at: ${others}, find its with \`${look}\`` };
+    notes.push(`${repo}: read in the main checkout, no worktree of the child's is known, and ${others}: its own may be one of them (${look})`);
+  }
+  return { dir: main };
+}
+
+/**
  * Each repository's state for `id`: HEAD's commits on no remote at all
  * (`--not --remotes`, never other local branches) committed since the child
  * started (its record's time; no record: every one), -1 with no remote; dirty; other sessions' cards there.
+ * `homes` are folders the child may work in (its cards' `worktree`, its live session's cwd): a repository is
+ * read in the linked worktree of it among them, else in its main checkout (`lookIn`).
  */
-export function repoStates(repos: string[], id: string, all: Card[], notes: string[], at?: string): RepoState[] {
+export function repoStates(repos: string[], id: string, all: Card[], notes: string[], at?: string, homes: (string | undefined)[] = []): RepoState[] {
   const out: RepoState[] = [];
   for (const repo of repos) {
-    const dir = repoDir(repo);
+    const { dir, unseen } = lookIn(repo, homes, notes);
     if (!existsSync(dir) || !statSync(dir).isDirectory()) {
       notes.push(`${repo}: no such folder here`);
       continue;
@@ -356,7 +422,7 @@ export function repoStates(repos: string[], id: string, all: Card[], notes: stri
     const n = ahead && ahead.exitCode === 0 ? Number.parseInt(ahead.stdout.toString(), 10) : -1;
     const dirty = git(dir, "status", "--porcelain").stdout.toString().trim() !== "";
     const open = all.filter((c) => c.status !== "done" && !c.session.startsWith(id) && (c.repo === repo || c.repos.includes(repo)));
-    out.push({ repo, ahead: Number.isNaN(n) ? -1 : n, dirty, running: open.filter((c) => c.status === "running").map((c) => c.id), open: open.map((c) => c.id) });
+    out.push({ repo, ahead: Number.isNaN(n) ? -1 : n, dirty, running: open.filter((c) => c.status === "running").map((c) => c.id), open: open.map((c) => c.id), ...(unseen ? { unseen } : {}) });
   }
   return out;
 }
@@ -377,7 +443,7 @@ function children(argv: string[]): void {
     const row = live.find((l) => l.job === r.id || l.sessionId.startsWith(r.id));
     const own = board.filter((c) => c.session.startsWith(r.id));
     const notes: string[] = [];
-    const v = verdict({ live: row, cards: own, repos: repoStates([...new Set([...own.flatMap((c) => c.repos), ...r.repos])], r.id, board, notes, r.at), force: false });
+    const v = verdict({ live: row, cards: own, repos: repoStates([...new Set([...own.flatMap((c) => c.repos), ...r.repos])], r.id, board, notes, r.at, [...own.map((c) => c.worktree), row?.cwd]), force: false });
     const state = row ? (row.status ?? "live") : "closed";
     const cs = own.length ? own.map((c) => c.status).join(", ") : "no card";
     console.log(`${r.id}  ${state}  ${r.title}  [${cs}]  ${v.ok ? `→ close: ${toolCmd("session")} close ${r.id}` : v.why[0]}`);
@@ -390,7 +456,7 @@ function gather(id: string, rec: Opened | undefined, row: Live | undefined) {
   const own = board.filter((c) => c.session.startsWith(id));
   const extra: string[] = [];
   const names = [...new Set([...own.flatMap((c) => c.repos), ...(rec?.repos ?? [])])];
-  return { own, extra, names, states: repoStates(names, id, board, extra, rec?.at), row };
+  return { own, extra, names, states: repoStates(names, id, board, extra, rec?.at, [...own.map((c) => c.worktree), row?.cwd]), row };
 }
 
 function check(argv: string[]): void {

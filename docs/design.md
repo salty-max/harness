@@ -77,7 +77,8 @@ rules = "CLAUDE.md"               # the file the reviewer's standard is; packet 
 
 [hooks]
 trailers  = true                  # refuse AI co-author / "generated with" trailers
-lock      = true                  # pre-commit: a Claude session's commit wants its running card
+lock      = true                  # pre-commit: a Claude session's commit wants its running card, and the board queues who writes where
+                                  # false: the board is a list (every child has a worktree of its own), the notes, `held` and `may` say who runs where and refuse nothing
 stamp     = true                  # pre-push: a passing check on the tree
 review    = true                  # pre-push backstop: a recorded review (review.ts --push)
 
@@ -91,6 +92,7 @@ waive = ['^docs/', '(^|/)(README|CLAUDE)\.md$']   # files a push may carry unrev
 [session]                         # session.ts
 rules  = "CLAUDE.md"              # what a child reads first
 models = { code = "opusplan", prose = "opus" }
+worktrees = false                 # true: every child works in a git worktree of its own (see "Worktrees" below)
 ```
 
 The reader (`config.ts`), in this order: `HARNESS_ROOT` (and `WOW_ADDONS_ROOT`
@@ -106,6 +108,36 @@ defaults, returns one typed object, and every tool takes its paths and names
 from it. Parsed with bun's built-in TOML import (`Bun.TOML.parse`): no
 dependency. One schema check (`harness doctor`) lists unknown keys and
 missing paths.
+
+**Worktrees** (15 November 2026, found by hundo, the first project to give
+every child session a worktree and a branch). Two switches say so, and every
+default is the shared checkout the family keeps: `[hooks] lock = false` (the
+board is a list: `board.ts`'s `held:` lines become `note: … running too`,
+`held` never exits 1, `may` never refuses, pre-commit asks nobody, and the
+generated Harness section drops the lock's words) and `[session] worktrees =
+true` (`session.ts`'s prompt tells the child it works in a worktree, a CLI
+child gets `--worktree <name>`, the `child` skill passes `use_worktree: true`,
+and the section adds the worktree rules). Both are read by `init.ts` when it
+renders the section (`doctor.ts` names a section that no longer matches), and
+a switch that is not `true` or `false` is an error, never the default.
+
+A tool given a repository's name works on the worktree the working directory
+is in when that is one of the repository's (`config.ts` `workDir`, `packet.ts`
+and `review.ts` say which folder they read), else on its main checkout
+(`repoDir`: what `status`, `hooks` and `doctor` want, the hooks path and the
+board being the repository's). `session.ts check|close|children` read a child
+in its own worktree: the `worktree:` its card names (`board.ts` writes it when
+the card's own session adds or sets it from a linked worktree), else its live
+session's `cwd`, else the main checkout, said when the repository has other
+worktrees (a pushed, unmerged branch has no unpushed commits: the PR carries
+it); in a project with `worktrees = true` that note is a refusal (`--force`,
+on the user's word, goes past it), because the main checkout of such a project
+is clean whatever its children did. `worktrees = true` is for a project that
+is one repository: `claude --bg --worktree` makes the worktree of the
+repository it starts in, so a root of many repositories gets none asked
+(`doctor.ts` says so). `hooks.ts install` refuses in a linked worktree: `core.hooksPath` is
+shared by all of them. A config the hooks can't read is said on stderr by
+`config.ts hook` (answering `on`: every gate stays on, none quietly off).
 
 A one-repository project: root = the repository; the repo's name is
 `project.name`; the lock's unit (a card's `repos`) is that name. The name need

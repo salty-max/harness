@@ -1,11 +1,12 @@
 // harness-sync.ts's stamps and checks, and init.ts's pieces (bun test).
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { check, stamped, sync, unstamped, VENDORED } from "./harness-sync";
-import { detectCheck, parseArgs, renderToml, withAsks, withIgnore, withSection } from "./init";
+import { DEFAULT_FLAGS, detectCheck, fill, flagsOf, parseArgs, renderSection, renderToml, withAsks, withIgnore, withSection } from "./init";
 import { parseConfig } from "./config";
+import { problems, staleSection } from "./doctor";
 import { scopedRoot, useBoardGuard } from "./testing";
 
 useBoardGuard();
@@ -148,5 +149,86 @@ describe("init", () => {
     expect(text).toContain("kit/session.ts check");
     expect(existsSync(join(dir, ".gitignore"))).toBe(false);
     expect(existsSync(join(dir, ".claude"))).toBe(false);
+  });
+});
+
+describe("init: the section follows the config", () => {
+  const template = readFileSync(join(import.meta.dir, "templates", "rules-section.md"), "utf8");
+  const conf = (toml: string) => parseConfig(temp(), Bun.TOML.parse(toml) as any);
+
+  test("a block is kept when its switch is on, its inverse when off, and the markers leave no trace", () => {
+    const t = "a\n{{#lock}}\nL on\n{{/lock}}\n{{^lock}}\nL off\n{{/lock}}\n{{#worktrees}}\nW on\n{{/worktrees}}\nz {{TOOLS}}/x {{RULES}}\n";
+    expect(fill(t, "kit", "R.md", { lock: true, worktrees: false })).toBe("a\nL on\nz kit/x R.md\n");
+    expect(fill(t, "kit", "R.md", { lock: false, worktrees: true })).toBe("a\nL off\nW on\nz kit/x R.md\n");
+    expect(() => fill("{{#nope}}\nx\n{{/nope}}\n", "k", "r")).toThrow("no switch");
+  });
+
+  test("the defaults are the family's: the lock, no worktree rules", () => {
+    expect(DEFAULT_FLAGS).toEqual({ lock: true, worktrees: false });
+    const text = renderSection(conf(""));
+    expect(text).toContain("- **The board is the lock.**");
+    expect(text).toContain("It holds the repositories it names, and a commit by a Claude session is refused unless");
+    expect(text).not.toMatch(/list, not a lock|worktree|\{\{|\}\}/);
+    expect(text).toBe(fill(template, "harness", "CLAUDE.md"));
+    expect(flagsOf(conf(""))).toEqual(DEFAULT_FLAGS);
+  });
+
+  test("lock = false: the lock and the refusal are gone, the list says what it is", () => {
+    const text = renderSection(conf("[hooks]\nlock = false\n"));
+    expect(text).not.toMatch(/is the lock|refused unless|`held:`|write nothing until|holds the repositories it names/);
+    expect(text).toContain("- **The board is a list, not a lock.**");
+    expect(text).toContain("Nothing refuses a commit for want of it");
+    expect(text).not.toContain("worktree");
+  });
+
+  test("worktrees = true: the worktree rules, with the tools dir of the config", () => {
+    const text = renderSection(conf('[tools]\ndir = "kit"\n[hooks]\nlock = false\n[session]\nworktrees = true\n'));
+    expect(text).toContain("- **Each child works in a worktree of its own**");
+    expect(text).toContain("`session.ts check` act on the worktree");
+    expect(text).toContain("bun kit/board.ts add");
+  });
+
+  test("no line of any rendering passes 88 columns but a lone code span", () => {
+    for (const flags of [DEFAULT_FLAGS, { lock: false, worktrees: false }, { lock: false, worktrees: true }, { lock: true, worktrees: true }]) {
+      const over = fill(template, "harness", "CLAUDE.md", flags).split("\n").filter((l) => l.length > 88 && !/^\s*`[^`]*`[.,]?$/.test(l));
+      expect(over).toEqual([]);
+    }
+  });
+
+  test("--section-only renders what the file says, an include's switches too", () => {
+    const dir = temp();
+    mkdirSync(join(dir, "tools"), { recursive: true });
+    writeFileSync(join(dir, "tools", "base.toml"), "[hooks]\nlock = false\n[session]\nworktrees = true\n");
+    writeFileSync(join(dir, "harness.toml"), 'include = "tools/base.toml"\n[tools]\ndir = "kit"\n');
+    const p = Bun.spawnSync(["bun", join(import.meta.dir, "init.ts"), dir, "--section-only"], { env: { ...process.env, HARNESS_ROOT: dir, WOW_ADDONS_ROOT: dir } });
+    expect(p.exitCode).toBe(0);
+    const text = readFileSync(join(dir, "CLAUDE.md"), "utf8");
+    expect(text).toContain("The board is a list, not a lock");
+    expect(text).toContain("Each child works in a worktree of its own");
+    expect(text).not.toContain("The board is the lock");
+  });
+
+  test("doctor names a Harness section the config doesn't render, and a misspelt switch", () => {
+    const dir = temp();
+    writeFileSync(join(dir, "harness.toml"), "[hooks]\nlock = false\n");
+    const c = parseConfig(dir, { hooks: { lock: false } });
+    expect(staleSection(c)).toEqual([]);
+    writeFileSync(join(dir, "CLAUDE.md"), `# P\n\n${withSection(undefined, renderSection(parseConfig(dir, {})))}`);
+    expect(staleSection(c)).toHaveLength(1);
+    expect(staleSection(c)[0]).toContain("isn't the one this config renders");
+    writeFileSync(join(dir, "CLAUDE.md"), `# P\n\n${withSection(undefined, renderSection(c))}`);
+    expect(staleSection(c)).toEqual([]);
+    // (a CLAUDE.md with no harness block is none of the doctor's business)
+    writeFileSync(join(dir, "CLAUDE.md"), "# P\n");
+    expect(staleSection(c)).toEqual([]);
+    writeFileSync(join(dir, "harness.toml"), "[hooks]\nlok = false\n[session]\nworktree = true\n");
+    const restore = scopedRoot(dir);
+    try {
+      const found = problems(dir);
+      expect(found).toContain("harness.toml: unknown key lok in [hooks] (trailers, lock, stamp, review)");
+      expect(found).toContain("harness.toml: unknown key worktree in [session] (rules, models, worktrees)");
+    } finally {
+      restore();
+    }
   });
 });
