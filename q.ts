@@ -5,7 +5,7 @@
  * one. A passing `check` stamps the tree it ran on: the pre-push hook asks
  * for that stamp.
  *
- *   bun q.ts <name> -- <command...>
+ *   bun q.ts [--queue|--no-queue] <name> -- <command...>
  *
  *   bun q.ts check -- bun run check   check: ok (41s) · stamped 3f2a1b9
  *   bun q.ts test -- bun test         test: FAILED (exit 1, 3s) · .cache/logs/test.log
@@ -24,12 +24,23 @@
  * naming a folder without them: git then runs no gate at all).
  * The verdict line goes to the harness's event log too (events.ts), and while
  * it runs a file of its own says so beside it (the panel's gates lit).
+ *
+ * The queue (queue.ts): with `[checks] queue = true` in harness.toml every
+ * `check` waits its turn, one at a time on the machine, whatever worktree or
+ * repository it runs in; `--queue` queues any other run, `--no-queue` skips
+ * the queue once, HARNESS_QUEUE=off everywhere. A waiting run says so in one
+ * line on stderr and takes its place before anything else: the log, the
+ * panel's file and the tree it stamps are those of the moment it runs. The
+ * verdict, the stamp, the event log and the exit code are what they are
+ * without a queue. A run inside a queued command (HARNESS_QUEUE_HELD) never
+ * waits for its holder.
  */
 import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { constants, tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { configuredCheck, loadConfig, toolCmd } from "./config";
 import { logEvent, repoOf, startRun } from "./events";
+import { acquire, inside, queueDir, type Lease } from "./queue";
 
 export const MAX_LINES = 20;
 
@@ -188,17 +199,51 @@ export function cacheDir(top: string, sub: string): string {
 }
 
 // ── the run ─────────────────────────────────────────────────────────────────
-export function parse(argv: string[]): { name: string; command: string[] } | string {
+export function parse(all: string[]): { name: string; command: string[]; queue?: boolean } | string {
+  let queue: boolean | undefined;
+  let first = 0;
+  while (all[first] === "--queue" || all[first] === "--no-queue") queue = all[first++] === "--queue";
+  const argv = all.slice(first);
   const dash = argv.indexOf("--");
   const name = argv[0];
-  if (dash !== 1 || !name || dash === argv.length - 1) return "usage: bun q.ts <name> -- <command...>";
+  if (dash !== 1 || !name || dash === argv.length - 1) return "usage: bun q.ts [--queue|--no-queue] <name> -- <command...>";
   if (!/^[\w.-]+$/.test(name)) return `a name of letters, digits, '.', '-' or '_', not ${name}`;
-  return { name, command: argv.slice(dash + 1) };
+  return { name, command: argv.slice(dash + 1), ...(queue === undefined ? {} : { queue }) };
 }
 
-export async function run(name: string, command: string[], cwd = process.cwd()): Promise<number> {
+/** A place in the check queue when this run should have one: the `check` of a project that queues, any run that asks. Never fails the run. */
+async function enter(name: string, repo: string, where: string, cwd: string, ask?: boolean): Promise<Lease | undefined> {
+  try {
+    let queued = ask;
+    if (queued === undefined) {
+      try {
+        queued = name === "check" && loadConfig(cwd).checks.queue;
+      } catch {
+        queued = false;
+      }
+    }
+    const dir = queued ? queueDir() : undefined;
+    if (!dir || inside()) return undefined;
+    return await acquire({ dir, name, repo, where, say: (line) => console.error(line) });
+  } catch (e) {
+    console.error(`${name}: the queue failed (${(e as Error).message}): running without it`);
+    return undefined;
+  }
+}
+
+export async function run(name: string, command: string[], cwd = process.cwd(), queue?: boolean): Promise<number> {
   const top = topLevel(cwd);
   const repo = repoOf(cwd);
+  // (first, before the log, the panel's file and the tree are looked at: they are those of the moment it runs)
+  const lease = await enter(name, repo, top ?? cwd, cwd, queue);
+  try {
+    return await runIt(name, command, cwd, top, repo, lease);
+  } finally {
+    lease?.release();
+  }
+}
+
+async function runIt(name: string, command: string[], cwd: string, top: string | undefined, repo: string, lease: Lease | undefined): Promise<number> {
   // The gates at work (the panel's) until just before the verdict reaches the
   // log. A run that throws leaves its file to a dead pid: the panel skips it.
   const done = startRun(name, repo);
@@ -211,7 +256,7 @@ export async function run(name: string, command: string[], cwd = process.cwd()):
   const start = performance.now();
   let code: number;
   try {
-    const p = Bun.spawn(command, { cwd, stdin: "ignore", stdout: fd, stderr: fd, env: { ...process.env, NO_COLOR: "1" } });
+    const p = Bun.spawn(command, { cwd, stdin: "ignore", stdout: fd, stderr: fd, env: { ...process.env, NO_COLOR: "1", ...(lease ? { HARNESS_QUEUE_HELD: String(process.pid) } : {}) } });
     // (q stopped stops its command too: never a check left running on its own, racing the next)
     const pass = (sig: NodeJS.Signals) => () => p.kill(sig);
     const handlers = (["SIGINT", "SIGTERM", "SIGHUP"] as const).map((sig) => [sig, pass(sig)] as const);
@@ -261,5 +306,5 @@ if (import.meta.main) {
     console.error(args);
     process.exit(2);
   }
-  process.exit(await run(args.name, args.command));
+  process.exit(await run(args.name, args.command, process.cwd(), args.queue));
 }

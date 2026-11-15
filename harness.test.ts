@@ -206,7 +206,10 @@ describe("q", () => {
   test("q stopped stops its command", async () => {
     const { repo } = family();
     const p = Bun.spawn([process.execPath, join(KIT, "q.ts"), "slow", "--", "sh", "-c", "sleep 2; echo late"], { cwd: repo, stdout: "pipe", stderr: "pipe" });
-    await Bun.sleep(700);
+    // (not a fixed wait: on a busy machine q takes seconds to start, and killed before its command it has nothing to stop)
+    const log = join(repo, ".cache", "logs", "slow.log");
+    for (let i = 0; i < 400 && !existsSync(log); i++) await Bun.sleep(25);
+    await Bun.sleep(400);
     p.kill("SIGTERM");
     expect(await p.exited).toBe(143);
     await Bun.sleep(2000);

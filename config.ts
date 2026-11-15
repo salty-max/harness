@@ -48,6 +48,8 @@ export type Config = {
   hooks: { trailers: boolean; lock: boolean; stamp: boolean; review: boolean };
   review: { waive: RegExp[]; copies: { patterns: RegExp[]; except: string[] } };
   extensions: { packet?: string; status?: string };
+  /** queue: one `check` at a time on the machine, the others wait (queue.ts). */
+  checks: { queue: boolean };
   /** worktrees: the project opens each child session in a worktree of its own (a project that shares one checkout leaves it false). */
   session: { rules: string; models: { code: string; prose: string }; worktrees: boolean };
 };
@@ -169,6 +171,7 @@ export function parseConfig(root: string, raw: Table): Config {
   const waive = Array.isArray(review.waive) ? (review.waive as string[]) : ["^docs/", "(^|/)(README|CLAUDE)\\.md$"];
   const copies = table(review.copies);
   const ext = table(raw.extensions);
+  const checks = table(raw.checks);
   const session = table(raw.session);
   const models = table(session.models);
   return {
@@ -193,6 +196,7 @@ export function parseConfig(root: string, raw: Table): Config {
       copies: { patterns: (Array.isArray(copies.patterns) ? (copies.patterns as string[]) : []).map((w) => new RegExp(w)), except: Array.isArray(copies.except) ? (copies.except as string[]) : [] },
     },
     extensions: { packet: str(ext.packet), status: str(ext.status) },
+    checks: { queue: flag(checks.queue, false, "[checks] queue") },
     session: {
       rules: str(session.rules) ?? str(defaults.rules) ?? "CLAUDE.md",
       models: { code: str(models.code) ?? "opusplan", prose: str(models.prose) ?? "opus" },

@@ -89,6 +89,9 @@ waive = ['^docs/', '(^|/)(README|CLAUDE)\.md$']   # files a push may carry unrev
 # packet = "addon-kit/packet-extras.ts"   # export extras(ctx): string[] (lines for the packet)
 # status = "addon-kit/status-extras.ts"   # export columns(repo): { label, value }[]
 
+[checks]
+queue = false                     # true: one `check` at a time on this machine, the others wait (queue.ts, below)
+
 [session]                         # session.ts
 rules  = "CLAUDE.md"              # what a child reads first
 models = { code = "opusplan", prose = "opus" }
@@ -138,6 +141,33 @@ repository it starts in, so a root of many repositories gets none asked
 (`doctor.ts` says so). `hooks.ts install` refuses in a linked worktree: `core.hooksPath` is
 shared by all of them. A config the hooks can't read is said on stderr by
 `config.ts hook` (answering `on`: every gate stays on, none quietly off).
+
+**The check queue** (15 November 2026, asked for by hundo: several child
+sessions in parallel worktrees each ran a heavy `check` at once, the load
+reached 86 to 140 and tests timed out at their 5 s). `queue.ts` is a lock for
+`check` on the machine: `[checks] queue = true` in harness.toml makes every
+`check` of the project wait its turn, whatever worktree or repository it runs
+in (`q.ts --queue <name>` queues another run, `--no-queue` skips it once,
+`HARNESS_QUEUE=off` is the escape hatch, `HARNESS_QUEUE=<folder>` another
+folder than `~/.cache/harness/queue`). It is off by default, the family's
+setting too (its sessions share checkouts and its checks overlap about one time
+in ten, so it is the user's call: a waiting `check` can outlive an agent tool
+call's timeout and be killed, losing its place). The lock is a link made whole
+(as a card is), taken only by the oldest living waiter (tickets under
+`waiting/`, first come first served); a holder or a ticket whose process is
+gone, or whose pid was reused (started after its file), is dead, and a dead
+holder or one past an hour (a wedged check) is taken over by the head waiter
+alone. A waiting run says so in one line on stderr and takes its place before
+its log, its panel file (so the panel lights only the check that runs) and the
+tree it stamps are looked at; the verdict, stamp, event log and exit code are
+what they are without it. The command a holder runs has `HARNESS_QUEUE_HELD`,
+so a q run inside it (the harness's own tests drive q) never waits for its
+own holder. Not covered: a holder killed with SIGKILL leaves its command
+running while the lock looks stale, and a Mac that sleeps through the hour
+makes a healthy holder look wedged (two checks overlap, load and never a
+wrong stamp); a queue orders q's runs and nothing
+else (a bare `bun test`, a check parallel inside itself, the sessions' own
+work); the panel does not show a waiting run.
 
 A one-repository project: root = the repository; the repo's name is
 `project.name`; the lock's unit (a card's `repos`) is that name. The name need

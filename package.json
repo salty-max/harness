@@ -3,6 +3,6 @@
   "private": true,
   "license": "MIT",
   "scripts": {
-    "check": "bun test && sh pane/bin/plugin-check.sh"
+    "check": "bun test --timeout 60000 && sh pane/bin/plugin-check.sh"
   }
 }

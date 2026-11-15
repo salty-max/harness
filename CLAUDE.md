@@ -11,7 +11,7 @@ with `bun init.ts <project>`.
 |---|---|
 | The design and the decisions | `docs/design.md` |
 | The config and the root finder (every tool reads it) | `config.ts` |
-| The tools | `board.ts q.ts hooks.ts review.ts packet.ts each.ts status.ts usage.ts session.ts events.ts`, `githooks/` |
+| The tools | `board.ts q.ts queue.ts hooks.ts review.ts packet.ts each.ts status.ts usage.ts session.ts events.ts`, `githooks/` |
 | Adopting, copying, checking (`templates/rules-section.md` is the one source of the generic session rules: `init.ts` writes it into CLAUDE.md, `--section-only` refreshes it alone) | `init.ts`, `harness-sync.ts`, `doctor.ts`, `templates/` |
 | The adopt procedure as a skill (link `skills/harness-init` into `~/.claude/skills/`) | `skills/harness-init/SKILL.md` |
 | The child skill (open a task in its own session, see it through, the dispatch; link `skills/child` into `~/.claude/skills/`; finds the project's tools dir through `config.ts show`) | `skills/child/SKILL.md` |
