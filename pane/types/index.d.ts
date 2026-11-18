@@ -23,7 +23,7 @@ export type RepoRow = {
   project?: string
   head: string
   check: CheckStamp | null
-  /** The last check run when it failed after the newest stamp (`.cache/logs/check.log`). */
+  /** The last check run when it failed after the newest stamp (`.cache/logs/check.log`, q.ts's link to the newest run's own log). */
   failed: { at: number; exit: number } | null
   review: ReviewMark | null
   /** The commits a push would send (`@{u}..HEAD`, else those no remote has); null with no remote; absent in an older snapshot. */

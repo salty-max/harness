@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, utimesSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -664,6 +664,19 @@ describe('repositories', () => {
     writeFileSync(log, '$ bun run check\nstill running\n')
     expect(failedCheck(dir, 0)).toBeNull()
     expect(readRepo(dir)?.failed).toBeNull()
+  })
+
+  test('check.log is a link to the run (q.ts makes one log for each run): read through it, null once its run is pruned', () => {
+    const dir = repo()
+    const logs = join(dir, '.cache', 'logs')
+    mkdirSync(logs, { recursive: true })
+    const run = join(logs, 'check-20261118T125539Z-4821.log')
+    writeFileSync(run, '$ bun run check\n(fail) a test\n\n[exit 1, 3.2s]\n')
+    symlinkSync('check-20261118T125539Z-4821.log', join(logs, 'check.log'))
+    expect(failedCheck(dir, 0)).toMatchObject({ exit: 1 })
+    expect(failedCheck(dir, Date.now() + 1000)).toBeNull()
+    rmSync(run)
+    expect(failedCheck(dir, 0)).toBeNull()
   })
 
   test('an older stamp is stale, a packet alone has no verdict', () => {

@@ -10,7 +10,8 @@ dependencies). What it gives a project:
   every child works in a git worktree of its own sets `[hooks] lock = false`
   and `[session] worktrees = true`: the board is then a list, and the tools
   read the worktree they are asked about)
-- **a quiet runner** (`q.ts`): one verdict line, the log in a file, the tree
+- **a quiet runner** (`q.ts`): one verdict line, the log in a file of its own for
+  each run (the verdict ends with its path), the tree
   stamped when the check passes, and, with `[checks] queue = true`, one
   `check` at a time on the machine (`queue.ts`); **git hooks**: no AI trailers, no push of an
   unchecked or unreviewed tree

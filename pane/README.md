@@ -179,8 +179,8 @@ holds the gates, the part of the harness that runs in code.
   `✓ 12m +edits`: the same, with edits made after the check. `◐ 12m commit`:
   the working directory as it is was checked but not committed yet.
   `· 2d old`: the last check was on something else. `✗ 3m exit 1`: the
-  last check run (q.ts's `.cache/logs/check.log`) failed after the newest
-  stamp. The review is HEAD's verdict, else the newest, as
+  last check run (q.ts's `.cache/logs/check.log`, a link to the newest run's
+  log of its own) failed after the newest stamp. The review is HEAD's verdict, else the newest, as
   `addon-kit/review.ts` records it in `.git/harness/review-<sha>` (its
   first line, the `verdict:` prefix dropped; green when clean, amber with
   findings), else the newest packet in `.cache/review/`. Said before it,

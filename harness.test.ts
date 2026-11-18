@@ -3,14 +3,14 @@
 // family folder of its own under the system's temp folder, git kept from the
 // user's own configuration.
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { add, before, cardId, cards, conflicts, format, holders, holding, isHeld, lines, mayWrite, options, parseCard, repoList, set, setSection, slug, strangers, waitingOn, warnings } from "./board";
 import { eventLine, eventsPath, logEvent, repoOf } from "./events";
 import { HOOKS, hooksHome } from "./hooks";
 import { packet, sizeLine, packetRange, range, subjectProblem, trailerProblem } from "./packet";
-import { clean, headTree, matters, parse, stampDir, stampOf, verdict, workTree } from "./q";
+import { clean, headTree, LOG_KEEP, matters, parse, pointAt, pruneLogs, stampDir, stampOf, verdict, workTree } from "./q";
 import { parseReview, pushProblem, record, reviewOf, waived } from "./review";
 import { linkedWorktree, loadConfig, projectRoot, projectTree, repoDir, repoName, toolsPath, treeConfig, workDir } from "./config";
 import { FAMILY_TOML, useBoardGuard, writeFamilyConfig } from "./testing";
@@ -79,6 +79,8 @@ function run(cwd: string, cmd: string[], env: Record<string, string> = {}) {
 }
 const git = (cwd: string, ...args: string[]) => run(cwd, ["git", ...args]);
 const q = (cwd: string, ...args: string[]) => run(cwd, ["bun", join(KIT, "q.ts"), ...args]);
+// The log a verdict line names: its last field.
+const logOf = (out: string) => out.split("\n")[0]!.split(" · ").at(-1)!;
 
 let n = 0;
 // A family-shaped project root (harness.toml, addon-kit/, wow-data/) holding one repository with a commit.
@@ -126,7 +128,7 @@ describe("q", () => {
 
   test("the verdict line and the arguments", () => {
     expect(verdict("check", 0, 41_200)).toBe("check: ok (41s)");
-    expect(verdict("test", 1, 3_000, ".cache/logs/test.log")).toBe("test: FAILED (exit 1, 3.0s) · .cache/logs/test.log");
+    expect(verdict("test", 1, 3_000)).toBe("test: FAILED (exit 1, 3.0s)");
     expect(parse(["check", "--", "bun", "run", "check"])).toEqual({ name: "check", command: ["bun", "run", "check"] });
     expect(parse(["check", "bun"])).toBeString();
     expect(parse(["check", "--"])).toBeString();
@@ -137,13 +139,13 @@ describe("q", () => {
     const { repo } = family();
     const ok = q(repo, "demo", "--", "sh", "-c", "echo fine");
     expect(ok.code).toBe(0);
-    expect(ok.out).toMatch(/^demo: ok \(\d+\.\ds\)\n$/);
+    expect(ok.out).toMatch(/^demo: ok \(\d+\.\ds\) · \.cache\/logs\/demo-\d{8}T\d{6}Z-\d+\.log\n$/);
     const bad = q(repo, "demo", "--", "sh", "-c", "echo building; echo 'x.lua:3: boom' >&2; exit 3");
     expect(bad.code).toBe(3);
-    expect(bad.out.split("\n")[0]).toMatch(/^demo: FAILED \(exit 3, .*\) · \.cache\/logs\/demo\.log$/);
+    expect(bad.out.split("\n")[0]).toMatch(/^demo: FAILED \(exit 3, .*\) · \.cache\/logs\/demo-\d{8}T\d{6}Z-\d+\.log$/);
     expect(bad.out).toContain("  x.lua:3: boom");
     expect(bad.out).toContain("  building");
-    const log = readFileSync(join(repo, ".cache", "logs", "demo.log"), "utf8");
+    const log = readFileSync(join(repo, logOf(bad.out)), "utf8");
     expect(log).toContain("$ sh -c echo building");
     expect(log).toContain("building\nx.lua:3: boom\n");
     expect(log).toContain("[exit 3,");
@@ -156,6 +158,119 @@ describe("q", () => {
     expect(q(repo, "demo").code).toBe(2);
     // killed by a signal: 128 and its number, as a shell says it
     expect(q(repo, "demo", "--", "sh", "-c", "kill -TERM $$").code).toBe(143);
+  });
+
+  test("two runs of one name keep a log each, and each verdict names its own", () => {
+    const { repo } = family();
+    const dir = join(repo, ".cache", "logs");
+    const alias = join(dir, "demo.log");
+    // (an older q's plain file under the name: replaced by the link)
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(alias, "old q\n");
+    const a = q(repo, "demo", "--", "sh", "-c", "echo first-run");
+    const b = q(repo, "demo", "--", "sh", "-c", "echo second-run; exit 4");
+    const [la, lb] = [logOf(a.out), logOf(b.out)];
+    expect(la).toMatch(/^\.cache\/logs\/demo-\d{8}T\d{6}Z-\d+\.log$/);
+    expect(lb).toMatch(/^\.cache\/logs\/demo-\d{8}T\d{6}Z-\d+\.log$/);
+    expect(lb).not.toBe(la);
+    expect(readFileSync(join(repo, la), "utf8")).toContain("first-run\n");
+    expect(readFileSync(join(repo, la), "utf8")).not.toContain("second-run");
+    expect(readFileSync(join(repo, lb), "utf8")).toContain("second-run\n");
+    expect(readFileSync(join(repo, lb), "utf8")).toContain("[exit 4,");
+    // the name alone is the latest run started, a link beside the logs
+    expect(lstatSync(alias).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(alias)).toBe(basename(lb));
+    expect(readFileSync(alias, "utf8")).toBe(readFileSync(join(repo, lb), "utf8"));
+    expect(readdirSync(dir).sort()).toEqual([basename(la), basename(lb), "demo.log"].sort());
+    expect(git(repo, "status", "--porcelain").out).toBe("");
+  });
+
+  test("two runs going on together keep a log each", async () => {
+    const { repo } = family();
+    // (both sleep, so both are certainly running at once)
+    const start = (word: string) => Bun.spawn([process.execPath, join(KIT, "q.ts"), "demo", "--", "sh", "-c", `echo start-${word}; sleep 1; echo end-${word}`], { cwd: repo, stdout: "pipe", stderr: "pipe" });
+    const [one, two] = [start("one"), start("two")];
+    const [outOne, outTwo] = await Promise.all([new Response(one.stdout).text(), new Response(two.stdout).text()]);
+    expect(await one.exited).toBe(0);
+    expect(await two.exited).toBe(0);
+    const [l1, l2] = [logOf(outOne), logOf(outTwo)];
+    expect(l1).not.toBe(l2);
+    const [t1, t2] = [readFileSync(join(repo, l1), "utf8"), readFileSync(join(repo, l2), "utf8")];
+    expect(t1).toContain("start-one\nend-one\n");
+    expect(t1).not.toContain("-two");
+    expect(t2).toContain("start-two\nend-two\n");
+    expect(t2).not.toContain("-one");
+  });
+
+  test("the logs of a name are pruned to the last ten written, nothing else touched", () => {
+    const dir = join(tmp, `logs-${++n}`);
+    mkdirSync(dir, { recursive: true });
+    const stamp = (i: number) => `20261118T0000${String(i).padStart(2, "0")}Z`;
+    const base = Date.now() - 3_600_000;
+    // (the file's mtime is what ranks it: stamp i written i seconds after the first)
+    const make = (f: string, i = 0) => {
+      writeFileSync(join(dir, f), "log\n");
+      utimesSync(join(dir, f), new Date(base + i * 1000), new Date(base + i * 1000));
+    };
+    for (let i = 0; i < 13; i++) make(`demo-${stamp(i)}-${100 + i}.log`, i);
+    make(`demo-${stamp(13)}-7-1.log`, 13); // (a run of the same process and second: a counter after the pid)
+    for (const f of [`demo-foo-${stamp(0)}-5.log`, `other-${stamp(0)}-5.log`, `demoXlog-${stamp(0)}-5.log`, "ids-missing.json", "demo.log.bak", ".demo.log.77"]) make(f);
+    // the first run started is still writing: its mtime is fresh, so it stays and the oldest written goes instead
+    utimesSync(join(dir, `demo-${stamp(0)}-100.log`), new Date(), new Date());
+    symlinkSync(`demo-${stamp(13)}-7-1.log`, join(dir, "demo.log"));
+    pruneLogs(dir, "demo");
+    const left = readdirSync(dir).sort();
+    expect(LOG_KEEP).toBe(10);
+    expect(left.filter((f) => /^demo-\d/.test(f))).toEqual([`demo-${stamp(0)}-100.log`, ...Array.from({ length: 8 }, (_, i) => `demo-${stamp(i + 5)}-${105 + i}.log`), `demo-${stamp(13)}-7-1.log`]);
+    // the others, the link and the files of other tools are as they were
+    for (const f of [`demo-foo-${stamp(0)}-5.log`, `other-${stamp(0)}-5.log`, `demoXlog-${stamp(0)}-5.log`, "ids-missing.json", "demo.log.bak", ".demo.log.77", "demo.log"]) expect(left).toContain(f);
+    // the log just made stays whatever its mtime says (a clock set back), the ten counting it
+    const fresh = `demo-${stamp(14)}-9.log`;
+    make(fresh, -50);
+    pruneLogs(dir, "demo", LOG_KEEP, fresh);
+    const after = readdirSync(dir).filter((f) => /^demo-\d/.test(f));
+    expect(after).toHaveLength(10);
+    expect(after).toContain(fresh);
+    // a name with a dot is matched literally
+    make(`aXb-${stamp(0)}-1.log`);
+    make(`a.b-${stamp(0)}-1.log`);
+    pruneLogs(dir, "a.b", 0);
+    expect(existsSync(join(dir, `aXb-${stamp(0)}-1.log`))).toBe(true);
+    expect(existsSync(join(dir, `a.b-${stamp(0)}-1.log`))).toBe(false);
+    pruneLogs(join(tmp, "no-such-folder"), "demo");
+    // through a run: ten stay, the new one among them
+    const { repo } = family();
+    const logs = join(repo, ".cache", "logs");
+    mkdirSync(logs, { recursive: true });
+    for (let i = 0; i < 12; i++) writeFileSync(join(logs, `demo-2020010${1 + (i % 9)}T0000${String(i).padStart(2, "0")}Z-${i}.log`), "old\n");
+    const ran = q(repo, "demo", "--", "true");
+    const kept = readdirSync(logs).filter((f) => /^demo-\d/.test(f));
+    expect(kept).toHaveLength(10);
+    expect(kept).toContain(basename(logOf(ran.out)));
+  });
+
+  test("a name that can't be linked is left without a log, never with an older run's, and the run goes on", () => {
+    const { repo } = family();
+    const dir = join(repo, ".cache", "logs");
+    const first = q(repo, "demo", "--", "sh", "-c", "echo one");
+    // (a folder where the link goes: the rename over it fails)
+    rmSync(join(dir, "demo.log"));
+    mkdirSync(join(dir, "demo.log"));
+    const second = q(repo, "demo", "--", "sh", "-c", "echo two");
+    expect(second.code).toBe(0);
+    expect(readFileSync(join(repo, logOf(second.out)), "utf8")).toContain("two\n");
+    expect(readFileSync(join(repo, logOf(first.out)), "utf8")).toContain("one\n");
+    // the link itself: moved to the new run, and where it can't be made, removed rather than left on the older run
+    const own = join(tmp, `link-${++n}`);
+    mkdirSync(own);
+    for (const f of ["demo-20261118T000001Z-1.log", "demo-20261118T000002Z-2.log", "demo-20261118T000003Z-3.log"]) writeFileSync(join(own, f), "log\n");
+    pointAt(own, "demo", join(own, "demo-20261118T000001Z-1.log"));
+    pointAt(own, "demo", join(own, "demo-20261118T000002Z-2.log"));
+    expect(readlinkSync(join(own, "demo.log"))).toBe("demo-20261118T000002Z-2.log");
+    mkdirSync(join(own, `.demo.log.${process.pid}`, "in the way"), { recursive: true });
+    pointAt(own, "demo", join(own, "demo-20261118T000003Z-3.log"));
+    expect(existsSync(join(own, "demo.log"))).toBe(false);
+    expect(lstatSync(join(own, "demo-20261118T000002Z-2.log")).isFile()).toBe(true);
   });
 
   test("a passing check stamps the tree it ran on, a failing one takes it back", () => {
@@ -296,9 +411,9 @@ describe("events", () => {
     q(repo, "check", "--", "false");
     q(repo, "test", "--", "true");
     expect(newEvents().map((e) => [e[0], e[1], e[2], e[3]!.replace(/\(.*?\)/, "(t)")])).toEqual([
-      ["check", "ok", "repo", expect.stringMatching(/^check: ok \(t\) · stamped [0-9a-f]{7}$/)],
-      ["check", "fail", "repo", "check: FAILED (t) · .cache/logs/check.log"],
-      ["test", "ok", "repo", "test: ok (t)"],
+      ["check", "ok", "repo", expect.stringMatching(/^check: ok \(t\) · stamped [0-9a-f]{7} · \.cache\/logs\/check-\d{8}T\d{6}Z-\d+\.log$/)],
+      ["check", "fail", "repo", expect.stringMatching(/^check: FAILED \(t\) · \.cache\/logs\/check-\d{8}T\d{6}Z-\d+\.log$/)],
+      ["test", "ok", "repo", expect.stringMatching(/^test: ok \(t\) · \.cache\/logs\/test-\d{8}T\d{6}Z-\d+\.log$/)],
     ]);
     record(repo, "2 findings");
     expect(newEvents()).toEqual([["review", "", "repo", `${git(repo, "rev-parse", "--short=7", "HEAD").out.trim()} 2 findings`]]);

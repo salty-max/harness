@@ -7,13 +7,18 @@
  *
  *   bun q.ts [--queue|--no-queue] <name> -- <command...>
  *
- *   bun q.ts check -- bun run check   check: ok (41s) · stamped 3f2a1b9
- *   bun q.ts test -- bun test         test: FAILED (exit 1, 3s) · .cache/logs/test.log
+ *   bun q.ts check -- bun run check   check: ok (41s) · stamped 3f2a1b9 · .cache/logs/check-20261118T125539Z-4821.log
+ *   bun q.ts test -- bun test         test: FAILED (exit 1, 3s) · .cache/logs/test-20261118T125601Z-4830.log
  *                                                    (fail) the stamp > …
  *
- * The log: <repo>/.cache/logs/<name>.log, the command first, its exit last
- * (<repo>: the repository the command runs in; .cache/ is ignored by a
- * .gitignore of its own). The stamp: <git common dir>/harness/check-<tree>,
+ * The log: one file for each run, <repo>/.cache/logs/<name>-<UTC time>-<pid>.log,
+ * the command first, its exit last, and the verdict line ends with its path:
+ * read that one. Two runs of one name in one tree (a check and a reviewer's
+ * check, queued or not) never overwrite each other. <name>.log is a link to
+ * the latest run started, for a reader who looks by name only: another run
+ * may have moved it since, so a verdict's own path is the one to trust. The
+ * last 10 logs of each name are kept (<repo>: the repository the command runs
+ * in; .cache/ is ignored by a .gitignore of its own). The stamp: <git common dir>/harness/check-<tree>,
  * the tree of the working directory as the check found it (tracked and
  * untracked files, the ignored left out), shared by the repository's
  * worktrees: a commit of exactly that state pushes. Only the repository's
@@ -35,9 +40,9 @@
  * without a queue. A run inside a queued command (HARNESS_QUEUE_HELD) never
  * waits for its holder.
  */
-import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, copyFileSync, existsSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { constants, tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { basename, join, relative } from "node:path";
 import { configuredCheck, loadConfig, toolCmd } from "./config";
 import { logEvent, repoOf, startRun } from "./events";
 import { acquire, inside, queueDir, type Lease } from "./queue";
@@ -185,8 +190,8 @@ export function matters(lines: string[], max = MAX_LINES): string[] {
 
 const secs = (ms: number) => (ms < 10_000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms / 1000)}s`);
 
-export function verdict(name: string, code: number, ms: number, log?: string): string {
-  return code === 0 ? `${name}: ok (${secs(ms)})` : `${name}: FAILED (exit ${code}, ${secs(ms)})${log ? ` · ${log}` : ""}`;
+export function verdict(name: string, code: number, ms: number): string {
+  return code === 0 ? `${name}: ok (${secs(ms)})` : `${name}: FAILED (exit ${code}, ${secs(ms)})`;
 }
 
 // <repo>/.cache/<sub>, made; a .cache/ the repository's .gitignore forgot
@@ -196,6 +201,67 @@ export function cacheDir(top: string, sub: string): string {
   mkdirSync(join(cache, sub), { recursive: true });
   if (!existsSync(join(cache, ".gitignore"))) writeFileSync(join(cache, ".gitignore"), "*\n");
   return join(cache, sub);
+}
+
+// ── the logs ────────────────────────────────────────────────────────────────
+// One file for each run: <name>-<UTC time>-<pid>.log (a counter after the pid
+// if the same process ran the same name in the same second), made with "wx" so
+// no run ever opens another's. <name>.log is a link to the latest run started.
+export const LOG_KEEP = 10;
+
+const escapeRe = (text: string) => text.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&");
+const runLog = (name: string) => new RegExp(`^${escapeRe(name)}-\\d{8}T\\d{6}Z-\\d+(?:-\\d+)?\\.log$`);
+
+function newLog(dir: string, name: string, now = new Date()): { fd: number; file: string } {
+  const at = now.toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "");
+  for (let n = 0; ; n++) {
+    const file = join(dir, `${name}-${at}-${process.pid}${n ? `-${n}` : ""}.log`);
+    try {
+      return { fd: openSync(file, "wx+"), file };
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST" || n >= 99) throw e;
+    }
+  }
+}
+
+/** <name>.log made to point at `file`, in one step (a reader never finds it missing); an older q's plain file is replaced. Never fails the run: where no link can be made, the name is left without a log, never with an older run's. */
+export function pointAt(dir: string, name: string, file: string): void {
+  const tmp = join(dir, `.${name}.log.${process.pid}`);
+  try {
+    rmSync(tmp, { force: true });
+    symlinkSync(basename(file), tmp);
+    renameSync(tmp, join(dir, `${name}.log`));
+  } catch {
+    for (const f of [tmp, join(dir, `${name}.log`)])
+      try {
+        rmSync(f, { force: true });
+      } catch {}
+  }
+}
+
+/** Every run log of `name` but the newest `keep` removed (the last written first to stay, so a run still going keeps its file) and never `except`, the one just made (whatever its mtime says, a clock set back included). Other names, the link and any other file in the folder stay. Never fails the run. */
+export function pruneLogs(dir: string, name: string, keep = LOG_KEEP, except?: string): void {
+  try {
+    const own = runLog(name);
+    const logs = readdirSync(dir)
+      .filter((f) => own.test(f) && f !== except)
+      .flatMap((f) => {
+        try {
+          return [{ f, at: statSync(join(dir, f)).mtimeMs }];
+        } catch {
+          return []; // (gone meanwhile)
+        }
+      })
+      .sort((a, b) => a.at - b.at || (a.f < b.f ? -1 : 1));
+    for (const { f } of logs.slice(0, Math.max(0, logs.length - (except ? keep - 1 : keep)))) rmSync(join(dir, f), { force: true });
+  } catch {}
+}
+
+// The log as written so far, read through its own descriptor: a file another run pruned meanwhile is still there to this one.
+function readLog(fd: number): string {
+  const buf = Buffer.alloc(fstatSync(fd).size);
+  readSync(fd, buf, 0, buf.length, 0);
+  return buf.toString("utf8");
 }
 
 // ── the run ─────────────────────────────────────────────────────────────────
@@ -247,11 +313,13 @@ async function runIt(name: string, command: string[], cwd: string, top: string |
   // The gates at work (the panel's) until just before the verdict reaches the
   // log. A run that throws leaves its file to a dead pid: the panel skips it.
   const done = startRun(name, repo);
-  const log = join(cacheDir(top ?? cwd, "logs"), `${name}.log`);
+  const logs = cacheDir(top ?? cwd, "logs");
   const checking = name === "check" && top !== undefined;
   const before = checking ? workTree(cwd) : undefined;
 
-  const fd = openSync(log, "w");
+  const { fd, file: log } = newLog(logs, name);
+  pointAt(logs, name, log);
+  pruneLogs(logs, name, LOG_KEEP, basename(log));
   writeSync(fd, `$ ${command.join(" ")}\n`);
   const start = performance.now();
   let code: number;
@@ -270,10 +338,10 @@ async function runIt(name: string, command: string[], cwd: string, top: string |
   }
   const ms = performance.now() - start;
   writeSync(fd, `\n[exit ${code}, ${secs(ms)}]\n`);
+  const out = code !== 0 ? clean(readLog(fd)).slice(1, -1) : [];
   closeSync(fd);
 
-  const shown = relative(process.cwd(), log) || log;
-  let line = verdict(name, code, ms, shown);
+  let line = verdict(name, code, ms);
   if (checking && !before && code === 0) line += " · not stamped: couldn't read the working tree (git status)";
   if (checking && before) {
     const after = workTree(cwd);
@@ -290,13 +358,12 @@ async function runIt(name: string, command: string[], cwd: string, top: string |
     const gone = hooksGone(top!);
     if (gone) line += ` · ${gone}`;
   }
+  // (last, after the stamp and the rest: this run's own log, the one to read; another run may have moved <name>.log since)
+  line += ` · ${relative(process.cwd(), log) || log}`;
   done();
   console.log(line);
   logEvent(name, code !== 0 ? "fail" : line.includes("not stamped") ? "wait" : "ok", repo, line);
-  if (code !== 0) {
-    const out = clean(readFileSync(log, "utf8")).slice(1, -1);
-    for (const l of matters(out)) console.log(`  ${l}`);
-  }
+  if (code !== 0) for (const l of matters(out)) console.log(`  ${l}`);
   return code;
 }
 
