@@ -32,14 +32,14 @@
  * program (a script, make), a push URL set in the repository's own config. The ask rules this replaced had the same
  * limits, and matched far fewer forms (`git -c x=y push` and every alias escaped them).
  */
-import { realpathSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 
 type Word = { text: string; dynamic: boolean; quoted: boolean; subs: string[] };
 type Sep = "&&" | "||" | ";" | "|" | "&" | "\n" | "";
 type Cmd = { words: Word[]; before: Sep; after: Sep };
-type State = { dir: string | undefined; gitVar?: boolean };
+type State = { dir: string | undefined; gitVar?: boolean; maybe?: boolean };
 /** A push found: the folder it runs in (undefined: can't be told) and why its target isn't plainly origin (undefined: it is). */
 export type Push = { dir: string | undefined; odd?: string };
 
@@ -273,17 +273,41 @@ function target(args: Word[], remote?: string): string | undefined {
   return named === undefined || named === "origin" ? undefined : `git push to ${named}, not origin`;
 }
 
-/** oh-my-zsh's git aliases that push, with the remote each names (""): they have no `git` or `push` in them for a rule to match. */
-const ALIASES: Record<string, string> = { gp: "", gpd: "", gpf: "", "gpf!": "", gpfl: "", gpv: "", gpsup: "origin", gpsupf: "origin", ggpush: "origin", ggp: "origin", gpoat: "origin", gpod: "origin", gpu: "upstream" };
+/** oh-my-zsh's git aliases and functions that push (the Bash tool's shell snapshot carries them), with the remote each names (""): they have no `git` or `push` in them for a rule to match. */
+const ALIASES: Record<string, string> = { gp: "", gpd: "", gpf: "", "gpf!": "", gpfl: "", gpv: "", gpsup: "origin", gpsupf: "origin", ggpush: "origin", ggp: "origin", ggpnp: "origin", ggf: "origin", ggfl: "origin", grename: "origin", gpoat: "origin", gpod: "origin", gpu: "upstream" };
 
 const SHELLS = ["sh", "bash", "zsh", "dash", "ksh"];
 const GIT_WITH_ARG = ["-C", "--namespace", "--exec-path", "--super-prefix", "--config-env", "--attr-source"];
 const EXPORTERS = ["export", "declare", "typeset", "readonly", "local"];
-/** Whether a command line may hold a push at all: the word, or one of the push aliases. */
-export const mentions = (s: string): boolean => s.includes("push") || /(^|[^\w-])(gp[a-z!]*|ggp[a-z]*)(?![\w-])/.test(s);
+/** Programs that run the rest of their line as a command: a `git push` quoted into one of their words counts. */
+const RUNNERS = ["sudo", "doas", "su", "xargs", "watch", "flock", "parallel", "ssh", "script", "find", "setsid", "caffeinate"];
+/** A `git … push` written out in one string. */
+const TEXT = /(^|[\s;&|(`])git(\s+\S+)*?\s+push(?=\s|$|[;&|)])/;
+/** Whether a command line may hold a push at all: the word, or one of the push aliases and functions. */
+export const mentions = (s: string): boolean => s.includes("push") || s.includes("send-pack") || /(^|[^\w-])(gp[a-z!]*|ggp[a-z]*|ggf[a-z]*|grename)(?![\w-])/.test(s);
 
-/** What a `git` word's options come to: the folder `-C` moves to, where the subcommand is, and what makes the repository or remote unusual. */
-function gitOptions(words: Word[], at: number, dir: string | undefined, home: string): { dir: string | undefined; sub: string | undefined; rest: Word[]; odd?: string; config: boolean } {
+/** A redirection (`2>&1`, `> file`, `&>`, `<<<`) is no argument and no command; one that names no file takes the word after it. */
+const REDIRECT = /^(?:\d*|&)(?:>>?|<>?|<<<?|>&|<&)(.*)$/;
+function unredirected(words: Word[]): Word[] {
+  const out: Word[] = [];
+  for (let i = 0; i < words.length; i++) {
+    const m = words[i]!.quoted ? null : REDIRECT.exec(words[i]!.text);
+    if (!m) out.push(words[i]!);
+    else if (m[1] === "") i++;
+  }
+  return out;
+}
+
+const isDir = (p: string | undefined) => {
+  try {
+    return !!p && statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+};
+
+/** What a `git` word's options come to: the folder `-C` moves to, where the subcommand is, and what makes the remote unusual. */
+function gitOptions(words: Word[], at: number, dir: string | undefined, home: string): { dir: string | undefined; sub: Word | undefined; rest: Word[]; odd?: string; config: boolean } {
   let odd: string | undefined;
   let config = false;
   let i = at + 1;
@@ -303,7 +327,20 @@ function gitOptions(words: Word[], at: number, dir: string | undefined, home: st
     else if (t.startsWith("-")) continue;
     else break;
   }
-  return { dir, sub: words[i]?.text, rest: words.slice(i + 1), odd, config };
+  return { dir, sub: words[i], rest: words.slice(i + 1), odd, config };
+}
+
+/** How a command line moves the count of open if/while/until/for/case blocks: a cd inside one may not run. */
+function blockDelta(words: Word[]): number {
+  let i = 0;
+  let n = 0;
+  while (words[i] && !words[i]!.quoted && ["if", "then", "do", "else", "elif", "while", "until", "!"].includes(words[i]!.text)) if (["if", "while", "until"].includes(words[i++]!.text)) n++;
+  const f = words[i];
+  if (f && !f.quoted) {
+    if (["for", "case", "select"].includes(f.text)) n++;
+    else if (["fi", "done", "esac"].includes(f.text)) n--;
+  }
+  return n;
 }
 
 /** Every push in `src`, with the folder it runs in, `state` being the folder the command starts in (moved by its cd). */
@@ -313,17 +350,27 @@ export function pushes(src: string, state: State, home: string, out: Push[] = []
     return out;
   }
   const { cmds, grouped } = parse(src);
+  let block = 0;
   for (const cmd of cmds) {
     for (const w of cmd.words) for (const sub of w.subs) pushes(sub, { ...state }, home, out, depth + 1);
-    const { words, gitVar } = bare(cmd.words);
+    const plain = unredirected(cmd.words);
+    block = Math.max(0, block + blockDelta(plain));
+    // (a cd that ran only after `&&` may not have: what follows the chain doesn't know where it is)
+    if (state.maybe && cmd.before !== "&&") state = Object.assign(state, { dir: undefined, maybe: false });
+    const { words, gitVar } = bare(plain);
     const first = words[0];
     if (!first) {
       // (`GIT_DIR=x` alone on a line sets it for the commands after it)
-      if (cmd.words.some((w) => gitEnv.test(w.text))) state.gitVar = true;
+      if (plain.some((w) => gitEnv.test(w.text))) state.gitVar = true;
       continue;
     }
     const name = basename(first.text);
-    if (name === "cd") {
+    const moved = gitVar || state.gitVar;
+    const hidden = (first.dynamic && !first.text.includes("/")) || first.text.startsWith("=");
+    if (hidden) {
+      // (a command that is a variable, a substitution or zsh's =git: `$G push`)
+      if (mentions(src)) out.push({ dir: undefined });
+    } else if (name === "cd") {
       // (quoting stops an alias, not the builtin: "cd" and \cd move the shell too)
       let j = 1;
       while (["-P", "-L", "-e", "-@", "--"].includes(words[j]?.text ?? "")) j++;
@@ -331,36 +378,52 @@ export function pushes(src: string, state: State, home: string, out: Push[] = []
       const to = !arg ? home : arg.text === "-" ? undefined : place(arg, state.dir, home);
       // (a cd that runs in a subshell, a pipeline, the background or only when the one before failed doesn't move the shell that follows)
       const lasts = ["", "&&", ";", "\n"].includes(cmd.after) && ["", "&&", ";", "\n"].includes(cmd.before);
-      state.dir = lasts && !grouped ? to : undefined;
+      state.dir = lasts && !grouped && !block ? to : undefined;
+      if (cmd.before === "&&" || cmd.before === "||") state.maybe = true;
     } else if (["pushd", "popd", "chdir"].includes(name)) state.dir = undefined;
     else if (EXPORTERS.includes(name)) {
       if (words.some((w) => gitEnv.test(w.text))) state.gitVar = true;
     } else if (name === "git") {
       const g = gitOptions(words, 0, state.dir, home);
-      const moved = gitVar || state.gitVar;
-      if (g.sub === "push") out.push({ dir: moved ? undefined : g.dir, odd: moved ? "a GIT_ variable" : g.odd ?? target(g.rest) });
-      else if (g.config) out.push({ dir: undefined });
-    } else if (name in ALIASES && !first.quoted) out.push({ dir: gitVar || state.gitVar ? undefined : state.dir, odd: target(words.slice(1), ALIASES[name] || undefined) });
+      const sub = g.sub?.text;
+      const next = g.rest.find((w) => !w.text.startsWith("-"));
+      if (sub === "push") out.push({ dir: moved ? undefined : g.dir, odd: moved ? "a GIT_ variable" : g.odd ?? target(g.rest) });
+      else if (sub === "subtree" && next?.text === "push") out.push({ dir: moved ? undefined : g.dir, odd: moved ? "a GIT_ variable" : g.odd ?? target(g.rest.slice(g.rest.indexOf(next) + 1)) });
+      else if (sub === "send-pack" || sub === "http-push" || g.config) out.push({ dir: undefined });
+      else if (sub && /[${]|^=/.test(sub)) {
+        // (a subcommand that is a variable or a brace list: `git $(echo push)`)
+        if (mentions(src)) out.push({ dir: undefined });
+      } else if (["submodule", "rebase", "bisect", "filter-branch"].includes(sub ?? "") && TEXT.test(g.rest.map((w) => w.text).join(" "))) out.push({ dir: undefined });
+    } else if (name in ALIASES && !first.quoted) out.push({ dir: moved ? undefined : state.dir, odd: target(words.slice(1), ALIASES[name] || undefined) });
     else if (SHELLS.includes(name)) {
       const k = words.findIndex((w, n) => n > 0 && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(w.text));
-      const body = k > 0 ? words[k + 1] : undefined;
+      let b = k + 1;
+      while (k > 0 && words[b]?.text.startsWith("-")) b++;
+      const body = k > 0 ? words[b] : undefined;
+      // (a script read from /dev/stdin or a process substitution is a pipe's or a heredoc's, which this can't see into)
+      const piped = !body && !words.slice(1).some((w) => !w.text.startsWith("-") && !w.text.startsWith("/dev/"));
       if (body && !/\$/.test(body.text)) pushes(body.text, { ...state }, home, out, depth + 1);
       else if (body && mentions(body.text)) out.push({ dir: undefined });
-      // (a shell with no -c and no script reads its commands from a pipe or a heredoc, which this can't see into)
-      else if (!body && !words.slice(1).some((w) => !w.text.startsWith("-")) && mentions(src)) out.push({ dir: undefined });
+      else if (piped && mentions(src)) out.push({ dir: undefined });
     } else if (name === "eval") {
       const rest = words.slice(1);
       const body = rest.map((w) => w.text).join(" ");
       if (rest.some((w) => w.dynamic)) {
         if (mentions(body)) out.push({ dir: undefined });
       } else pushes(body, state, home, out, depth + 1);
+    } else if (/\s/.test(first.text)) {
+      // (`env -S 'git push'` splits its word into a command)
+      pushes(words.map((w) => w.text).join(" "), { ...state }, home, out, depth + 1);
     } else if (!["echo", "printf"].includes(name)) {
-      // (a git behind a program this doesn't know: sudo, xargs, find -exec)
+      // (zsh's autocd: a word that is a folder moves the shell there)
+      if (/^(\.|~|\/)/.test(first.text) && isDir(place(first, state.dir, home))) state.dir = undefined;
+      // (a git behind a program this doesn't know: sudo, xargs, find -exec; and a command line quoted into a runner's word)
       const g = words.findIndex((w) => basename(w.text) === "git");
       if (g > 0) {
         const o = gitOptions(words, g, undefined, home);
-        if (o.sub === "push" || o.config) out.push({ dir: undefined });
+        if (o.sub?.text === "push" || o.sub?.text === "subtree" || o.config) out.push({ dir: undefined });
       }
+      if (RUNNERS.includes(name) && words.slice(1).some((w) => TEXT.test(w.text))) out.push({ dir: undefined });
     }
   }
   return out;
@@ -412,7 +475,7 @@ const quote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
  */
 export function hookCommand(bun: string, script: string, skip: string[]): string {
   const failed = JSON.stringify(answer("git push: the ask-push hook failed, so it asks"));
-  return `inp=$(cat); out=$(printf '%s' "$inp" | ${quote(bun)} ${quote(script)} ${skip.map((s) => `--skip ${quote(s)}`).join(" ")} 2>/dev/null) || case "$inp" in *push*|*gp*) out=${quote(failed)};; *) out=;; esac; printf '%s' "$out"`;
+  return `inp=$(cat); out=$(printf '%s' "$inp" | ${quote(bun)} ${quote(script)} ${skip.map((s) => `--skip ${quote(s)}`).join(" ")} 2>/dev/null) || case "$inp" in *push*|*send-pack*|*gp*|*ggf*|*grename*) out=${quote(failed)};; *) out=;; esac; printf '%s' "$out"`;
 }
 
 if (import.meta.main) {
