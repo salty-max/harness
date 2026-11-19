@@ -10,8 +10,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { missingAsks } from "./doctor";
-import { withAsks } from "./init";
+import { asksProblems, missingAsks, problems } from "./doctor";
+import { askSkip, withAsks } from "./init";
 
 const ASKS = JSON.parse(readFileSync(join(import.meta.dir, "templates", "settings-asks.json"), "utf8")) as string[];
 
@@ -318,6 +318,56 @@ describe("the template's asks", () => {
     expect(missingAsks(root)[0]).toContain(`${ASKS.length - 1} of the template's asks missing`);
     writeFileSync(file, JSON.stringify(withAsks({ model: "opus" }, ASKS)));
     expect(missingAsks(root)).toEqual([]);
+  });
+
+  test("[asks] skip leaves the named asks out of the merge and takes them out of a file that has them", () => {
+    const push = ["Bash(git push *)", "Bash(git -C * push)", "Bash(git -C * push *)"];
+    const merged = withAsks({ model: "opus", permissions: { allow: ["Bash(ls)"], ask: ["Bash(git push *)", "Bash(my own ask)"] } }, ASKS, push);
+    expect(merged.permissions.ask).toContain("Bash(my own ask)");
+    expect(merged.permissions.ask).toContain("Bash(gh pr merge *)");
+    expect(merged.permissions.ask.filter((a: string) => push.includes(a))).toEqual([]);
+    expect(merged.permissions.ask.length).toBe(ASKS.length - 3 + 1);
+    expect(merged.permissions.allow).toEqual(["Bash(ls)"]);
+    expect(merged.model).toBe("opus");
+    // (a second run changes nothing, and no skip is the old merge)
+    expect(withAsks(merged, ASKS, push)).toEqual(merged);
+    expect(withAsks({}, ASKS).permissions.ask).toEqual(ASKS);
+  });
+
+  test("askSkip reads the list, and a typo is an error and never an empty list", () => {
+    expect(askSkip({})).toEqual([]);
+    expect(askSkip({ asks: {} })).toEqual([]);
+    expect(askSkip({ asks: { skip: ["Bash(git push *)"] } })).toEqual(["Bash(git push *)"]);
+    for (const bad of ["Bash(git push *)", [1], [""], { push: true }, null]) expect(askSkip({ asks: { skip: bad } })).toHaveProperty("error");
+  });
+
+  test("doctor: a skipped ask is not missing, and is wrong while it is still in settings.json", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "asks-skip-")));
+    mkdirSync(join(root, ".claude"));
+    const push = ["Bash(git push *)", "Bash(git -C * push)", "Bash(git -C * push *)"];
+    const toml = (skip: string) => writeFileSync(join(root, "harness.toml"), `[asks]\nskip = ${skip}\n`);
+    const settings = (ask: string[]) => writeFileSync(join(root, ".claude", "settings.json"), JSON.stringify({ permissions: { ask } }));
+    toml(JSON.stringify(push));
+    settings(ASKS.filter((a) => !push.includes(a)));
+    expect(asksProblems(root)).toEqual([]);
+    // (the template with the push asks still in it)
+    settings(ASKS);
+    expect(asksProblems(root)).toEqual([expect.stringContaining("3 of the asks [asks] skip leaves out are still there")]);
+    // (a skip naming an ask the template lacks: a typo)
+    toml('["Bash(git push)"]');
+    settings(ASKS);
+    expect(asksProblems(root).join("\n")).toContain("which the template (templates/settings-asks.json) doesn't have");
+    // (not a list, and the template's asks missing as if there were no skip)
+    toml('"Bash(git push *)"');
+    settings(ASKS.slice(0, 5));
+    expect(asksProblems(root)[0]).toContain("[asks] skip is a list of the template's ask strings");
+    expect(asksProblems(root)[1]).toContain("of the template's asks missing");
+    // (the table and its key are known to doctor)
+    toml(JSON.stringify(push));
+    settings(ASKS.filter((a) => !push.includes(a)));
+    expect(problems(root).filter((l) => l.includes("unknown key"))).toEqual([]);
+    writeFileSync(join(root, "harness.toml"), "[asks]\nskp = []\n");
+    expect(problems(root).join("\n")).toContain("unknown key skp in [asks] (skip)");
   });
 
   test("the matcher splits, strips and globs as the docs say", () => {

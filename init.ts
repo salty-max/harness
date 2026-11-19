@@ -11,7 +11,8 @@
  *   2. the tools and git hooks, vendored and stamped into <tools dir> (harness-sync.ts)
  *   3. the git hooks installed in each repository (hooks.ts install --all)
  *   4. .claude/settings.json: the asks (push, release, deploy, GitHub and Vercel writes, secrets) merged
- *      into what is there, never replacing a key
+ *      into what is there, never replacing a key, except the asks `[asks] skip` in harness.toml names (those are
+ *      left out, and taken out if the file has them)
  *   5. .claude/agents/reviewer.md and architect.md, where there are none
  *   6. a "Harness" section in CLAUDE.md between <!-- harness:start --> and
  *      <!-- harness:end --> markers, so a later run replaces only that block
@@ -127,14 +128,34 @@ export function withSection(current: string | undefined, section: string): strin
   return `${current.trimEnd()}\n\n${block}`;
 }
 
-/** settings.json with the asks merged in (existing entries and every other key kept). */
-export function withAsks(current: Record<string, any> | undefined, asks: string[]): Record<string, any> {
+/**
+ * settings.json with the asks merged in (existing entries and every other key kept), except the ones `skip` names
+ * (`[asks] skip`): those are not merged, and are taken out of the list when it holds them, so the config is the one
+ * truth about which asks a project carries.
+ */
+export function withAsks(current: Record<string, any> | undefined, asks: string[], skip: string[] = []): Record<string, any> {
   const out = { ...(current ?? {}) };
   const perms = { ...(out.permissions ?? {}) };
-  const ask: string[] = Array.isArray(perms.ask) ? [...perms.ask] : [];
-  for (const a of asks) if (!ask.includes(a)) ask.push(a);
+  const ask: string[] = Array.isArray(perms.ask) ? perms.ask.filter((a: string) => !skip.includes(a)) : [];
+  for (const a of asks) if (!skip.includes(a) && !ask.includes(a)) ask.push(a);
   out.permissions = { ...perms, ask };
   return out;
+}
+
+/**
+ * The asks a project's harness.toml leaves out, `[asks] skip = ["Bash(git push *)", …]`: exact strings of
+ * templates/settings-asks.json. A project whose branch protection or review stands in for one of the harness's
+ * asks says so here, in one place, where `init.ts` and `doctor.ts` both read it. It is read here and not in
+ * config.ts on purpose: only these two (neither is vendored) need it, so a project's copy of config.ts, and the
+ * copies' stamps, don't move for it. A typo (not a list of strings) is an error, never an empty list.
+ */
+export function askSkip(raw: Record<string, unknown>): string[] | { error: string } {
+  const asks = raw.asks;
+  if (asks === undefined) return [];
+  const skip = asks && typeof asks === "object" && !Array.isArray(asks) ? (asks as Record<string, unknown>).skip : undefined;
+  if (skip === undefined) return [];
+  if (!Array.isArray(skip) || skip.some((s) => typeof s !== "string" || !s)) return { error: `harness.toml: [asks] skip is a list of the template's ask strings, not ${JSON.stringify(skip)}` };
+  return skip as string[];
 }
 
 export function withIgnore(current: string | undefined, lines: string[]): string {
@@ -223,10 +244,18 @@ if (import.meta.main) {
   const asks = JSON.parse(read(join(SRC, "templates", "settings-asks.json"))) as string[];
   const settingsPath = join(o.dir, ".claude", "settings.json");
   const settings = existsSync(settingsPath) ? JSON.parse(read(settingsPath)) : undefined;
-  const merged = withAsks(settings, asks);
-  if (JSON.stringify(merged) === JSON.stringify(settings)) console.log(".claude/settings.json: the asks are there");
+  const skipped = askSkip(existsSync(tomlPath) ? readToml(tomlPath, resolve(o.dir)) : {});
+  if ("error" in skipped) {
+    console.error(`init: ${skipped.error}`);
+    process.exit(1);
+  }
+  const merged = withAsks(settings, asks, skipped);
+  const left = asks.filter((a) => !skipped.includes(a)).length;
+  const have: string[] = Array.isArray(settings?.permissions?.ask) ? settings.permissions.ask : [];
+  const dropped = skipped.filter((a) => have.includes(a));
+  if (JSON.stringify(merged) === JSON.stringify(settings)) console.log(`.claude/settings.json: the asks are there${skipped.length ? ` (${skipped.length} left out by [asks] skip)` : ""}`);
   else {
-    say(`merge ${asks.length} asks (push, release, deploy, GitHub and Vercel writes, secrets) into .claude/settings.json`);
+    say(`merge ${left} asks (push, release, deploy, GitHub and Vercel writes, secrets) into .claude/settings.json${dropped.length ? `, and take out the ${dropped.length} that [asks] skip names` : ""}`);
     put(".claude/settings.json", JSON.stringify(merged, null, 2) + "\n");
   }
 

@@ -5,18 +5,19 @@
  *
  * The config's unknown keys and missing paths, a repository with no check
  * known, hooks that aren't ours, copies that aren't the harness's, the
- * template's permission asks missing from .claude/settings.json.
+ * template's permission asks missing from .claude/settings.json (less the ones
+ * `[asks] skip` leaves out, which are wrong where they are still there).
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { check } from "./harness-sync";
-import { CONFIG_FILE, loadConfig, projectTree, repoDir, treeConfig } from "./config";
-import { renderSection, withSection } from "./init";
+import { CONFIG_FILE, loadConfig, projectTree, readToml, repoDir, treeConfig } from "./config";
+import { askSkip, renderSection, withSection } from "./init";
 import { checkCommand } from "./q";
 
-const KNOWN = new Set(["include", "project", "state", "tools", "repos", "defaults", "groups", "hooks", "review", "extensions", "session", "checks"]);
+const KNOWN = new Set(["include", "project", "state", "tools", "repos", "defaults", "groups", "hooks", "review", "extensions", "session", "checks", "asks"]);
 // (a misspelt switch is a switch that was never set: `lok = false` leaves the lock on, quietly)
-const KNOWN_KEYS: Record<string, string[]> = { hooks: ["trailers", "lock", "stamp", "review"], session: ["rules", "models", "worktrees", "decisions"], checks: ["queue", "queue_limit"] };
+const KNOWN_KEYS: Record<string, string[]> = { hooks: ["trailers", "lock", "stamp", "review"], session: ["rules", "models", "worktrees", "decisions"], checks: ["queue", "queue_limit"], asks: ["skip"] };
 
 export function problems(project: string): string[] {
   const out: string[] = [];
@@ -53,7 +54,7 @@ export function problems(project: string): string[] {
     const p = Bun.spawnSync(["bun", vendored, "status"], { cwd: conf.root, env: { ...process.env, HARNESS_ROOT: conf.root }, stderr: "pipe" });
     if (p.exitCode !== 0) out.push(`hooks: ${(p.stdout.toString() + p.stderr.toString()).trim().split("\n").filter((l) => !l.includes("hooks ✓")).join("; ") || "bun " + conf.toolsDir + "/hooks.ts status says a repository wants a hand"}`);
   }
-  out.push(...missingAsks(tree));
+  out.push(...asksProblems(tree));
   out.push(...staleSection(treeConf, tree));
   // (`claude --bg --worktree` makes the worktree of the repository it starts in: a root of many repositories has none to make)
   if (conf.session.worktrees && !existsSync(join(conf.root, ".git"))) out.push(`[session] worktrees = true, but ${conf.root} is no git repository: it is for a project that is one repository (a CLI child gets no --worktree here)`);
@@ -69,21 +70,43 @@ export function staleSection(conf: ReturnType<typeof loadConfig>, tree: string =
   return withSection(have, renderSection(conf)) === have ? [] : [`CLAUDE.md: the Harness section isn't the one this config renders (bun init.ts ${tree} --section-only, from the harness repository)`];
 }
 
-/** The template's permission asks a project's .claude/settings.json lacks (init.ts merges them in). */
-export function missingAsks(root: string): string[] {
-  const asks = JSON.parse(readFileSync(join(import.meta.dir, "templates", "settings-asks.json"), "utf8")) as string[];
+const templateAsks = () => JSON.parse(readFileSync(join(import.meta.dir, "templates", "settings-asks.json"), "utf8")) as string[];
+
+/** The asks in a project's .claude/settings.json, or the reason it has none to read. */
+function haveAsks(root: string): string[] | { why: string } {
   const file = join(root, ".claude", "settings.json");
-  let have: string[] = [];
   try {
     const ask = JSON.parse(readFileSync(file, "utf8"))?.permissions?.ask;
-    if (Array.isArray(ask)) have = ask;
+    return Array.isArray(ask) ? ask : [];
   } catch {
-    return [`.claude/settings.json: ${existsSync(file) ? "not valid JSON" : "not there"}, so none of the template's ${asks.length} asks (bun init.ts merges them)`];
+    return { why: existsSync(file) ? "not valid JSON" : "not there" };
   }
+}
+
+/** The template's permission asks a project's .claude/settings.json lacks, `skip` (`[asks] skip`) apart (init.ts merges them in). */
+export function missingAsks(root: string, skip: string[] = []): string[] {
+  const asks = templateAsks().filter((a) => !skip.includes(a));
+  const have = haveAsks(root);
+  if (!Array.isArray(have)) return [`.claude/settings.json: ${have.why}, so none of the template's ${asks.length} asks (bun init.ts merges them)`];
   const missing = asks.filter((a) => !have.includes(a));
   if (!missing.length) return [];
   const shown = missing.slice(0, 3).join(", ");
   return [`.claude/settings.json: ${missing.length} of the template's asks missing (bun init.ts merges them): ${shown}${missing.length > 3 ? ", …" : ""}`];
+}
+
+/** What is wrong with the asks: `[asks] skip` not a list, naming an ask the template lacks (a typo), or an ask it leaves out that settings.json still holds; and the template's asks that are missing, the skipped apart. */
+export function asksProblems(tree: string): string[] {
+  const file = join(tree, CONFIG_FILE);
+  const skip = askSkip(existsSync(file) ? readToml(file, tree) : {});
+  if ("error" in skip) return [skip.error, ...missingAsks(tree)];
+  const out = missingAsks(tree, skip);
+  const known = templateAsks();
+  const strange = skip.filter((s) => !known.includes(s));
+  if (strange.length) out.push(`${CONFIG_FILE}: [asks] skip names ${strange.join(", ")}, which the template (templates/settings-asks.json) doesn't have: it must be an ask's exact string`);
+  const have = haveAsks(tree);
+  const still = Array.isArray(have) ? skip.filter((s) => have.includes(s)) : [];
+  if (still.length) out.push(`.claude/settings.json: ${still.length} of the asks [asks] skip leaves out are still there (bun init.ts takes them out): ${still.slice(0, 3).join(", ")}${still.length > 3 ? ", …" : ""}`);
+  return out;
 }
 
 if (import.meta.main) {

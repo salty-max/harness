@@ -41,7 +41,8 @@ It writes:
    any runner), a production or project change on Vercel, a write through
    `gh api` or `vercel api`, a repository created, edited or deleted,
    secrets, `core.hooksPath` and `--no-verify`, merged in, never replacing
-   a key (`doctor.ts` names the template's asks a project lacks)
+   a key (`doctor.ts` names the template's asks a project lacks), less the
+   ones `[asks] skip` names (below)
 5. `.claude/agents/reviewer.md` and `architect.md`, where there are none
 6. a Harness block in `CLAUDE.md` between `<!-- harness:start -->` and
    `<!-- harness:end -->`: a later run replaces only the block
@@ -63,6 +64,10 @@ decisions = "opener"  # only if the user takes every decision in the dispatch se
 [checks]
 queue = true        # optional: one check at a time on the machine, the others wait
 # queue_limit = 30  # minutes a queued run may take before q stops it (0: none); `q.ts --limit <min>` for one run
+[asks]
+# skip = ["Bash(git push *)"]   # asks of the template this project leaves out, exact strings: only when its own
+                                # safeguards stand in (a protected main). init.ts then neither merges nor keeps them.
+                                # A user-level ask is the user's: harness/claude-hooks/ask-push.ts keeps it per folder
 ```
 
 and renders its Harness block again (`bun init.ts <project> --section-only`):

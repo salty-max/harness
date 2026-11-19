@@ -36,6 +36,11 @@ bun init.ts ~/code/my-project               # writes harness.toml, vendors the t
                                             # merges the permission asks, adds the reviewer helper and a CLAUDE.md section
 ```
 
+A project whose own safeguards stand in for a permission ask leaves it out
+with `[asks] skip = ["Bash(git push *)", …]` in `harness.toml` (exact strings
+of `templates/settings-asks.json`; `claude-hooks/ask-push.ts` is the user-level
+hook that keeps a push prompt everywhere else: `docs/design.md`).
+
 Nothing is committed: read the diff. The copies are stamped with this
 repository's commit; `bun harness-sync.ts <project>` brings them up to date,
 `--check` fails on a hand edit, `bun doctor.ts <project>` lists what is wrong.

@@ -311,6 +311,27 @@ describe("a worktree of a one-repository project: its own files, never the main 
     }
   });
 
+  test("a full init honours [asks] skip: the asks it names are left out and taken out of settings.json, a typo stops it", () => {
+    const { wt } = oneRepo();
+    const push = ["Bash(git push *)", "Bash(git -C * push)", "Bash(git -C * push *)"];
+    mkdirSync(join(wt, ".claude"), { recursive: true });
+    writeFileSync(join(wt, ".claude", "settings.json"), JSON.stringify({ permissions: { ask: [...push, "Bash(my own ask)"] } }));
+    writeFileSync(join(wt, "harness.toml"), `[asks]\nskip = ${JSON.stringify(push)}\n`);
+    const init = () => Bun.spawnSync(["bun", join(import.meta.dir, "init.ts"), wt, "--dirty"], { env: bare, stdout: "pipe", stderr: "pipe" });
+    const first = init();
+    expect(first.exitCode).toBe(0);
+    expect(first.stdout.toString()).toContain("and take out the 3 that [asks] skip names");
+    const ask = JSON.parse(readFileSync(join(wt, ".claude", "settings.json"), "utf8")).permissions.ask as string[];
+    expect(ask.filter((a) => push.includes(a))).toEqual([]);
+    expect(ask).toContain("Bash(my own ask)");
+    expect(ask).toContain("Bash(gh pr merge *)");
+    expect(init().stdout.toString()).toContain("the asks are there (3 left out by [asks] skip)");
+    writeFileSync(join(wt, "harness.toml"), `[asks]\nskip = "Bash(git push *)"\n`);
+    const bad = init();
+    expect(bad.exitCode).toBe(1);
+    expect(bad.stderr.toString()).toContain("[asks] skip is a list");
+  });
+
   test("a full init in a worktree adopts it there and leaves the hooks to the main checkout", () => {
     const { main, wt } = oneRepo();
     const p = Bun.spawnSync(["bun", join(import.meta.dir, "init.ts"), wt, "--dirty"], { env: bare, stdout: "pipe", stderr: "pipe" });

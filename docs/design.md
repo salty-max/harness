@@ -97,6 +97,9 @@ rules  = "CLAUDE.md"              # what a child reads first
 models = { code = "opusplan", prose = "opus" }
 worktrees = false                 # true: every child works in a git worktree of its own (see "Worktrees" below)
 decisions = "child"               # "opener": a child asks the user nothing, it sends each question and go to its opener
+
+[asks]                            # read by init.ts and doctor.ts alone (not vendored), never config.ts
+# skip = ["Bash(git push *)"]     # asks of templates/settings-asks.json this project leaves out, exact strings (see "Asks a project leaves out")
 ```
 
 The reader (`config.ts`), in this order: `HARNESS_ROOT` (and `WOW_ADDONS_ROOT`
@@ -272,6 +275,41 @@ process which escapes the tree before the limit (a double fork, reparented to
 launchd) is not found; whether Bun's timer counts the time a Mac sleeps was not
 checked.
 
+**Asks a project leaves out (`[asks] skip`).** `init.ts` merges
+`templates/settings-asks.json` into `.claude/settings.json` additively, so
+deleting an ask from the project's file brings it back at the next init. A
+project whose own safeguards stand in for one (hundo: `main` is protected
+server-side, so a `git push` only updates a pull request's branch) names it in
+`[asks] skip`: the exact strings of the template. `init.ts` neither merges them
+nor keeps them (it takes a skipped ask out of a file that has it, so the config
+is the one truth), and `doctor.ts` reports a skip entry the template doesn't
+have (a typo), a skipped ask still in the file, and the template's other asks
+as missing. A value that isn't a list of strings is an error, never an empty
+list. It is parsed in `init.ts` (`askSkip`), not in `config.ts`, because only
+init and doctor read it and neither is vendored: no project's copy of
+`config.ts` moves for it.
+
+The project's file is only one source of an ask, and an ask from any scope
+wins ("a matching ask rule prompts even when a more specific allow rule also
+matches", code.claude.com/docs/en/permissions), so a user-level ask for a push
+would prompt in a project that skipped it. For a user who wants the prompt
+everywhere but in such projects, `claude-hooks/ask-push.ts` is the user-level
+side: a PreToolUse hook (matcher `Bash`) that answers "ask" for every
+`git push` except one in a repository it is told to skip, going to origin. A
+hook's "ask" works on its own and can look at the folder, which a rule can't;
+a hook can't undo an ask rule, which is why the skip has to be in the project's
+settings and the rule out of the user's. It decides by git (a worktree's common
+dir is its main checkout's, a nested clone is another repository), reads `git
+-C`, a `cd` earlier in the command, `bash -c`, wrappers and oh-my-zsh's push
+aliases, and asks when it can't tell (a variable in the path, `cd -`, a
+subshell, `--git-dir`, a `git` behind sudo or xargs, another remote or a URL).
+`bun claude-hooks/ask-push.ts --command --bun <bun> --skip <repository>` prints
+the shell command for `~/.claude/settings.json`: it runs the script, and when
+the script can't run (bun gone, the file moved, a crash) it asks if the call
+mentions a push and stays silent otherwise, so a broken hook neither lets a
+push through nor prompts for everything. It is not vendored (`TOOLS`) and not
+a project's: it is the user's, and its tests are `claude-hooks/ask-push.test.ts`.
+
 A one-repository project: root = the repository; the repo's name is
 `project.name`; the lock's unit (a card's `repos`) is that name. The name need
 not be the folder's: `config.ts` exports `repoDir(name)` and `repoName(dir)`,
@@ -323,7 +361,7 @@ project: `bun ~/code/wow-addons/harness/init.ts [dir] [--name n] [--check
    husky folder as today);
 5. writes `.claude/settings.json` asks (push, release, deploy, GitHub and
    Vercel writes, secrets: merged into an existing file, never replacing a
-   key; `templates/settings-asks.json`, tested by `asks.test.ts`) and
+   key, less what `[asks] skip` names; `templates/settings-asks.json`, tested by `asks.test.ts`) and
    `.claude/agents/{reviewer,architect}.md` with the project's rules file
    named;
 6. appends a marked "Harness" section (about 250 words: one task per
