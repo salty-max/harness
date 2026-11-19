@@ -13,7 +13,8 @@ dependencies). What it gives a project:
 - **a quiet runner** (`q.ts`): one verdict line, the log in a file of its own for
   each run (the verdict ends with its path), the tree
   stamped when the check passes, and, with `[checks] queue = true`, one
-  `check` at a time on the machine (`queue.ts`); **git hooks**: no AI trailers, no push of an
+  `check` at a time on the machine (`queue.ts`), each stopped past a time limit
+  (`[checks] queue_limit`, 30 minutes by default); **git hooks**: no AI trailers, no push of an
   unchecked or unreviewed tree
 - **a review packet and a verdict** (`packet.ts`, `review.ts`): the reviewer
   reads the packet, the verdict attests the tree, before the commit

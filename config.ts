@@ -48,8 +48,8 @@ export type Config = {
   hooks: { trailers: boolean; lock: boolean; stamp: boolean; review: boolean };
   review: { waive: RegExp[]; copies: { patterns: RegExp[]; except: string[] } };
   extensions: { packet?: string; status?: string };
-  /** queue: one `check` at a time on the machine, the others wait (queue.ts). */
-  checks: { queue: boolean };
+  /** queue: one `check` at a time on the machine, the others wait (queue.ts). queueLimit: the minutes a queued run may take before q stops it (0: no limit), undefined when the file doesn't say (queue.ts's default). */
+  checks: { queue: boolean; queueLimit?: number };
   /** worktrees: the project opens each child session in a worktree of its own (a project that shares one checkout leaves it false). */
   session: { rules: string; models: { code: string; prose: string }; worktrees: boolean; decisions: Decisions };
 };
@@ -140,6 +140,13 @@ const flag = (v: unknown, d: boolean, label: string): boolean => {
   throw new Error(`${CONFIG_FILE}: ${label} is true or false, not ${JSON.stringify(v)}`);
 };
 
+/** A number of minutes, 0 or more (0: none), undefined when unset. Anything else is a typo, and must not pass for the default. */
+const minutes = (v: unknown, label: string): number | undefined => {
+  if (v === undefined) return undefined;
+  if (typeof v === "number" && Number.isFinite(v) && v >= 0) return v;
+  throw new Error(`${CONFIG_FILE}: ${label} is a number of minutes (0: no limit), not ${JSON.stringify(v)}`);
+};
+
 /** One of a few words, the default when unset. Anything else is a typo, and must not pass for the default. */
 const word = <T extends string>(v: unknown, allowed: readonly T[], d: T, label: string): T => {
   if (v === undefined) return d;
@@ -205,7 +212,7 @@ export function parseConfig(root: string, raw: Table): Config {
       copies: { patterns: (Array.isArray(copies.patterns) ? (copies.patterns as string[]) : []).map((w) => new RegExp(w)), except: Array.isArray(copies.except) ? (copies.except as string[]) : [] },
     },
     extensions: { packet: str(ext.packet), status: str(ext.status) },
-    checks: { queue: flag(checks.queue, false, "[checks] queue") },
+    checks: { queue: flag(checks.queue, false, "[checks] queue"), queueLimit: minutes(checks.queue_limit, "[checks] queue_limit") },
     session: {
       rules: str(session.rules) ?? str(defaults.rules) ?? "CLAUDE.md",
       models: { code: str(models.code) ?? "opusplan", prose: str(models.prose) ?? "opus" },

@@ -11,7 +11,7 @@
  * project and repository of the user that asks, a project that doesn't ask
  * neither waits nor holds.
  *
- *   lock.json              the holder: { pid, at, name, repo, where }
+ *   lock.json              the holder: { pid, at, name, repo, where, limit? } (limit: the seconds q lets its command run)
  *   waiting/<ms>-<pid>.json   a waiter's ticket, in the order they came
  *
  * The lock is made whole by a link (a temp file linked in: it fails when the
@@ -20,14 +20,21 @@
  * first come, first served and the lock needs no other mutex. Tickets and
  * holders die with their process: a pid gone, or one started after the file
  * was written (a pid reused), is dead, and a dead ticket is swept. A dead
- * holder's lock, or one held past MAX_HOLD (a wedged check), is taken over by
- * the head waiter alone (renamed aside and read again, so a lock that was
- * replaced meanwhile is put back), never by everyone at once. The command a
+ * holder's lock, or one held past MAX_HOLD (a wedged check, or a q that cannot
+ * stop its command), is taken over by the head waiter alone (renamed aside and
+ * read again, so a lock that was replaced meanwhile is put back), never by
+ * everyone at once. A live holder is not left to hold forever: q stops a
+ * queued command that runs past its time limit (DEFAULT_LIMIT, `[checks]
+ * queue_limit`, `--limit`: q.ts), and the lock says what that limit is, so a
+ * waiter can tell how long it still has to wait. The command a
  * holder runs inherits HARNESS_QUEUE_HELD=<its pid>: a q run inside it (a
  * test of the harness, a check that calls a check) skips the queue instead
  * of waiting for its own holder.
  *
- * Waiting says one line on stderr, once. Not covered: a holder killed
+ * Waiting says one line on stderr, naming who holds the place and for how
+ * long, and again every REMIND_MS while it waits (a session reading its own
+ * output sees a stuck holder without `ps`); `q.ts --queue-status` prints the
+ * holder and the waiters, writing nothing (`status`). Not covered: a holder killed
  * with SIGKILL leaves its command running with the lock looking stale, and a
  * Mac that sleeps through MAX_HOLD makes a healthy holder look wedged: two
  * checks may overlap for a while (load, never a wrong stamp); and a
@@ -37,11 +44,17 @@ import { existsSync, linkSync, mkdirSync, readdirSync, readFileSync, renameSync,
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-/** A lock held longer than this (seconds) is a wedged check: the head waiter takes its place. The family's longest check ran 9 minutes. */
+/** A lock held longer than this (seconds), or than its own limit and LIMIT_SLACK, is a wedged holder (a q that cannot stop its command): the head waiter takes its place. */
 export const MAX_HOLD = 3600;
+/** The minutes q lets a queued command run when nothing says otherwise: the family's longest check ran 9, hundo's whole Lighthouse job 15 or so; a limit is a hung run's cost to everyone behind it, and a false kill costs a full rerun and another wait. */
+export const DEFAULT_LIMIT = 30;
+/** Seconds past its limit a holder gets before a waiter calls it wedged: its q's grace and a moment to release. */
+export const LIMIT_SLACK = 120;
+/** How often (ms) a waiting run says again who it waits for. */
+export const REMIND_MS = 5 * 60_000;
 const POLL_MS = 1000;
 
-export type Holder = { pid: number; at: number; name: string; repo: string; where: string };
+export type Holder = { pid: number; at: number; name: string; repo: string; where: string; limit?: number };
 type Env = Record<string, string | undefined>;
 
 /** The queue's folder, or undefined when the environment says there is none. */
@@ -91,7 +104,10 @@ function readJson<T>(file: string): T | undefined {
 /** The holder written in the lock file, undefined when there is none or it is unreadable. */
 export const holderOf = (dir: string): Holder | undefined => {
   const h = readJson<Holder>(lockFile(dir));
-  return h && Number.isInteger(h.pid) && Number.isFinite(h.at) ? h : undefined;
+  if (!h || !Number.isInteger(h.pid) || !Number.isFinite(h.at)) return undefined;
+  // (a limit that is no number of seconds is no limit: an older q wrote none)
+  const { limit, ...rest } = h;
+  return typeof limit === "number" && Number.isFinite(limit) && limit > 0 ? h : rest;
 };
 
 type Ticket = { pid: number; at: number; name: string; repo: string; where: string };
@@ -159,11 +175,16 @@ export type Options = {
   name: string;
   repo: string;
   where: string;
+  /** Seconds q will let this run go on once it holds the place, written into the lock for the ones waiting; none when it has no limit. */
+  limit?: number;
+  /** A command that shows the whole queue, ended onto the first waiting line. */
+  statusCmd?: string;
   /** For tests: who asks, the clock, the wait between looks, what counts as alive, what is said. */
   pid?: number;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   poll?: number;
+  remind?: number;
   alive?: (pid: number, at: number) => boolean;
   maxHold?: number;
   say?: (line: string) => void;
@@ -178,13 +199,23 @@ export type Lease = {
   release: () => void;
 };
 
-const secs = (ms: number) => (ms < 10_000 ? `${(ms / 1000).toFixed(1)}s` : ms < 120_000 ? `${Math.round(ms / 1000)}s` : `${Math.round(ms / 60_000)}min`);
+/** A span the way the queue says it: seconds below two minutes, minutes after. */
+export const span = (ms: number) => (ms < 10_000 ? `${(ms / 1000).toFixed(1)}s` : ms < 120_000 ? `${Math.round(ms / 1000)}s` : `${Math.round(ms / 60_000)}min`);
 
-/** What the one waiting line says. */
-export function waitingLine(name: string, holder: Holder | undefined, ahead: number, now: number): string {
-  const who = holder ? `${holder.repo}'s ${holder.name} in ${holder.where} (pid ${holder.pid}, running ${secs(now - holder.at)})` : "the check ahead of it";
+/** A holder's run so far, and what is left of its limit: `running 8min, limit 30min, 22min left` (`52min, limit 30min, 22min past it`). */
+function runningFor(h: Holder, now: number): string {
+  const ran = `running ${span(now - h.at)}`;
+  if (!h.limit) return ran;
+  const left = h.limit * 1000 - (now - h.at);
+  return `${ran}, limit ${span(h.limit * 1000)}, ${left >= 0 ? `${span(left)} left` : `${span(-left)} past it`}`;
+}
+
+/** What a waiting line says: who holds the place (its name, repository, folder, pid), for how long, and how many wait ahead. The first one adds how to wait and where to see the whole line; the ones after it (`again`) only say it is still so. */
+export function waitingLine(name: string, holder: Holder | undefined, ahead: number, now: number, o: { again?: boolean; status?: string } = {}): string {
+  const who = holder ? `${holder.repo}'s ${holder.name} in ${holder.where} (pid ${holder.pid}, ${runningFor(holder, now)})` : "the check ahead of it";
   const line = ahead > 0 ? `, ${ahead} more waiting ahead of this one` : "";
-  return `${name}: waiting for ${who}${line}. Run it in the background or with a long timeout: a tool call that times out loses its place`;
+  if (o.again) return `${name}: still waiting for ${who}${line}`;
+  return `${name}: waiting for ${who}${line}. Run it in the background or with a long timeout: a tool call that times out loses its place${o.status ? `. The whole line: ${o.status}` : ""}`;
 }
 
 /**
@@ -203,7 +234,9 @@ export async function acquire(o: Options): Promise<Lease> {
     return starts.get(key);
   };
   const alive = o.alive ?? ((p: number, at: number) => aliveSince(p, at, cached(at)));
-  const limit = (o.maxHold ?? MAX_HOLD) * 1000;
+  const wedgedAfter = (o.maxHold ?? MAX_HOLD) * 1000;
+  // (a holder past the hour, or past its own limit and the slack: a limit above an hour is not pre-empted by the hour)
+  const wedgedFor = (h: Holder) => Math.max(wedgedAfter, h.limit ? (h.limit + LIMIT_SLACK) * 1000 : 0);
   const begun = now();
   mkdirSync(waitingDir(o.dir), { recursive: true });
   const mine: Ticket = { pid, at: begun, name: field(o.name), repo: field(o.repo), where: field(o.where) };
@@ -230,6 +263,7 @@ export async function acquire(o: Options): Promise<Lease> {
   };
 
   let said = false;
+  let saidAt = 0;
   let took: Holder | undefined;
   let heldAt = 0;
   try {
@@ -240,21 +274,22 @@ export async function acquire(o: Options): Promise<Lease> {
       const head = line[0]?.pid === pid && line[0]?.at === begun;
       const holder = holderOf(o.dir);
       const locked = existsSync(lockFile(o.dir));
-      const gone = locked && (!holder || !alive(holder.pid, holder.at) || now() - holder.at > limit);
+      const gone = locked && (!holder || !alive(holder.pid, holder.at) || now() - holder.at > wedgedFor(holder));
       if (head) {
         if (gone && takeAway(o.dir, holder)) {
           took = holder;
-          o.say?.(holder ? `${o.name}: ${holder.repo}'s ${holder.name} (pid ${holder.pid}) is ${alive(holder.pid, holder.at) ? `past ${Math.round(limit / 60_000)} minutes` : "gone"}: taking its place` : `${o.name}: the lock file was unreadable: taking its place`);
+          o.say?.(holder ? `${o.name}: ${holder.repo}'s ${holder.name} (pid ${holder.pid}) is ${alive(holder.pid, holder.at) ? `past ${Math.round(wedgedFor(holder) / 60_000)} minutes` : "gone"}: taking its place` : `${o.name}: the lock file was unreadable: taking its place`);
         }
         const at = now();
-        if (!existsSync(lockFile(o.dir)) && take(o.dir, { pid, at, name: mine.name, repo: mine.repo, where: mine.where })) {
+        if (!existsSync(lockFile(o.dir)) && take(o.dir, { pid, at, name: mine.name, repo: mine.repo, where: mine.where, ...(o.limit ? { limit: o.limit } : {}) })) {
           heldAt = at;
           break;
         }
       }
-      if (!said) {
+      if (!said || now() - saidAt >= (o.remind ?? REMIND_MS)) {
+        o.say?.(waitingLine(o.name, holder, line.findIndex((t) => t.pid === pid && t.at === begun), now(), { again: said, status: o.statusCmd }));
         said = true;
-        o.say?.(waitingLine(o.name, holder, line.findIndex((t) => t.pid === pid && t.at === begun), now()));
+        saidAt = now();
       }
       await sleep(o.poll ?? POLL_MS);
     }
@@ -270,6 +305,44 @@ export async function acquire(o: Options): Promise<Lease> {
       if (h && h.pid === pid && h.at === heldAt) rmSync(lockFile(o.dir), { force: true });
     },
   };
+}
+
+export type Status = {
+  dir: string;
+  /** The holder in the lock file; `alive` whether its process still runs. */
+  holder?: Holder & { alive: boolean };
+  /** The tickets, in the order they came (the first goes next). */
+  waiting: (Ticket & { alive: boolean })[];
+};
+
+/** Who holds the queue and who waits, read and nothing else: no ticket is swept, no lock is taken away (a dead one is marked, and a waiter's own sweep removes it). */
+export function status(dir: string, alive: (pid: number, at: number) => boolean = (p, at) => aliveSince(p, at)): Status {
+  const h = holderOf(dir);
+  let names: string[] = [];
+  try {
+    names = readdirSync(waitingDir(dir)).filter((n) => /^\d{13}-\d+\.json$/.test(n)).sort();
+  } catch {}
+  const waiting = names.flatMap((n) => {
+    const t = readJson<Ticket>(join(waitingDir(dir), n));
+    return t && Number.isInteger(t.pid) && Number.isFinite(t.at) ? [{ ...t, alive: alive(t.pid, t.at) }] : [];
+  });
+  return { dir, ...(h ? { holder: { ...h, alive: alive(h.pid, h.at) } } : {}), waiting };
+}
+
+/** What `q.ts --queue-status` prints. */
+export function statusLines(s: Status, now: number = Date.now()): string[] {
+  const lines = [`queue: ${s.dir}`];
+  if (!s.holder) lines.push("holder: none, the next run takes the place at once");
+  else {
+    const h = s.holder;
+    lines.push(`holder: ${h.repo}'s ${h.name} in ${h.where} (pid ${h.pid}, ${runningFor(h, now)})${h.alive ? "" : ` · pid ${h.pid} is gone: the next waiter takes the place`}`);
+  }
+  if (!s.waiting.length) lines.push("waiting: none");
+  else {
+    lines.push("waiting (the first goes next):");
+    s.waiting.forEach((t, i) => lines.push(`  ${i + 1}. ${t.repo}'s ${t.name} in ${t.where} (pid ${t.pid}, waiting ${span(now - t.at)})${t.alive ? "" : " · gone: swept at the next look"}`));
+  }
+  return lines;
 }
 
 /** Whether this process runs inside a command a queue holder started: HARNESS_QUEUE_HELD names a holder still alive. */

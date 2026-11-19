@@ -224,6 +224,54 @@ else (a bare `bun test`, a check parallel inside itself, the sessions' own
 work); the panel says a check waits (under the run, never lit) but lights
 only what runs.
 
+**The time limit** (19 November 2026, after a Playwright probe run as
+`q.ts --queue shots -- node …` hung 52 minutes on a fetch that never answered,
+held the one place, and kept two other sessions' runs waiting for 40 of
+them; the dispatcher found it with `ps`). The queue frees a place only when
+its holder dies, and a live but hung holder never does, so q now stops a run
+that holds a place when it has run for 30 minutes (`DEFAULT_LIMIT` in
+`queue.ts`: the family's longest check ran 9, hundo's whole Lighthouse job
+about 15; a limit is what a hung run costs everyone behind it, and a false kill
+costs a full rerun and another wait, so it sits at two or three times the
+longest real run). `[checks] queue_limit = <minutes>` in harness.toml moves it
+for a project (0: none, strict like the other switches), `--limit <minutes>`
+for one run (decimals allowed, 0: none, and it applies to a run that holds no
+place too: that run has no limit otherwise). A job that is known to run long
+passes its own (hundo's Lighthouse job over many guides asks 45). The clock
+starts with the command, not with the wait. Past it q sends SIGTERM to the
+command and **every process below it as `ps` shows them** (found by parent pid,
+not by process group: the command shares q's group, so a group kill would stop
+q too, and `detached` would let the command outlive a group kill of q; and a
+browser a Playwright script launched, in a group of its own, is still below the
+script), SIGKILL after 10 seconds (`GRACE`, `HARNESS_QUEUE_GRACE` for tests) to
+the ones still the same processes (the start `ps` gave is kept: a pid reused
+meanwhile is left alone), waits up to 10 more seconds for them to go, gives the
+place up, and ends with `check: FAILED (timed out after 30min, exit 124)` and
+the log's path (124 is timeout(1)'s; the log's last lines print as for any
+failure, where it stopped is the best clue to the hang). A `check` that times
+out stamps nothing. A run inside a queued command (`HARNESS_QUEUE_HELD`) holds
+no place and gets no limit of its own: its holder's covers it, killing its
+tree. q stopped by a signal passes it to the command alone, as it always did
+(the terminal's Ctrl-C has already reached the whole group, and a runner that
+takes a second SIGINT for "force quit" must not get one), then SIGKILLs what is
+left of the tree after the same grace (it used to wait for the command forever),
+and a second signal kills everything at once. A config with a bad value is said
+once (`check: harness.toml: [checks] queue_limit is …: running without the
+queue`), not run on in silence. The holder writes its limit into `lock.json` (`limit`, seconds;
+an older q's lock has none): a waiter's wedged-holder test is the hour or the
+holder's limit and two minutes, whichever is longer, so the takeover stays what
+it was (the backstop for a q that cannot stop its command, with the Mac-asleep
+caveat above) and a limit above an hour is not pre-empted by it. A waiting
+run's line names who holds the place (`hundo's shots in <folder> (pid 4821,
+running 52min, limit 30min, 22min past it)`), says where to see the whole line
+(`q.ts --queue-status`: the holder and the waiters in order, read and nothing
+else, a dead one marked and left to a waiter's own sweep), and says it again
+every 5 minutes, shorter, while it waits, so a session reading its own output
+sees a stuck holder without `ps`. Not covered: a command that spawns a
+process which escapes the tree before the limit (a double fork, reparented to
+launchd) is not found; whether Bun's timer counts the time a Mac sleeps was not
+checked.
+
 A one-repository project: root = the repository; the repo's name is
 `project.name`; the lock's unit (a card's `repos`) is that name. The name need
 not be the folder's: `config.ts` exports `repoDir(name)` and `repoName(dir)`,

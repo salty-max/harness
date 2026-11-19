@@ -62,6 +62,7 @@ decisions = "opener"  # only if the user takes every decision in the dispatch se
                       # a child asks them nothing, it sends each question and go to its opener
 [checks]
 queue = true        # optional: one check at a time on the machine, the others wait
+# queue_limit = 30  # minutes a queued run may take before q stops it (0: none); `q.ts --limit <min>` for one run
 ```
 
 and renders its Harness block again (`bun init.ts <project> --section-only`):

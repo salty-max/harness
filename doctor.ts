@@ -16,7 +16,7 @@ import { checkCommand } from "./q";
 
 const KNOWN = new Set(["include", "project", "state", "tools", "repos", "defaults", "groups", "hooks", "review", "extensions", "session", "checks"]);
 // (a misspelt switch is a switch that was never set: `lok = false` leaves the lock on, quietly)
-const KNOWN_KEYS: Record<string, string[]> = { hooks: ["trailers", "lock", "stamp", "review"], session: ["rules", "models", "worktrees", "decisions"], checks: ["queue"] };
+const KNOWN_KEYS: Record<string, string[]> = { hooks: ["trailers", "lock", "stamp", "review"], session: ["rules", "models", "worktrees", "decisions"], checks: ["queue", "queue_limit"] };
 
 export function problems(project: string): string[] {
   const out: string[] = [];

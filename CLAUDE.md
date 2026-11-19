@@ -39,7 +39,8 @@ with `bun init.ts <project>`.
   script never does.
 - Every switch (`[hooks]`, `[session] worktrees`, `[session] decisions`,
   `[checks] queue`) defaults to what the WoW family runs: the lock on, one shared
-  checkout, a decision asked of the user in the child, no queue. A message or a line of the
+  checkout, a decision asked of the user in the child, no queue (`[checks] queue_limit`,
+  the minutes a queued run may take, is a number with the queue's own default, 30). A message or a line of the
   rules template that speaks of the lock follows `hooks.lock`
   (`{{#lock}}`/`{{^lock}}` blocks in `templates/rules-section.md`, rendered
   by `init.ts`); the family's own section must stay byte for byte what it
