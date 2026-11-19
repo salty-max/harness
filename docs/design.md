@@ -295,10 +295,16 @@ matches", code.claude.com/docs/en/permissions), so a user-level ask for a push
 would prompt in a project that skipped it. For a user who wants the prompt
 everywhere but in such projects, `claude-hooks/ask-push.ts` is the user-level
 side: a PreToolUse hook (matcher `Bash`) that answers "ask" for every
-`git push` except one in a repository it is told to skip, going to origin. A
-hook's "ask" works on its own and can look at the folder, which a rule can't;
-a hook can't undo an ask rule, which is why the skip has to be in the project's
-settings and the rule out of the user's. It decides by git (a worktree's common
+`git push` except a plain one (no force, delete, `--all`, `--tags`, `+` or `:`
+refspec, other remote or option) to origin in a repository it is told to skip,
+which it allows when the rest of the call is nothing but static cds, read-only
+git and output filters (an allow covers the whole call, so anything else in it
+gets no opinion and goes through the normal flow). A hook's "ask" works on its
+own and can look at the folder, the words and the repository's push config
+(another push remote, a mirror, a push URL, a branch whose remote isn't origin
+all ask), which a rule can't; a hook can't
+undo an ask rule (its allow doesn't override one either), which is why the skip
+has to be in the project's settings and the rule out of the user's. It decides by git (a worktree's common
 dir is its main checkout's, a nested clone is another repository), reads `git
 -C`, a `cd` earlier in the command, `bash -c`, wrappers and oh-my-zsh's push
 aliases, and asks when it can't tell (a variable in the path, `cd -`, a
