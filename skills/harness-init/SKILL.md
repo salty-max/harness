@@ -43,7 +43,11 @@ It writes:
    secrets, `core.hooksPath` and `--no-verify`, merged in, never replacing
    a key (`doctor.ts` names the template's asks a project lacks), less the
    ones `[asks] skip` names (below)
-5. `.claude/agents/reviewer.md` and `architect.md`, where there are none
+5. `.claude/agents/reviewer.md` and `architect.md`, where there are none; a
+   copy that is there is the project's and is kept, and `doctor.ts` names one
+   that lacks a rule of the template (a block marked `<!-- harness:rule NAME -->`,
+   such as `bash`: what the helper's Bash is for and never does). Add the
+   block by hand, reworded as the copy likes, the mark kept
 6. a Harness block in `CLAUDE.md` between `<!-- harness:start -->` and
    `<!-- harness:end -->`: a later run replaces only the block
 7. `.gitignore`: `.harness/` and `.cache/`

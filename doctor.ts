@@ -6,13 +6,14 @@
  * The config's unknown keys and missing paths, a repository with no check
  * known, hooks that aren't ours, copies that aren't the harness's, the
  * template's permission asks missing from .claude/settings.json (less the ones
- * `[asks] skip` leaves out, which are wrong where they are still there).
+ * `[asks] skip` leaves out, which are wrong where they are still there), and a
+ * helper's copy (.claude/agents/) that lacks a marked rule of its template.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { check } from "./harness-sync";
 import { CONFIG_FILE, loadConfig, projectTree, readToml, repoDir, treeConfig } from "./config";
-import { askSkip, renderSection, withSection } from "./init";
+import { AGENTS, askSkip, lackedRules, lackedSay, renderSection, withSection } from "./init";
 import { checkCommand } from "./q";
 
 const KNOWN = new Set(["include", "project", "state", "tools", "repos", "defaults", "groups", "hooks", "review", "extensions", "session", "checks", "asks"]);
@@ -55,9 +56,26 @@ export function problems(project: string): string[] {
     if (p.exitCode !== 0) out.push(`hooks: ${(p.stdout.toString() + p.stderr.toString()).trim().split("\n").filter((l) => !l.includes("hooks ✓")).join("; ") || "bun " + conf.toolsDir + "/hooks.ts status says a repository wants a hand"}`);
   }
   out.push(...asksProblems(tree));
+  out.push(...agentProblems(tree));
   out.push(...staleSection(treeConf, tree));
   // (`claude --bg --worktree` makes the worktree of the repository it starts in: a root of many repositories has none to make)
   if (conf.session.worktrees && !existsSync(join(conf.root, ".git"))) out.push(`[session] worktrees = true, but ${conf.root} is no git repository: it is for a project that is one repository (a CLI child gets no --worktree here)`);
+  return out;
+}
+
+/**
+ * The helpers' copies in the project's .claude/agents/ that lack a rule the template has (init keeps a copy that is there,
+ * so a template's new rule never reaches it by itself). Judged by the rule's mark alone, never the copy's words: a project's
+ * own edits are its own. A copy that isn't there is none of the doctor's business (init writes it, or the project has no such helper).
+ */
+export function agentProblems(tree: string): string[] {
+  const out: string[] = [];
+  for (const agent of AGENTS) {
+    const file = join(tree, ".claude", "agents", `${agent}.md`);
+    if (!existsSync(file)) continue;
+    const lacks = lackedRules(agent, readFileSync(file, "utf8"));
+    if (lacks.length) out.push(`.claude/agents/${agent}.md: ${lackedSay(agent, lacks)}`);
+  }
   return out;
 }
 

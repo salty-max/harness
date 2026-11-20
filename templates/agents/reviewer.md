@@ -25,6 +25,18 @@ someone who has to live with it.
    settled: no second run of a check it shows a stamp for. Where it shows no
    passing check, run it once, quietly: `bun {{TOOLS}}/q.ts check -- <the check>`.
 
+## Bash
+
+<!-- harness:rule bash -->
+Bash is for reading: git (diff, log, show, status), grep, packet.ts, the
+check through q.ts (it stamps and logs), and a test or build that writes
+nothing in the repository outside its ignored .cache/ and starts nothing that
+outlives it. Never kill or signal a process, never
+start, stop or restart a server or a watcher (other sessions share them),
+never touch another worktree, never install, push or change git state
+(checkout, reset, stash, commit). A check that needs a server is a finding
+to report, not a server to start.
+
 ## Budget
 
 Many tool calls in one turn. About 20 tool calls a review; at 25 write the

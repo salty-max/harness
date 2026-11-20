@@ -13,7 +13,8 @@
  *   4. .claude/settings.json: the asks (push, release, deploy, GitHub and Vercel writes, secrets) merged
  *      into what is there, never replacing a key, except the asks `[asks] skip` in harness.toml names (those are
  *      left out, and taken out if the file has them)
- *   5. .claude/agents/reviewer.md and architect.md, where there are none
+ *   5. .claude/agents/reviewer.md and architect.md, where there are none (one
+ *      that is there is kept as it is, and says which marked rules of the template it lacks)
  *   6. a "Harness" section in CLAUDE.md between <!-- harness:start --> and
  *      <!-- harness:end --> markers, so a later run replaces only that block
  *      (its text follows the config: `[hooks] lock = false` leaves the lock out of
@@ -111,6 +112,25 @@ export function fill(text: string, tools: string, rules: string, flags: Flags = 
   });
   return kept.replaceAll("{{TOOLS}}", tools).replaceAll("{{RULES}}", rules);
 }
+
+/** The helpers init writes into .claude/agents/, each from templates/agents/<name>.md. */
+export const AGENTS = ["reviewer", "architect"];
+/** A rule a template's block carries, marked on a line of its own: `<!-- harness:rule bash -->`. */
+const RULE_MARK = /<!--\s*harness:rule\s+([\w-]+)\s*-->/g;
+export const ruleNames = (text: string): string[] => [...text.matchAll(RULE_MARK)].map((m) => m[1]);
+
+/**
+ * The rules the template of an agent has that a project's copy lacks, by their marks. A copy is the project's
+ * (init keeps it), so only the mark is judged, never the words: it may reword the block as it likes.
+ */
+export function lackedRules(agent: string, copy: string): string[] {
+  const have = new Set(ruleNames(copy));
+  return ruleNames(read(join(SRC, "templates", "agents", `${agent}.md`))).filter((r) => !have.has(r));
+}
+
+/** The line that says what a kept agent copy lacks (init's "kept" line and doctor's problem both end in it). */
+export const lackedSay = (agent: string, lacks: string[]): string =>
+  `lacks the template's ${lacks.length > 1 ? "rules" : "rule"} marked ${lacks.map((r) => `<!-- harness:rule ${r} -->`).join(", ")}: add ${lacks.length > 1 ? "each block" : "the block"} from templates/agents/${agent}.md in the harness repository (reword it, keep the mark)`;
 
 /** The Harness section a project's config renders. */
 export const renderSection = (c: Pick<Config, "toolsDir" | "defaults" | "hooks" | "session">): string =>
@@ -260,10 +280,12 @@ if (import.meta.main) {
   }
 
   // 5. the helpers
-  for (const agent of ["reviewer", "architect"]) {
+  for (const agent of AGENTS) {
     const rel = join(".claude", "agents", `${agent}.md`);
-    if (existsSync(join(o.dir, rel))) console.log(`${rel}: kept`);
-    else {
+    if (existsSync(join(o.dir, rel))) {
+      const lacks = lackedRules(agent, read(join(o.dir, rel)));
+      console.log(`${rel}: kept${lacks.length ? ` (${lackedSay(agent, lacks)})` : ""}`);
+    } else {
       say(`write ${rel}`);
       put(rel, fill(read(join(SRC, "templates", "agents", `${agent}.md`)), tools, rules));
     }

@@ -369,7 +369,12 @@ project: `bun ~/code/wow-addons/harness/init.ts [dir] [--name n] [--check
    Vercel writes, secrets: merged into an existing file, never replacing a
    key, less what `[asks] skip` names; `templates/settings-asks.json`, tested by `asks.test.ts`) and
    `.claude/agents/{reviewer,architect}.md` with the project's rules file
-   named;
+   named (written only where there is none: a copy is the project's, and
+   edits freely. A rule the helpers must keep, like what their Bash is for and
+   never does, sits in the template behind a `<!-- harness:rule NAME -->`
+   mark, and `doctor.ts` names an existing copy that lacks the mark, never
+   one that merely words it differently. No overwriting sync. It is advice to
+   the helper, not a gate: a hook in the agents' frontmatter would be one);
 6. appends a marked "Harness" section (about 250 words: one task per
    session, the card first, `q` for checks, packet and review before the
    commit) to CLAUDE.md between `<!-- harness:start -->` and `<!-- harness:end -->`

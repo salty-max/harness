@@ -4,9 +4,9 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { check, stamped, sync, unstamped, VENDORED } from "./harness-sync";
-import { DEFAULT_FLAGS, detectCheck, fill, flagsOf, parseArgs, renderSection, renderToml, withAsks, withIgnore, withSection } from "./init";
+import { AGENTS, DEFAULT_FLAGS, detectCheck, fill, flagsOf, lackedRules, parseArgs, renderSection, renderToml, ruleNames, withAsks, withIgnore, withSection } from "./init";
 import { parseConfig } from "./config";
-import { problems, staleSection } from "./doctor";
+import { agentProblems, problems, staleSection } from "./doctor";
 import { scopedRoot, useBoardGuard } from "./testing";
 
 useBoardGuard();
@@ -234,6 +234,67 @@ describe("init: the section follows the config", () => {
   });
 });
 
+describe("the helpers' copies: a template's new rule is named where a copy lacks it, a project's own edits never are", () => {
+  const tpl = (agent: string) => readFileSync(join(import.meta.dir, "templates", "agents", `${agent}.md`), "utf8");
+  // (what init writes, and what a copy made before the rule looked like: the template less the marked block)
+  const written = (agent: string) => fill(tpl(agent), "harness", "CLAUDE.md");
+  const oldCopy = (agent: string) => written(agent).replace(/<!-- harness:rule bash -->\n[\s\S]*?(\n\n|(?![\s\S]))/, "");
+  const withCopy = (files: Record<string, string>) => {
+    const dir = temp();
+    mkdirSync(join(dir, ".claude", "agents"), { recursive: true });
+    for (const [agent, text] of Object.entries(files)) writeFileSync(join(dir, ".claude", "agents", `${agent}.md`), text);
+    return dir;
+  };
+
+  test("both templates say what Bash is for and what it never does, behind a mark", () => {
+    for (const agent of AGENTS) {
+      expect(ruleNames(tpl(agent))).toEqual(["bash"]);
+      const text = tpl(agent).replace(/\s+/g, " ");
+      for (const w of ["Bash is for reading", "Never kill or signal a process", "start, stop or restart a server or a watcher", "never touch another worktree", "never install, push or change git state"]) expect(text).toContain(w);
+    }
+    // (the older copy these tests use really lacks the block, or what follows proves nothing)
+    for (const agent of AGENTS) expect(oldCopy(agent)).not.toContain("Never kill");
+  });
+
+  test("a copy as init writes it lacks nothing", () => {
+    for (const agent of AGENTS) expect(lackedRules(agent, written(agent))).toEqual([]);
+    expect(agentProblems(withCopy({ reviewer: written("reviewer"), architect: written("architect") }))).toEqual([]);
+  });
+
+  test("an older copy is named, with the mark to look for and the template to take it from", () => {
+    const found = agentProblems(withCopy({ reviewer: oldCopy("reviewer"), architect: written("architect") }));
+    expect(found).toHaveLength(1);
+    expect(found[0]).toStartWith(".claude/agents/reviewer.md: lacks the template's rule marked <!-- harness:rule bash -->");
+    expect(found[0]).toContain("templates/agents/reviewer.md");
+    expect(agentProblems(withCopy({ reviewer: oldCopy("reviewer"), architect: oldCopy("architect") }))).toHaveLength(2);
+  });
+
+  test("a project's own copy, reworded and cut down, passes while the mark stands, and is named once it goes", () => {
+    const own = "---\nname: reviewer\n---\n\nMy own reviewer.\n\n<!--harness:rule   bash-->\nBash reads. It never kills anything.\n";
+    expect(agentProblems(withCopy({ reviewer: own }))).toEqual([]);
+    expect(agentProblems(withCopy({ reviewer: own.replace(/<!--.*-->\n/, "") }))).toHaveLength(1);
+  });
+
+  test("no copy is none of the doctor's business, and only the project's own .claude/agents/ is read", () => {
+    expect(agentProblems(temp())).toEqual([]);
+    const dir = withCopy({ architect: written("architect") });
+    mkdirSync(join(dir, "node_modules", "x", ".claude", "agents"), { recursive: true });
+    writeFileSync(join(dir, "node_modules", "x", ".claude", "agents", "reviewer.md"), oldCopy("reviewer"));
+    expect(agentProblems(dir)).toEqual([]);
+  });
+
+  test("doctor's whole list carries it", () => {
+    const dir = withCopy({ reviewer: oldCopy("reviewer") });
+    writeFileSync(join(dir, "harness.toml"), "");
+    const restore = scopedRoot(dir);
+    try {
+      expect(problems(dir).filter((l) => l.startsWith(".claude/agents/"))).toHaveLength(1);
+    } finally {
+      restore();
+    }
+  });
+});
+
 describe("a worktree of a one-repository project: its own files, never the main checkout's", () => {
   const GIT = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com" };
   const g = (cwd: string, ...args: string[]) => {
@@ -330,6 +391,23 @@ describe("a worktree of a one-repository project: its own files, never the main 
     const bad = init();
     expect(bad.exitCode).toBe(1);
     expect(bad.stderr.toString()).toContain("[asks] skip is a list");
+  });
+
+  test("a second init keeps a helper's copy as it is and says which marked rule it lacks", () => {
+    const { wt } = oneRepo();
+    const init = () => Bun.spawnSync(["bun", join(import.meta.dir, "init.ts"), wt, "--dirty"], { env: bare, stdout: "pipe", stderr: "pipe" });
+    const first = init();
+    expect(first.exitCode).toBe(0);
+    expect(first.stdout.toString()).toContain(".claude/agents/reviewer.md");
+    const file = join(wt, ".claude", "agents", "reviewer.md");
+    expect(readFileSync(file, "utf8")).toContain("Never kill or signal a process");
+    expect(init().stdout.toString()).toContain(".claude/agents/reviewer.md: kept\n");
+    const older = readFileSync(file, "utf8").replace(/<!-- harness:rule bash -->\n[\s\S]*?\n\n/, "");
+    writeFileSync(file, older);
+    const again = init().stdout.toString();
+    expect(again).toContain(".claude/agents/reviewer.md: kept (lacks the template's rule marked <!-- harness:rule bash -->");
+    expect(again).toContain(".claude/agents/architect.md: kept\n");
+    expect(readFileSync(file, "utf8")).toBe(older);
   });
 
   test("a full init in a worktree adopts it there and leaves the hooks to the main checkout", () => {

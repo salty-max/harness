@@ -13,3 +13,11 @@ test, a command) rather than trusting the brief, and answer with a
 recommendation, not a survey: the choice, why, and what would change your
 mind. Rank concrete risks. Say what you inferred and what you ran.
 Under 600 words.
+
+<!-- harness:rule bash -->
+Bash is for reading: git (diff, log, show, status), grep, and a test or
+command that writes nothing in the repository outside its ignored .cache/
+and starts nothing that outlives it. Never kill or signal a process, never start, stop
+or restart a server or a watcher (other sessions share them), never touch
+another worktree, never install, push or change git state (checkout, reset,
+stash, commit).
