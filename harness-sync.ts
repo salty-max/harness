@@ -97,6 +97,23 @@ export function sync(project: string, dirty = false, only?: "tools" | "hooks"): 
   return out;
 }
 
+/**
+ * What the stamps say about where the copies stand against `newest`, the harness's tip (origin/main when it has a remote,
+ * else its HEAD): behind it (an ancestor), ahead of it (made from commits not pushed yet, which a checkout that has only the
+ * origin can't find: push the harness first), or on no line of it. Notes only, never a failure.
+ */
+export function standing(stamps: string[], newest: string, project: string, isAncestor: (older: string, newer: string) => boolean): string[] {
+  const off = [...stamps].filter((s) => !newest.startsWith(s) && !s.startsWith(newest));
+  const behind = off.filter((s) => isAncestor(s, newest));
+  const ahead = off.filter((s) => !behind.includes(s) && isAncestor(newest, s));
+  const other = off.filter((s) => !behind.includes(s) && !ahead.includes(s));
+  return [
+    ...(behind.length ? [`behind the harness's ${newest}: ${behind.join(", ")} (harness-sync.ts ${project} when you want the newer)`] : []),
+    ...(ahead.length ? [`ahead of the harness's ${newest}: ${ahead.join(", ")} come from commits it hasn't pushed, which a checkout that has only the origin can't find: push the harness first`] : []),
+    ...(other.length ? [`${other.join(", ")} ${other.length > 1 ? "sit" : "sits"} on no line of the harness's ${newest}`] : []),
+  ];
+}
+
 /** Problems that fail the check, then notes (a stale copy). */
 export function check(project: string): { problems: string[]; notes: string[] } {
   const conf = treeConfig(project);
@@ -123,14 +140,17 @@ export function check(project: string): { problems: string[]; notes: string[] } 
     stamps.add(got.sha);
     if (!sources) continue;
     const at = git("show", `${got.sha}:${f}`);
-    if (at === undefined) problems.push(`${join(conf.toolsDir, f)}: stamp ${got.sha} is no commit of the harness (or has no ${f})`);
+    if (at === undefined) {
+      problems.push(`${join(conf.toolsDir, f)}: stamp ${got.sha} is no commit of the harness (or has no ${f})`);
+      // (a stamp that is no commit at all is said once, as the problem, not again as one that sits on no line)
+      if (git("cat-file", "-e", `${got.sha}^{commit}`) === undefined) stamps.delete(got.sha);
+    }
     else if (at !== got.text.replace(/\n$/, "") && at + "\n" !== got.text) problems.push(`${join(conf.toolsDir, f)}: not the harness's file at ${got.sha}: a hand edit (edit it in the harness, then sync)`);
   }
   if (!sources) notes.push("the harness repository isn't here: the stamps' form alone was checked");
   else {
     const newest = git("rev-parse", "--short=9", git("rev-parse", "--verify", "-q", "origin/main") ? "origin/main" : "HEAD");
-    const behind = [...stamps].filter((s) => newest && !newest.startsWith(s) && !s.startsWith(newest));
-    if (behind.length) notes.push(`behind the harness's ${newest}: ${[...stamps].join(", ")} (harness-sync.ts ${project} when you want the newer)`);
+    if (newest) notes.push(...standing([...stamps], newest, project, (older, newer) => git("merge-base", "--is-ancestor", older, newer) !== undefined));
   }
   return { problems, notes };
 }

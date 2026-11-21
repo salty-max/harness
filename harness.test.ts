@@ -523,6 +523,37 @@ describe("git hooks", () => {
     expect(git(repo, "push", "-q", "origin", "--delete", "main").code).toBe(0);
   }, 30_000);
 
+  test("review.ts --push refuses where it can't see: no repository, no such object, no argument; a deletion and a plain push are as they were", () => {
+    const { repo } = hooked();
+    const remote = git(repo, "rev-parse", "HEAD").out.trim();
+    const push = (cwd: string, ...args: string[]) => {
+      const p = Bun.spawnSync(["bun", join(KIT, "review.ts"), "--push", ...args], { cwd, env: { ...process.env }, stdout: "pipe", stderr: "pipe" });
+      return { code: p.exitCode, err: p.stderr.toString().trim() };
+    };
+    // a folder that is no repository (the family root is one): it used to pass, vacuously
+    const none = mkdtempSync(join(tmpdir(), "no-repo-"));
+    try {
+      const r = push(none, "HEAD", "origin/main");
+      expect(r.code).toBe(1);
+      expect(r.err).toContain("is no git repository, so this gate sees nothing there");
+      expect(pushProblem(none, "HEAD", "0".repeat(40))).toContain("no git repository");
+      expect(push(none, "0".repeat(40), "0".repeat(40)).code).toBe(1);
+    } finally {
+      rmSync(none, { recursive: true, force: true });
+    }
+    // inside one: a name that isn't there is no push to look at, a deletion sends nothing, no argument is a usage error
+    expect(pushProblem(repo, "no-such-branch", remote)).toContain("no-such-branch is no object of the repository");
+    expect(push(repo, "no-such-branch", remote).code).toBe(1);
+    expect(pushProblem(repo, "0".repeat(40), remote)).toBeUndefined();
+    expect(push(repo, "0".repeat(40), remote).code).toBe(0);
+    expect(push(repo).code).toBe(2);
+    // a commit that sends nothing new is still no problem, and one that sends an unreviewed change still is
+    expect(pushProblem(repo, "HEAD", remote)).toBeUndefined();
+    expect(push(repo, "HEAD", remote).code).toBe(0);
+    // an object that is no commit (the tree of HEAD) is the hook's own business, as it always was
+    expect(pushProblem(repo, git(repo, "rev-parse", "HEAD^{tree}").out.trim(), remote)).toBeUndefined();
+  }, 30_000);
+
   test("the AI filter: every trailer form, nothing legitimate", () => {
     const ai = (msg: string) => Bun.spawnSync([join(HOOKS, "_ai")], { stdin: Buffer.from(`${msg}\n`), env: { ...process.env } }).exitCode;
     for (const bad of ["co-authored-by:claude", "Signed-off-by: Claude", "Reviewed-by: GPT-5", "Co-Developed-By: Claude", "Made with Claude", "Written with Claude Code", "Built with ChatGPT", "Made-with: Cursor", "Generated with [x](https://x.y)"])

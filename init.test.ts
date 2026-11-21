@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { check, stamped, sync, unstamped, VENDORED } from "./harness-sync";
+import { check, standing, stamped, sync, unstamped, VENDORED } from "./harness-sync";
 import { AGENTS, DEFAULT_FLAGS, detectCheck, fill, flagsOf, frontmatter, lackedGate, lackedRules, parseArgs, renderSection, renderToml, ruleNames, withAsks, withIgnore, withSection } from "./init";
 import { parseConfig } from "./config";
 import { agentProblems, problems, staleSection } from "./doctor";
@@ -231,6 +231,52 @@ describe("init: the section follows the config", () => {
     } finally {
       restore();
     }
+  });
+});
+
+describe("where the stamps stand against the harness's tip", () => {
+  const line = (older: string[]) => (a: string, b: string) => older.includes(`${a}>${b}`);
+  test("behind is an ancestor, ahead is a descendant (commits not pushed), the rest sits on no line of it", () => {
+    const is = line(["aaaaaaaaa>bbbbbbbbb", "bbbbbbbbb>ccccccccc"]);
+    expect(standing(["bbbbbbbbb"], "bbbbbbbbb", "p", is)).toEqual([]);
+    expect(standing(["bbbbbbbbb"], "bbbbbbbbb123", "p", is)).toEqual([]);
+    expect(standing(["aaaaaaaaa", "bbbbbbbbb"], "bbbbbbbbb", "/x/p", is)).toEqual(["behind the harness's bbbbbbbbb: aaaaaaaaa (harness-sync.ts /x/p when you want the newer)"]);
+    const ahead = standing(["ccccccccc"], "bbbbbbbbb", "p", is);
+    expect(ahead).toHaveLength(1);
+    expect(ahead[0]).toStartWith("ahead of the harness's bbbbbbbbb: ccccccccc come from commits it hasn't pushed");
+    expect(ahead[0]).toContain("push the harness first");
+    expect(ahead[0]).not.toContain("behind");
+    expect(standing(["ddddddddd"], "bbbbbbbbb", "p", is)).toEqual(["ddddddddd sits on no line of the harness's bbbbbbbbb"]);
+    expect(standing(["ddddddddd", "eeeeeeeee"], "bbbbbbbbb", "p", is)).toEqual(["ddddddddd, eeeeeeeee sit on no line of the harness's bbbbbbbbb"]);
+    // (both at once: each said, only the stale ones named)
+    expect(standing(["aaaaaaaaa", "bbbbbbbbb", "ccccccccc"], "bbbbbbbbb", "p", is)).toHaveLength(2);
+  });
+});
+
+describe("check() says where the stamps stand, with git's own is-ancestor", () => {
+  const harness = import.meta.dir;
+  const git = (...a: string[]) => Bun.spawnSync(["git", ...a], { cwd: harness, stdout: "pipe", stderr: "ignore" });
+  // (a shallow clone, as CI makes one, has no older commit to stamp a copy with)
+  const shallow = git("rev-parse", "--is-shallow-repository").stdout.toString().trim() !== "false";
+  test.skipIf(shallow)("a copy stamped with the harness's first commit is behind, one stamped with a commit it doesn't have is a problem said once", () => {
+    const root = git("rev-list", "--max-parents=0", "HEAD").stdout.toString().trim().split("\n")[0]!.slice(0, 9);
+    const dir = temp();
+    writeFileSync(join(dir, "harness.toml"), "");
+    expect(sync(dir, true)).not.toHaveProperty("error");
+    const old = (sha: string) => {
+      for (const f of VENDORED) {
+        const path = join(dir, "harness", f);
+        writeFileSync(path, stamped(f, unstamped(f, readFileSync(path, "utf8"))!.text, sha));
+      }
+    };
+    old(root);
+    const { notes } = check(dir);
+    expect(notes.filter((n) => n.startsWith("behind the harness's"))).toHaveLength(1);
+    expect(notes.join("\n")).toContain(`: ${root} (harness-sync.ts`);
+    old("deadbeef0");
+    const odd = check(dir);
+    expect(odd.problems.some((p) => p.includes("stamp deadbeef0 is no commit of the harness"))).toBe(true);
+    expect(odd.notes.join("\n")).not.toContain("deadbeef0");
   });
 });
 

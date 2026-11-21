@@ -161,10 +161,17 @@ export function waived(file: string, repo: string, from?: string): boolean {
   return waive.some((r) => r.test(file)) || (!copies.except.includes(repo) && copies.patterns.some((r) => r.test(file)));
 }
 
-/** Why a push of `local` past `remote` (a sha, or zeros: none) has no review, or undefined when it has one. */
+/**
+ * Why a push of `local` past `remote` (a sha, or zeros: none) has no review, or undefined when it has one. A gate that
+ * can't see refuses: outside a git repository (the family root is none: run it inside the repository the push is of),
+ * or for a `local` that is no object of this one, since both used to pass for want of anything to look at. A deletion
+ * (zeros) sends nothing, and an object that isn't a commit (a tag of a tree) is the hook's own business, as before.
+ */
 export function pushProblem(dir: string, local: string, remote: string): string | undefined {
+  if (git(dir, "rev-parse", "--git-dir") === undefined) return `${dir} is no git repository, so this gate sees nothing there: run it inside the repository whose push it asks about`;
+  if (/^0+$/.test(local)) return undefined;
   const tip = git(dir, "rev-parse", "--verify", "-q", `${local}^{commit}`);
-  if (!tip) return undefined;
+  if (!tip) return git(dir, "rev-parse", "--verify", "-q", local) ? undefined : `${local || "(nothing)"} is no object of the repository in ${dir}, so there is no push to look at`;
   const known = /[^0]/.test(remote) ? git(dir, "rev-parse", "--verify", "-q", `${remote}^{commit}`) : undefined;
   const sent = (known ? git(dir, "rev-list", `${known}..${tip}`) : git(dir, "rev-list", tip, "--not", "--remotes"))?.split("\n").filter(Boolean) ?? [];
   if (!sent.length) return undefined;
@@ -188,7 +195,11 @@ export function pushProblem(dir: string, local: string, remote: string): string 
 if (import.meta.main) {
   const [repo, ...rest] = process.argv.slice(2);
   if (repo === "--push") {
-    const problem = pushProblem(process.cwd(), rest[0] ?? "", rest[1] ?? "");
+    if (!rest[0]) {
+      console.error("usage: bun review.ts --push <local> <remote>   (inside the repository: a sha or ref, and the remote's sha or ref, or zeros)");
+      process.exit(2);
+    }
+    const problem = pushProblem(process.cwd(), rest[0], rest[1] ?? "");
     if (problem) console.error(problem);
     process.exit(problem ? 1 : 0);
   }
