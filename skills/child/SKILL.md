@@ -96,10 +96,14 @@ Write nothing for the task here: no card, no file, no helper.
      project's harness and where this task comes from. The model, from
      `session.models[kind]`: `sonnet` and `opusplan` start on Sonnet
      (`claude-sonnet-5-5`), `opus` on Opus (`claude-opus-5-5`); a plan
-     child starts on Opus with `permission_mode: "plan"`, and once the
-     child says its plan is approved, `set_session_model` moves it to the
-     kind's model (Sonnet for `opusplan`). The tool takes only this
-     session's model or a cheaper one: after an Opus start, `get_session`
+     child starts on Opus. Where decisions are the child's, it starts with
+     `permission_mode: "plan"`, and once the child says its plan is approved,
+     `set_session_model` moves it to the kind's model (Sonnet for
+     `opusplan`). In an `opener` project it starts without plan mode (a plan
+     child there is the one step 1 describes) and this session moves it with
+     `set_session_model` after the user's answer and before relaying it.
+     The tool takes only this session's model or a cheaper one: after an
+     Opus start, `get_session`
      on the child, and if it isn't on Opus, `set_session_model` to the Opus
      id (the app asks the user: say why in a line). A project that sets its
      models in `.claude/settings.json` needs no model passed, but passing
@@ -207,7 +211,8 @@ Sonnet dispatch an Opus id is ignored, not refused (the tool never starts a
 child above its opener): the prose or plan child starts at Sonnet, and
 `set_session_model` moves it to Opus as step 4 says, the app asking the
 user for each one, so name the child and the reason in the line. A plan
-child then goes back to Sonnet once its plan is approved, a second
+child then goes back to Sonnet once the user approved its plan (in an
+`opener` project before you relay the approval), a second
 approval. A follow-up to a child's task goes to that child (SendMessage,
 its name), a question about where things stand is answered here (the
 children, the board, `status.ts`). It lasts until the user says otherwise.

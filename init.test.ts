@@ -189,8 +189,22 @@ describe("init: the section follows the config", () => {
     expect(text).toContain("bun kit/board.ts add");
   });
 
+  test('decisions = "opener": no plan mode in a child, the plan comes to the opener; the default keeps plan mode', () => {
+    const opener = renderSection(conf('[session]\ndecisions = "opener"\n'));
+    expect(opener).toContain("- **A plan comes to the opener, not to a child in plan mode.**");
+    expect(opener).toContain("(`--plan` is refused)");
+    expect(opener).toContain("default model (`set_session_model`) before it relays the answer quoted");
+    expect(opener).toContain("Set it when the child starts and say the choice in one line.");
+    expect(opener).not.toMatch(/once its plan is approved/);
+    const child = renderSection(conf(""));
+    expect(child).toContain("(a plan child once its plan is approved)");
+    expect(child).not.toMatch(/A plan comes to the opener|--plan. is refused/);
+  });
+
   test("no line of any rendering passes 88 columns but a lone code span", () => {
-    for (const flags of [DEFAULT_FLAGS, { lock: false, worktrees: false, opener: false }, { lock: false, worktrees: true, opener: false }, { lock: true, worktrees: true, opener: false }, { lock: true, worktrees: false, opener: true }, { lock: false, worktrees: true, opener: true }]) {
+    const every = [true, false].flatMap((lock) => [true, false].flatMap((worktrees) => [true, false].map((opener) => ({ lock, worktrees, opener }))));
+    expect(every).toHaveLength(8);
+    for (const flags of every) {
       const over = fill(template, "harness", "CLAUDE.md", flags).split("\n").filter((l) => l.length > 88 && !/^\s*`[^`]*`[.,]?$/.test(l));
       expect(over).toEqual([]);
     }

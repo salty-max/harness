@@ -202,10 +202,13 @@ before, and so does `status` in a worktree with no main checkout to name. A conf
   comes here", the user's answer of 21 November 2026) and, for a code task,
   moves a desktop child to Sonnet (`set_session_model`) before it relays the
   approval quoted; a CLI child can't be moved, so the build is a new
-  `--kind code` child on the approved plan. The rules template's two bullets on questions and
-  the go follow the switch (`{{#opener}}`/`{{^opener}}`), and the `child` skill
-  describes both modes. The default is the question tool in the child, and the
-  go asked there.
+  `--kind code` child on the approved plan. The rules template follows the switch
+  (`{{#opener}}`/`{{^opener}}`) in four places: the bullets on questions and the go,
+  the model bullet's last sentence (a plan child "once its plan is approved" is plan
+  mode, so only the child-decisions rendering has it), and in the opener rendering
+  one bullet of its own on the plan (it comes to the opener, no child in plan mode).
+  The `child` skill describes both modes. The default is the question tool in the
+  child, and the go asked there.
 
 **The check queue** (15 November 2026, asked for by hundo: several child
 sessions in parallel worktrees each ran a heavy `check` at once, the load

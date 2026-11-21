@@ -67,6 +67,15 @@ How sessions work together (behaviour: no hook checks these):
   (repository, sha range, push only). The opener asks the user, then pushes on their
   answer or relays it to the child quoted. A push go never covers a deploy or a
   release: each is asked again.
+- **A plan comes to the opener, not to a child in plan mode.** Leaving plan mode asks
+  the user in the child's own window, where nothing routes it to the opener, so no
+  child starts in it (`--plan` is refused). A task that needs a design settled first
+  is a child on the stronger model, without `--plan`, whose task says: take your card,
+  write your plan, set the card `waiting-review`, send the plan to your opener and
+  stop. The opener asks the user. For a code task it moves the child to the project's
+  default model (`set_session_model`) before it relays the answer quoted, because the
+  relay wakes the child; a CLI child can't be moved, so its build is a new child on
+  the approved plan.
 {{/opener}}
 {{^opener}}
 - **Questions go through the question tool** (`AskUserQuestion`, or `wrap_up`'s ask),
@@ -83,8 +92,14 @@ How sessions work together (behaviour: no hook checks these):
   holds an open card or has a follow-up on its way.
 - **Pick each child's model from its task**: the project's default for mechanical work
   from a written brief, a stronger model at higher effort for judgment (prose, voice,
-  security, design, a plan the user must approve). Set it when the child starts (a plan
-  child once its plan is approved) and say the choice in one line.
+  security, design, a plan the user must approve).
+{{#opener}}
+  Set it when the child starts and say the choice in one line.
+{{/opener}}
+{{^opener}}
+  Set it when the child starts (a plan child once its plan is approved) and say the
+  choice in one line.
+{{/opener}}
 - **Never kill or signal a process another session may share.** A dev server, an e2e
   server or a watcher may be another session's: stop only what this session started,
   by the pid it was given, never `pkill -f` or `killall` by name, nor `lsof … | xargs
