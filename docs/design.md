@@ -188,16 +188,24 @@ before, and so does `status` in a worktree with no main checkout to name. A conf
   (`running`), nor a lock's "on X" on its blocked cards; its Gates box says a check
   waits in the queue.
 - `[session] decisions = "opener"` is for a project whose user takes every
-  decision in the dispatch session, never in a child (hundo). `session.ts`'s
+  decision in the dispatch session, never in a child (hundo, Jellycat, and the
+  WoW family since 21 November 2026). `session.ts`'s
   prompt then tells the child it asks the user nothing: each question or go (a
   push, a merge, any choice) goes to its opener with the options and its
   recommendation, and it stops; the opener asks, then pushes on the answer or
-  relays it quoted. One exception, said in the prompt of a `--plan` child:
-  leaving plan mode asks the user in the child's own session, and nothing routes
-  that to the opener. The rules template's two bullets on questions and the go follow
-  the switch (`{{#opener}}`/`{{^opener}}`), and the `child` skill describes both
-  modes. The default is the family's: the question tool in the child, and the go
-  asked there.
+  relays it quoted. `--plan` is refused there (`planRefusal` in `session.ts`,
+  exit 2, nothing started, `--dry-run` and `--desktop` too): leaving plan mode
+  asks the user in the child's own session and nothing routes that to the
+  opener, so a plan-first task is a `--kind prose` child (Opus, where the config
+  maps it so) without `--plan` that takes its card, writes its plan, sets the card
+  `waiting-review` and sends the plan to its opener, which asks the user ("Plan
+  comes here", the user's answer of 21 November 2026) and, for a code task,
+  moves a desktop child to Sonnet (`set_session_model`) before it relays the
+  approval quoted; a CLI child can't be moved, so the build is a new
+  `--kind code` child on the approved plan. The rules template's two bullets on questions and
+  the go follow the switch (`{{#opener}}`/`{{^opener}}`), and the `child` skill
+  describes both modes. The default is the question tool in the child, and the
+  go asked there.
 
 **The check queue** (15 November 2026, asked for by hundo: several child
 sessions in parallel worktrees each ran a heavy `check` at once, the load

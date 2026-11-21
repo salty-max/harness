@@ -21,7 +21,10 @@
  *             included, until the user approves the plan (leaving plan mode
  *             always asks): one stop, so only when the design is worth it.
  *             No card shows that wait: the output says it, for the opener
- *             to tell the user
+ *             to tell the user. Refused where `[session] decisions =
+ *             "opener"`: leaving plan mode asks in the child and nothing
+ *             routes that to the opener, so a plan there is an Opus child
+ *             without --plan that sends its plan to the opener (planRefusal)
  *   dry-run   print the command and the prompt, start nothing
  *   desktop   the prompt alone, for a desktop child: the opener hands it to
  *             the app's own session tool. Printed alone on stdout, nothing
@@ -82,7 +85,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { type Card, cards, holders, repoList, slug, strangers } from "./board";
 import { logEvent } from "./events";
-import { linkedWorktree, loadConfig, projectPath, projectRoot, repoDir, toolCmd, workDir } from "./config";
+import { type Decisions, linkedWorktree, loadConfig, projectPath, projectRoot, repoDir, toolCmd, workDir } from "./config";
 import { unpushed } from "./trees";
 
 export const KINDS = { code: "opusplan", prose: "opus" } as const;
@@ -148,16 +151,31 @@ export type Opener = { name?: string; socket?: string };
  * `to` is where SendMessage reaches the opener; without one the child's last
  * message carries the question instead.
  */
-export function reportToOpener(to: string, plan = false): string {
+export function reportToOpener(to: string): string {
   const send = to ? `Report to the session that opened you with SendMessage, ${to}: a few lines each time your card stops running (waiting on a decision or on another card, ready to push), saying what is committed and what you need decided, and again once your commits are pushed: the range, CI's verdict, your card done.` : "No live opener could be named, so your last message of a turn carries what a report would: what is committed, what you need decided.";
   const ask = to ? "send every question (a push, a merge, any choice) to your opener with the options and your recommendation, then stop" : "put every question (a push, a merge, any choice) in that message with the options and your recommendation, then stop";
-  return `${send} You do not push yourself, and you do not ask the user anything (this project takes every decision in the session that opened you, \`[session] decisions = "opener"\`): ${ask}. Your opener asks the user in its own session, then pushes on their answer or relays it to you quoted. A push go never covers a deploy or a release, each is its own go. ${plan ? "Your plan's approval is the one exception: leaving plan mode always asks the user, in your own session, and your opener can't answer it for them. " : ""}Your opener checks your work and closes this session: never close it yourself, and after your last report write nothing more.`;
+  return `${send} You do not push yourself, and you do not ask the user anything (this project takes every decision in the session that opened you, \`[session] decisions = "opener"\`): ${ask}. Your opener asks the user in its own session, then pushes on their answer or relays it to you quoted. A push go never covers a deploy or a release, each is its own go. Your opener checks your work and closes this session: never close it yourself, and after your last report write nothing more.`;
 }
+
+/**
+ * Why `--plan` is refused, or undefined. Where `[session] decisions = "opener"` the user decides in the opener, and leaving
+ * plan mode asks in the child's own session with nothing to route it to the opener (21 November 2026: "Plan comes here"),
+ * so no child there starts in plan mode. The opener opens a --kind prose child (Opus) without --plan whose task says to take
+ * its card, write its plan, set the card waiting-review, send the plan to the opener and stop; the opener asks the user and,
+ * for a code task, moves a desktop child to Sonnet before it relays the approval quoted (a CLI child can't be moved: the build
+ * is a new --kind code child on the approved plan).
+ */
+export const planRefusal = (plan: boolean, decisions: Decisions): string | undefined =>
+  plan && decisions === "opener"
+    ? `--plan: this project takes every decision in the opener (\`[session] decisions = "opener"\`), and leaving plan mode asks the user in the child's own session, where nothing routes it to the opener. Open a plan child instead (--kind prose, which is Opus where the config maps it; no --plan) whose task says: take your card, write your plan, set the card waiting-review, send the plan to your opener and stop. The opener asks the user and, for a code task, moves a desktop child to Sonnet (set_session_model) before it relays the approval quoted; a CLI child can't be moved, so the build is a new --kind code child on the approved plan. Nothing started`
+    : undefined;
 
 /** The new session's first words: the maps, its card, its model, the task, how it ends. */
 export function prompt(a: Pick<Ask, "title" | "repos" | "kind" | "plan" | "task">, opener?: Opener, desktop = false): string {
   const [repo] = a.repos;
   const conf = loadConfig();
+  const refused = planRefusal(a.plan, conf.session.decisions);
+  if (refused) throw new Error(refused);
   const m = conf.session.models[a.kind];
   const settle = "Settle your own plan without stopping for the user's approval of it, and where it needs a design settled (a change across files), have the architect helper look before it locks.";
   // a desktop child starts on the model the alias names (opusplan is Sonnet outside plan mode)
@@ -184,8 +202,8 @@ export function prompt(a: Pick<Ask, "title" | "repos" | "kind" | "plan" | "task"
     ? `You work in a git worktree of your own, on a branch of your own (this ${conf.term} opens every child that way, \`[session] worktrees = true\`): commit there, never in the main checkout, and push as the ${conf.term}'s rules say. If you were not started in one, say so first. The board, its cards and the check stamps are shared by every worktree: ${toolCmd("packet")} <repo> and ${toolCmd("review")} <repo> from inside yours act on yours.`
     : undefined;
   const to = [opener?.socket && `to ${dq(`uds:${opener.socket}`)}`, opener?.name && `${opener.socket ? "(else to its name, " : "to "}${dq(opener.name)}${opener.socket ? ")" : ""}`].filter(Boolean).join(" ");
-  // (the family's words stay for a decision taken in the child; `decisions = "opener"` takes it to the opener, the user asked there)
-  const report = conf.session.decisions === "opener" ? reportToOpener(to, a.plan) : to
+  // (the default keeps a decision in the child; `decisions = "opener"` takes it to the opener, where the user is asked)
+  const report = conf.session.decisions === "opener" ? reportToOpener(to) : to
     ? `Report to the session that opened you with SendMessage, ${to}: a few lines each time your card stops running (waiting on the user or on another card, ready to push), saying what is committed and what is asked of whom, and again once your commits are pushed: the range, CI's verdict, your card done. You do not push yourself: with the user's go, report the quote and your opener pushes, then tells you to set your card done. A go to push is asked of the user in your own session (the question tool), never left to your opener to ask: your next report quotes their words and says what they cover (repository, range by sha, push only). A push go never covers a deploy or a release, each is its own go. Without a quoted go your opener will not push. It checks your work and closes this session: never close it yourself, and after that last report write nothing more.`
     : undefined;
   return [
@@ -565,6 +583,12 @@ if (import.meta.main) {
   const a = parse(process.argv.slice(2));
   if (typeof a === "string") {
     console.error(`${a}\n${USAGE()}`);
+    process.exit(2);
+  }
+  const refused = planRefusal(a.plan, loadConfig().session.decisions);
+  if (refused) {
+    console.error(refused);
+    logEvent("session", "fail", a.repos[0], `${a.title}: --plan refused, this project decides in the opener`);
     process.exit(2);
   }
   const root = projectRoot();

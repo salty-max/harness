@@ -98,7 +98,7 @@ rules = "CLAUDE.md"
 
 /** The switches a template's blocks follow: `lock` is `[hooks] lock`, `worktrees` is `[session] worktrees`, `opener` is `[session] decisions = "opener"`. */
 export type Flags = { lock: boolean; worktrees: boolean; opener: boolean };
-/** What the family's own sessions run on: the lock, every child in the one shared checkout, the decisions in the child. */
+/** The defaults a project's config switches: the lock, every child in the one shared checkout, the decisions in the child. */
 export const DEFAULT_FLAGS: Flags = { lock: true, worktrees: false, opener: false };
 export const flagsOf = (c: Pick<Config, "hooks" | "session">): Flags => ({ lock: c.hooks.lock, worktrees: c.session.worktrees, opener: c.session.decisions === "opener" });
 

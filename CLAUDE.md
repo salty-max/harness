@@ -46,12 +46,17 @@ with `bun init.ts <project>`.
   it. A new ask in the template that a project's skip should cover is the
   project's to add to its list; doctor says it as a missing ask.
 - Every switch (`[hooks]`, `[session] worktrees`, `[session] decisions`,
-  `[checks] queue`) defaults to what the WoW family runs: the lock on, one shared
-  checkout, a decision asked of the user in the child, no queue (`[checks] queue_limit`,
-  the minutes a queued run may take, is a number with the queue's own default, 30). A message or a line of the
-  rules template that speaks of the lock follows `hooks.lock`
-  (`{{#lock}}`/`{{^lock}}` blocks in `templates/rules-section.md`, rendered
-  by `init.ts`); the family's own section must stay byte for byte what it
-  was (`bun init.ts <family root> --section-only --dry-run` says current).
+  `[checks] queue`) defaults to what a plain project runs (the WoW family's
+  setup until 21 November 2026): the lock on, one shared checkout, a decision
+  asked of the user in the child, no queue (`[checks] queue_limit`, the minutes
+  a queued run may take, is a number with the queue's own default, 30). The
+  family's own choices are its config's (`addon-kit/harness.family.toml`:
+  `decisions = "opener"` since 21 November 2026), never a default here. A
+  message or a line of the rules template that speaks of the lock follows
+  `hooks.lock` (`{{#lock}}`/`{{^lock}}` blocks in `templates/rules-section.md`,
+  rendered by `init.ts`); a project's section is what its config renders, so a
+  template change is an intended re-render of each (`bun init.ts <project>
+  --section-only`; `--dry-run` says whether it is current: the family's,
+  Jellycat's, hundo's).
 - Commit locally, Conventional Commits, no AI trailers. Ask before a push or
   creating the GitHub repository.

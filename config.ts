@@ -53,7 +53,7 @@ export type Config = {
   /** worktrees: the project opens each child session in a worktree of its own (a project that shares one checkout leaves it false). */
   session: { rules: string; models: { code: string; prose: string }; worktrees: boolean; decisions: Decisions };
 };
-/** Where a child's questions and go-aheads are asked of the user: in the child's own session (the family), or in its opener, the child sending them there (a project whose user takes every decision in the dispatch). */
+/** Where a child's questions and go-aheads are asked of the user: in the child's own session (the default), or in its opener, the child sending them there (a project whose user takes every decision in the dispatch: hundo, Jellycat, the WoW family since 21 November 2026). */
 export type Decisions = "child" | "opener";
 
 const isDir = (p: string) => existsSync(p) && statSync(p).isDirectory();

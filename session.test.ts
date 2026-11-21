@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { scopedRoot, useBoardGuard, useFixtureRoot, writeFamilyConfig } from "./testing";
 import { problems } from "./doctor";
-import { type Live, cleanEnv, command, idOf, lookIn, notes, openerOf, parse, pickOpener, prompt, registry, repoStates, verdict, worktreeName } from "./session";
+import { type Live, cleanEnv, command, idOf, lookIn, notes, openerOf, parse, pickOpener, planRefusal, prompt, registry, repoStates, verdict, worktreeName } from "./session";
 
 useFixtureRoot();
 useBoardGuard();
@@ -576,6 +576,29 @@ console.log("backgrounded · abc12345 · " + name + "\\n  claude agents         
     expect(given().argv[4]).toBe("opus");
   });
 
+  test('--plan is refused where decisions = "opener", nothing started, said with what to do instead; the default still plans', () => {
+    const toml = join(root, "harness.toml");
+    const own = readFileSync(toml, "utf8");
+    writeFileSync(toml, `${own}\n[session]\ndecisions = "opener"\n`);
+    try {
+      for (const more of [[], ["--dry-run"], ["--desktop"]]) {
+        const r = run(["T", "--repos", "yonder", "--kind", "code", "--plan", ...more, "--", "x"]);
+        expect(r.code).toBe(2);
+        expect(r.out).toBe("");
+        expect(r.err).toContain('--plan: this project takes every decision in the opener (`[session] decisions = "opener"`)');
+        expect(r.err).toContain("Open a plan child instead (--kind prose, which is Opus where the config maps it; no --plan)");
+        expect(r.err).toContain("Nothing started");
+        expect(existsSync(seen)).toBe(false);
+      }
+      expect(readFileSync(events, "utf8")).toContain("\tsession\tfail\tyonder\tT: --plan refused, this project decides in the opener");
+      // (without --plan the child opens as ever)
+      expect(run(["T", "--repos", "yonder", "--kind", "prose", "--", "x"]).code).toBe(0);
+    } finally {
+      writeFileSync(toml, own);
+    }
+    expect(run(["T", "--repos", "yonder", "--kind", "code", "--plan", "--", "x"]).code).toBe(0);
+  });
+
   test("--dry-run prints the command and the prompt and starts nothing", () => {
     const r = run(["Eight riddles", "--repos", "yonder,wow-data", "--kind", "code", "--dry-run", "--", "Write eight riddles."]);
     expect(r.code).toBe(0);
@@ -686,8 +709,16 @@ describe("session: a project whose children work in worktrees", () => {
       expect(p).toContain("A push go never covers a deploy or a release");
       expect(p).not.toContain("asked of the user in your own session");
       expect(p).not.toContain("plan's approval");
-      // a plan child: leaving plan mode asks the user in the child, said plainly
-      expect(prompt({ ...ask, plan: true }, opener, true)).toContain("Your plan's approval is the one exception: leaving plan mode always asks the user, in your own session");
+      // a plan child: leaving plan mode would ask the user in the child, where nothing routes it to the opener, so there is none
+      expect(() => prompt({ ...ask, plan: true }, opener, true)).toThrow("--plan: this project takes every decision in the opener");
+      expect(planRefusal(true, "opener")).toContain("Open a plan child instead (--kind prose, which is Opus where the config maps it; no --plan)");
+      expect(planRefusal(true, "opener")).toContain("send the plan to your opener and stop");
+      expect(planRefusal(true, "opener")).toContain("moves a desktop child to Sonnet (set_session_model) before it relays the approval quoted");
+      expect(planRefusal(true, "opener")).toContain("a CLI child can't be moved, so the build is a new --kind code child on the approved plan");
+      expect(planRefusal(false, "opener")).toBeUndefined();
+      expect(planRefusal(true, "child")).toBeUndefined();
+      expect(planRefusal(false, "child")).toBeUndefined();
+      expect(p).not.toContain("one exception");
       // no opener to send to: the question rides in its last message, it still asks nobody
       const alone = prompt(ask, undefined, true);
       expect(alone).toContain("No live opener could be named");

@@ -60,7 +60,16 @@ Write nothing for the task here: no card, no file, no helper.
      translations, design and players' text (a project may map both kinds
      to one model);
    - **plan** only when a design must be settled first: the opener's
-     call, never a question for the user.
+     call, never a question for the user. Not in an `opener` project:
+     `--plan` is refused there (leaving plan mode asks the user in the
+     child, and nothing routes that here), so open a plan child instead
+     (`--kind prose`, Opus where the config maps it, no `--plan`) whose
+     task says: take your card, write your plan, set the card
+     `waiting-review`, send the plan to your opener and stop. Ask the user
+     the plan's approval here, and for a code task move a desktop child to
+     Sonnet (`set_session_model`) before relaying their answer quoted; a
+     CLI child can't be moved, so the build is a new `--kind code` child
+     on the approved plan.
 2. Write the task: the user's words, then what this session knows that the
    child needs (files, findings, decisions, what not to touch). Never "as
    discussed": the child starts cold.
