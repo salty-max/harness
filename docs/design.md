@@ -316,6 +316,58 @@ mentions a push and stays silent otherwise, so a broken hook neither lets a
 push through nor prompts for everything. It is not vendored (`TOOLS`) and not
 a project's: it is the user's, and its tests are `claude-hooks/ask-push.test.ts`.
 
+**The helpers' no-kill gate (`nokill.ts`, 21 November 2026).** A Jellycat
+reviewer ran `pkill -f scripts/serve.mjs` and stopped every worktree's e2e
+server; the first fix was prose in the helpers' files (`<!-- harness:rule bash
+-->`), which a helper can ignore and a kept copy may never get. The gate is a
+PreToolUse hook on `Bash` in the frontmatter of `reviewer.md` and
+`architect.md` (so it runs only while that helper does: the session's own Bash
+can restart its dev server), running the vendored `nokill.ts`, which refuses
+with exit 2 and a reason on stderr any command that kills, signals or stops a
+process: kill, pkill, killall, kill-port, `fuser -k`, behind `$(…)`, `bash -c`,
+wrappers, `xargs`/`ssh`/`find -exec` and the npx family (the command a runner
+runs is what is judged, so `xargs grep kill` is fine), the stop verbs of
+launchctl, systemctl, docker, pm2, tmux and brew services, and an interpreter's
+inline script that kills. A kill word as an argument is not one, so a reviewer
+can still read code about killing. The reasoning behind each form is the header
+of `nokill.ts` and its table in `nokill.test.ts`. It reads a command through
+`shell.ts`, the shell-words splitter moved out of `claude-hooks/ask-push.ts` (a
+splitter fix reaches both; both are the harness's, ask-push is unvendored,
+nokill and shell are in `TOOLS`).
+
+What a probe showed (real `claude --bg` children, Claude Code 2.1.295, haiku
+agents with a hook that logged and refused): a frontmatter hook fires for the
+subagent's Bash calls, with `agent_type` in its JSON, and not for the
+session's; exit 2 and a JSON deny both block, the helper seeing
+`PreToolUse:Bash hook error: [command]: reason`; `CLAUDE_PROJECT_DIR` is set in
+the hook's environment (and not in the Bash tool's) and in a `--bg --worktree`
+child it is the worktree, so `"$CLAUDE_PROJECT_DIR/<tools dir>/nokill.ts"` is
+that worktree's own committed copy; a fresh worktree of a trusted repository
+is trusted; and **in an untrusted folder the hook is silently skipped**
+(trust is per folder, a subfolder of a trusted one does not inherit it;
+`claude --bg` refuses to start in an untrusted git repository, and starts in an
+untrusted plain folder with its project settings ignored). Not probed, from the Claude Code
+docs as the architect read them on 20 November: a `-p` session is not trusted, and plugin agents ignore
+frontmatter hooks.
+So the gate holds for a helper called from a session in a trusted folder or
+worktree, which is every use here, and says nothing where it can't run.
+
+The command is `PATH="$PATH:$HOME/.bun/bin:$HOME/.volta/bin:/opt/homebrew/bin:/usr/local/bin" bun
+"$CLAUDE_PROJECT_DIR/{{TOOLS}}/nokill.ts" || exit 2`: the PATH because a
+desktop app may not carry the shell's (not probed there: the probes were CLI
+`--bg` children; the user's push hook runs bun by absolute path, which an agent
+file committed in a project can't), `|| exit 2` because a hook that exits with anything but 0 or 2 lets the
+call through, so a missing bun or a worktree without the file is a refusal,
+loud, instead of an ungated helper. `doctor.ts` names a kept copy with no such
+hook (`lackedGate` in `init.ts`: the frontmatter's `hooks.PreToolUse` has a
+`Bash` matcher and a command that runs `nokill.ts`, judged by that alone) and
+one whose hook names a `nokill.ts` the project doesn't have. Not covered: a
+script, make target or package script that kills inside (`bun run e2e`), a
+program that signals through a library, a command built so the script can't
+see it (`k=ki; ${k}ll`): it stops a careless helper, not a determined one. The
+session's own Bash has no gate (it must restart what it started): the rule for
+a session is the Harness section's, advice.
+
 A one-repository project: root = the repository; the repo's name is
 `project.name`; the lock's unit (a card's `repos`) is that name. The name need
 not be the folder's: `config.ts` exports `repoDir(name)` and `repoName(dir)`,
@@ -373,8 +425,9 @@ project: `bun ~/code/wow-addons/harness/init.ts [dir] [--name n] [--check
    edits freely. A rule the helpers must keep, like what their Bash is for and
    never does, sits in the template behind a `<!-- harness:rule NAME -->`
    mark, and `doctor.ts` names an existing copy that lacks the mark, never
-   one that merely words it differently. No overwriting sync. It is advice to
-   the helper, not a gate: a hook in the agents' frontmatter would be one);
+   one that merely words it differently. No overwriting sync. The prose is
+   advice; the gate behind it is the hook in the same frontmatter, "The
+   helpers' no-kill gate" below, which `doctor.ts` checks the same way);
 6. appends a marked "Harness" section (about 250 words: one task per
    session, the card first, `q` for checks, packet and review before the
    commit) to CLAUDE.md between `<!-- harness:start -->` and `<!-- harness:end -->`

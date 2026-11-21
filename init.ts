@@ -14,7 +14,8 @@
  *      into what is there, never replacing a key, except the asks `[asks] skip` in harness.toml names (those are
  *      left out, and taken out if the file has them)
  *   5. .claude/agents/reviewer.md and architect.md, where there are none (one
- *      that is there is kept as it is, and says which marked rules of the template it lacks)
+ *      that is there is kept as it is, and says which marked rules of the template it lacks, and whether
+ *      its frontmatter lacks the hook that runs nokill.ts)
  *   6. a "Harness" section in CLAUDE.md between <!-- harness:start --> and
  *      <!-- harness:end --> markers, so a later run replaces only that block
  *      (its text follows the config: `[hooks] lock = false` leaves the lock out of
@@ -131,6 +132,48 @@ export function lackedRules(agent: string, copy: string): string[] {
 /** The line that says what a kept agent copy lacks (init's "kept" line and doctor's problem both end in it). */
 export const lackedSay = (agent: string, lacks: string[]): string =>
   `lacks the template's ${lacks.length > 1 ? "rules" : "rule"} marked ${lacks.map((r) => `<!-- harness:rule ${r} -->`).join(", ")}: add ${lacks.length > 1 ? "each block" : "the block"} from templates/agents/${agent}.md in the harness repository (reword it, keep the mark)`;
+
+/** The frontmatter of an agent file (between its first two --- lines), or undefined when it has none. */
+export const frontmatter = (text: string): string | undefined => text.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1];
+
+/** Whether a hook's `matcher` covers the Bash tool: none, "" or "*" cover every tool, anything else is a pattern matched against the whole tool name (`Bash`, `Bash|Edit`, `.*`). */
+const matchesBash = (matcher: unknown): boolean => {
+  const m = matcher === undefined || matcher === null ? "" : String(matcher);
+  if (m === "" || m === "*") return true;
+  try {
+    return new RegExp(`^(?:${m})$`).test("Bash");
+  } catch {
+    return /\bBash\b/.test(m);
+  }
+};
+
+/**
+ * Why an agent copy's no-kill gate isn't there, or undefined when it is: a PreToolUse hook on Bash in its frontmatter
+ * whose command runs nokill.ts and ends in `|| exit 2` (judged by those alone, never the command's other words), and, given the project's
+ * `tree`, the nokill.ts it names is in it (a hook that points where there is no file refuses every Bash call of the helper).
+ */
+export function lackedGate(copy: string, tree?: string): string | undefined {
+  const front = frontmatter(copy);
+  let command: string | undefined;
+  try {
+    const found = front === undefined ? undefined : (Bun.YAML.parse(front) as { hooks?: { PreToolUse?: { matcher?: unknown; hooks?: { type?: unknown; command?: unknown }[] }[] } } | null);
+    for (const e of found?.hooks?.PreToolUse ?? []) {
+      if (!matchesBash(e?.matcher)) continue;
+      for (const h of e.hooks ?? []) if (h?.type === "command" && /\bnokill\.ts\b/.test(String(h.command))) command ??= String(h.command);
+    }
+  } catch {
+    return "its frontmatter can't be read as YAML, so Claude Code can't read the hook in it either";
+  }
+  if (!command) return "its frontmatter has no PreToolUse hook on Bash that runs nokill.ts (the gate behind the bash rule)";
+  // (a hook that exits 127 or 1 when bun or the file is missing lets the call through: only `|| exit 2` turns that into a refusal)
+  if (!/\|\|\s*exit\s+2\b/.test(command)) return "its hook runs nokill.ts but isn't fail-closed (no `|| exit 2` after the command), so a missing bun or a missing file exits 127 or 1 and the call runs ungated";
+  const rel = command.match(/\$\{?CLAUDE_PROJECT_DIR\}?"?\/([^\s"']*nokill\.ts)/)?.[1];
+  if (tree && rel && !existsSync(join(tree, rel))) return `its hook runs ${rel}, which this project doesn't have, so every Bash call of the helper is refused until it does (harness-sync.ts copies it)`;
+  return undefined;
+}
+
+/** The line that says a kept agent copy has no gate: what to add, from where. */
+export const gateSay = (agent: string, why: string): string => `${why}: add the \`hooks:\` block of templates/agents/${agent}.md in the harness repository to its frontmatter (its {{TOOLS}} is the project's tools dir)`;
 
 /** The Harness section a project's config renders. */
 export const renderSection = (c: Pick<Config, "toolsDir" | "defaults" | "hooks" | "session">): string =>
@@ -283,8 +326,11 @@ if (import.meta.main) {
   for (const agent of AGENTS) {
     const rel = join(".claude", "agents", `${agent}.md`);
     if (existsSync(join(o.dir, rel))) {
-      const lacks = lackedRules(agent, read(join(o.dir, rel)));
-      console.log(`${rel}: kept${lacks.length ? ` (${lackedSay(agent, lacks)})` : ""}`);
+      const copy = read(join(o.dir, rel));
+      const lacks = lackedRules(agent, copy);
+      const gate = lackedGate(copy, o.dir);
+      const says = [...(lacks.length ? [lackedSay(agent, lacks)] : []), ...(gate ? [gateSay(agent, gate)] : [])];
+      console.log(`${rel}: kept${says.length ? ` (${says.join("; ")})` : ""}`);
     } else {
       say(`write ${rel}`);
       put(rel, fill(read(join(SRC, "templates", "agents", `${agent}.md`)), tools, rules));

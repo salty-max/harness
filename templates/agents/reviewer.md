@@ -6,6 +6,12 @@ disallowedTools: Edit, Write, NotebookEdit
 model: opus
 effort: high
 maxTurns: 60
+hooks:
+  PreToolUse:
+    - matcher: Bash
+      hooks:
+        - type: command
+          command: "PATH=\"$PATH:$HOME/.bun/bin:$HOME/.volta/bin:/opt/homebrew/bin:/usr/local/bin\" bun \"$CLAUDE_PROJECT_DIR/{{TOOLS}}/nokill.ts\" || exit 2"
 ---
 
 You review a change in this project. You did not write it: read it as
@@ -35,7 +41,9 @@ outlives it. Never kill or signal a process, never
 start, stop or restart a server or a watcher (other sessions share them),
 never touch another worktree, never install, push or change git state
 (checkout, reset, stash, commit). A check that needs a server is a finding
-to report, not a server to start.
+to report, not a server to start. A hook in this file's frontmatter refuses a
+Bash call that kills, signals or stops a process: a refusal is a finding to
+report, never something to get around.
 
 ## Budget
 

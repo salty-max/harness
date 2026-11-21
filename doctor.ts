@@ -13,7 +13,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { check } from "./harness-sync";
 import { CONFIG_FILE, loadConfig, projectTree, readToml, repoDir, treeConfig } from "./config";
-import { AGENTS, askSkip, lackedRules, lackedSay, renderSection, withSection } from "./init";
+import { AGENTS, askSkip, gateSay, lackedGate, lackedRules, lackedSay, renderSection, withSection } from "./init";
 import { checkCommand } from "./q";
 
 const KNOWN = new Set(["include", "project", "state", "tools", "repos", "defaults", "groups", "hooks", "review", "extensions", "session", "checks", "asks"]);
@@ -65,16 +65,21 @@ export function problems(project: string): string[] {
 
 /**
  * The helpers' copies in the project's .claude/agents/ that lack a rule the template has (init keeps a copy that is there,
- * so a template's new rule never reaches it by itself). Judged by the rule's mark alone, never the copy's words: a project's
- * own edits are its own. A copy that isn't there is none of the doctor's business (init writes it, or the project has no such helper).
+ * so a template's new rule never reaches it by itself), or the hook behind the bash rule. Judged by the rule's mark and
+ * by a PreToolUse hook on Bash running nokill.ts in the frontmatter, never the copy's words: a project's own edits are
+ * its own. A hook that points at a nokill.ts the project doesn't have is named too (it refuses every Bash call of the
+ * helper). A copy that isn't there is none of the doctor's business (init writes it, or the project has no such helper).
  */
 export function agentProblems(tree: string): string[] {
   const out: string[] = [];
   for (const agent of AGENTS) {
     const file = join(tree, ".claude", "agents", `${agent}.md`);
     if (!existsSync(file)) continue;
-    const lacks = lackedRules(agent, readFileSync(file, "utf8"));
+    const copy = readFileSync(file, "utf8");
+    const lacks = lackedRules(agent, copy);
     if (lacks.length) out.push(`.claude/agents/${agent}.md: ${lackedSay(agent, lacks)}`);
+    const gate = lackedGate(copy, tree);
+    if (gate) out.push(`.claude/agents/${agent}.md: ${gateSay(agent, gate)}`);
   }
   return out;
 }

@@ -18,6 +18,9 @@ dependencies). What it gives a project:
   unchecked or unreviewed tree
 - **a review packet and a verdict** (`packet.ts`, `review.ts`): the reviewer
   reads the packet, the verdict attests the tree, before the commit
+- **a gate on the helpers' Bash** (`nokill.ts`): a hook in the reviewer's and
+  architect's frontmatter refuses a command that kills, signals or stops a
+  process, so a helper can't take down a server other sessions share
 - **status, each, usage, events, session**: every repository at a glance (its
   linked worktrees too, and what each carries), one command in each, the cost
   of a card, the event log, sessions opened by sessions (`[session] decisions =

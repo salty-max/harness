@@ -46,8 +46,13 @@ It writes:
 5. `.claude/agents/reviewer.md` and `architect.md`, where there are none; a
    copy that is there is the project's and is kept, and `doctor.ts` names one
    that lacks a rule of the template (a block marked `<!-- harness:rule NAME -->`,
-   such as `bash`: what the helper's Bash is for and never does). Add the
-   block by hand, reworded as the copy likes, the mark kept
+   such as `bash`: what the helper's Bash is for and never does) or the gate
+   behind it (a `hooks:` PreToolUse block on Bash in the frontmatter that runs
+   the vendored `nokill.ts`, which refuses a kill; `doctor.ts` also names a
+   hook whose `nokill.ts` the project lacks, which would refuse every Bash call
+   of the helper). Add the block by hand, reworded as the copy likes, the mark
+   kept, and the hook's `{{TOOLS}}` your tools dir. The hook is skipped in an
+   untrusted folder: accept the workspace trust where the helpers run
 6. a Harness block in `CLAUDE.md` between `<!-- harness:start -->` and
    `<!-- harness:end -->`: a later run replaces only the block
 7. `.gitignore`: `.harness/` and `.cache/`

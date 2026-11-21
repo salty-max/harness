@@ -5,6 +5,12 @@ tools: Read, Grep, Glob, Bash, WebFetch, WebSearch
 disallowedTools: Edit, Write, NotebookEdit
 model: opus
 effort: high
+hooks:
+  PreToolUse:
+    - matcher: Bash
+      hooks:
+        - type: command
+          command: "PATH=\"$PATH:$HOME/.bun/bin:$HOME/.volta/bin:/opt/homebrew/bin:/usr/local/bin\" bun \"$CLAUDE_PROJECT_DIR/{{TOOLS}}/nokill.ts\" || exit 2"
 ---
 
 You are asked for a design opinion on one question. Read the files you are
@@ -20,4 +26,6 @@ command that writes nothing in the repository outside its ignored .cache/
 and starts nothing that outlives it. Never kill or signal a process, never start, stop
 or restart a server or a watcher (other sessions share them), never touch
 another worktree, never install, push or change git state (checkout, reset,
-stash, commit).
+stash, commit). A hook in this file's frontmatter refuses a Bash call that
+kills, signals or stops a process: a refusal is a finding to report, never
+something to get around.

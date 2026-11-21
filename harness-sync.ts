@@ -27,7 +27,7 @@ import { dirname, join, resolve } from "node:path";
 import { loadConfig, toolsPath, treeConfig } from "./config";
 
 const SRC = new URL(".", import.meta.url).pathname.replace(/\/$/, "");
-export const TOOLS = ["config", "events", "board", "q", "queue", "trees", "hooks", "review", "packet", "each", "status", "usage", "session"].map((t) => `${t}.ts`);
+export const TOOLS = ["config", "events", "board", "q", "queue", "trees", "hooks", "review", "packet", "each", "status", "usage", "session", "shell", "nokill"].map((t) => `${t}.ts`);
 export const VENDORED = [...TOOLS, ...readdirSync(join(SRC, "githooks")).sort().map((h) => `githooks/${h}`)];
 const STAMP = /^(?:\/\/|#) harness ([0-9a-f]{7,40}\+?): a copy; edit it in the harness repository instead$/;
 

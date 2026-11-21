@@ -1,10 +1,10 @@
 // harness-sync.ts's stamps and checks, and init.ts's pieces (bun test).
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { check, stamped, sync, unstamped, VENDORED } from "./harness-sync";
-import { AGENTS, DEFAULT_FLAGS, detectCheck, fill, flagsOf, lackedRules, parseArgs, renderSection, renderToml, ruleNames, withAsks, withIgnore, withSection } from "./init";
+import { AGENTS, DEFAULT_FLAGS, detectCheck, fill, flagsOf, frontmatter, lackedGate, lackedRules, parseArgs, renderSection, renderToml, ruleNames, withAsks, withIgnore, withSection } from "./init";
 import { parseConfig } from "./config";
 import { agentProblems, problems, staleSection } from "./doctor";
 import { scopedRoot, useBoardGuard } from "./testing";
@@ -234,17 +234,24 @@ describe("init: the section follows the config", () => {
   });
 });
 
-describe("the helpers' copies: a template's new rule is named where a copy lacks it, a project's own edits never are", () => {
+describe("the helpers' copies: a template's new rule and its gate are named where a copy lacks them, a project's own edits never are", () => {
   const tpl = (agent: string) => readFileSync(join(import.meta.dir, "templates", "agents", `${agent}.md`), "utf8");
-  // (what init writes, and what a copy made before the rule looked like: the template less the marked block)
+  // (what init writes, and what a copy made before the rule looked like: the template less the marked block, less the hook)
   const written = (agent: string) => fill(tpl(agent), "harness", "CLAUDE.md");
-  const oldCopy = (agent: string) => written(agent).replace(/<!-- harness:rule bash -->\n[\s\S]*?(\n\n|(?![\s\S]))/, "");
-  const withCopy = (files: Record<string, string>) => {
+  const noMark = (agent: string) => written(agent).replace(/<!-- harness:rule bash -->\n[\s\S]*?(\n\n|(?![\s\S]))/, "");
+  const noHook = (agent: string) => written(agent).replace(/^hooks:\n(  .*\n|\n(?=  ))*/m, "");
+  // (the project holding the tools: a hook that names a nokill.ts the project lacks is a problem of its own)
+  const withCopy = (files: Record<string, string>, tools = true) => {
     const dir = temp();
     mkdirSync(join(dir, ".claude", "agents"), { recursive: true });
     for (const [agent, text] of Object.entries(files)) writeFileSync(join(dir, ".claude", "agents", `${agent}.md`), text);
+    if (tools) {
+      mkdirSync(join(dir, "harness"), { recursive: true });
+      writeFileSync(join(dir, "harness", "nokill.ts"), "");
+    }
     return dir;
   };
+  const command = (agent: string): string => (Bun.YAML.parse(frontmatter(written(agent))!) as any).hooks.PreToolUse[0].hooks[0].command;
 
   test("both templates say what Bash is for and what it never does, behind a mark", () => {
     for (const agent of AGENTS) {
@@ -252,39 +259,121 @@ describe("the helpers' copies: a template's new rule is named where a copy lacks
       const text = tpl(agent).replace(/\s+/g, " ");
       for (const w of ["Bash is for reading", "Never kill or signal a process", "start, stop or restart a server or a watcher", "never touch another worktree", "never install, push or change git state"]) expect(text).toContain(w);
     }
-    // (the older copy these tests use really lacks the block, or what follows proves nothing)
-    for (const agent of AGENTS) expect(oldCopy(agent)).not.toContain("Never kill");
+    // (the older copies these tests use really lack the block and the hook, or what follows proves nothing)
+    for (const agent of AGENTS) {
+      expect(noMark(agent)).not.toContain("Never kill");
+      expect(noHook(agent)).not.toContain("nokill.ts");
+      expect(noHook(agent)).toContain("Never kill");
+      expect(noHook(agent)).toContain("---\n\n");
+    }
+  });
+
+  test("both templates gate the helper's Bash: a PreToolUse hook that runs the project's nokill.ts and refuses when it can't run", () => {
+    for (const agent of AGENTS) {
+      const front = Bun.YAML.parse(frontmatter(tpl(agent))!) as any;
+      expect(front.hooks.PreToolUse).toHaveLength(1);
+      expect(front.hooks.PreToolUse[0].matcher).toBe("Bash");
+      expect(front.hooks.PreToolUse[0].hooks).toHaveLength(1);
+      expect(front.hooks.PreToolUse[0].hooks[0].type).toBe("command");
+      const cmd: string = front.hooks.PreToolUse[0].hooks[0].command;
+      // (CLAUDE_PROJECT_DIR is the worktree in a `claude --bg --worktree` child, so a worktree runs its own copy; the PATH is the one a desktop app may lack)
+      expect(cmd).toContain('bun "$CLAUDE_PROJECT_DIR/{{TOOLS}}/nokill.ts"');
+      expect(cmd).toMatch(/PATH="\$PATH:[^"]*\.bun\/bin[^"]*\.volta\/bin/);
+      expect(cmd).toEndWith("|| exit 2");
+      expect(command(agent)).toContain('bun "$CLAUDE_PROJECT_DIR/harness/nokill.ts"');
+    }
   });
 
   test("a copy as init writes it lacks nothing", () => {
-    for (const agent of AGENTS) expect(lackedRules(agent, written(agent))).toEqual([]);
+    for (const agent of AGENTS) {
+      expect(lackedRules(agent, written(agent))).toEqual([]);
+      expect(lackedGate(written(agent))).toBeUndefined();
+    }
     expect(agentProblems(withCopy({ reviewer: written("reviewer"), architect: written("architect") }))).toEqual([]);
   });
 
   test("an older copy is named, with the mark to look for and the template to take it from", () => {
-    const found = agentProblems(withCopy({ reviewer: oldCopy("reviewer"), architect: written("architect") }));
+    const found = agentProblems(withCopy({ reviewer: noMark("reviewer"), architect: written("architect") }));
     expect(found).toHaveLength(1);
     expect(found[0]).toStartWith(".claude/agents/reviewer.md: lacks the template's rule marked <!-- harness:rule bash -->");
     expect(found[0]).toContain("templates/agents/reviewer.md");
-    expect(agentProblems(withCopy({ reviewer: oldCopy("reviewer"), architect: oldCopy("architect") }))).toHaveLength(2);
+    expect(agentProblems(withCopy({ reviewer: noMark("reviewer"), architect: noMark("architect") }))).toHaveLength(2);
   });
 
-  test("a project's own copy, reworded and cut down, passes while the mark stands, and is named once it goes", () => {
-    const own = "---\nname: reviewer\n---\n\nMy own reviewer.\n\n<!--harness:rule   bash-->\nBash reads. It never kills anything.\n";
+  test("a copy with the rule but no hook is named for the hook, with where to take it from", () => {
+    const found = agentProblems(withCopy({ reviewer: noHook("reviewer"), architect: written("architect") }));
+    expect(found).toHaveLength(1);
+    expect(found[0]).toStartWith(".claude/agents/reviewer.md: its frontmatter has no PreToolUse hook on Bash that runs nokill.ts");
+    expect(found[0]).toContain("templates/agents/reviewer.md");
+    // (a copy with neither is named for both)
+    const both = agentProblems(withCopy({ reviewer: noHook("reviewer").replace(/<!-- harness:rule bash -->\n[\s\S]*?(\n\n|(?![\s\S]))/, "") }));
+    expect(both).toHaveLength(2);
+  });
+
+  test("a hook of another kind, on another tool or another event, or only commented out, is no gate", () => {
+    const of = (hooks: string) => `---\nname: reviewer\n${hooks}---\n\n<!-- harness:rule bash -->\nBash reads.\n`;
+    const gate = (event: string, matcher: string, cmd: string) => of(`hooks:\n  ${event}:\n    - matcher: ${matcher}\n      hooks:\n        - type: command\n          command: ${cmd}\n`);
+    const ok = "bun x/nokill.ts || exit 2";
+    expect(lackedGate(gate("PreToolUse", "Bash", ok))).toBeUndefined();
+    expect(lackedGate(gate("PreToolUse", "Bash|Edit", ok))).toBeUndefined();
+    // (Claude Code matches a hook with no matcher, "", "*" or a pattern like .* on every tool, Bash too)
+    for (const m of ['"*"', '""', ".*", "Bash.*"]) expect(lackedGate(gate("PreToolUse", m, ok))).toBeUndefined();
+    expect(lackedGate(of(`hooks:\n  PreToolUse:\n    - hooks:\n        - type: command\n          command: ${ok}\n`))).toBeUndefined();
+    expect(lackedGate(gate("PreToolUse", "Edit", ok))).toContain("no PreToolUse hook on Bash");
+    expect(lackedGate(gate("PreToolUse", "Bas", ok))).toContain("no PreToolUse hook on Bash");
+    expect(lackedGate(gate("PreToolUse", "Edit|Write", ok))).toContain("no PreToolUse hook on Bash");
+    expect(lackedGate(gate("PostToolUse", "Bash", ok))).toContain("no PreToolUse hook on Bash");
+    expect(lackedGate(gate("PreToolUse", "Bash", "bun x/other.ts || exit 2"))).toContain("no PreToolUse hook on Bash");
+    expect(lackedGate(of("# hooks: bun x/nokill.ts\n"))).toContain("no PreToolUse hook on Bash");
+    expect(lackedGate(of(""))).toContain("no PreToolUse hook on Bash");
+    expect(lackedGate("no frontmatter at all, nokill.ts")).toContain("no PreToolUse hook on Bash");
+    expect(lackedGate("---\nname: [unclosed\n---\n")).toContain("can't be read as YAML");
+  });
+
+  test("a hook that isn't fail-closed is named: without `|| exit 2` a missing bun or file exits 127 or 1 and the call runs", () => {
+    const of = (cmd: string) => `---\nname: reviewer\nhooks:\n  PreToolUse:\n    - matcher: Bash\n      hooks:\n        - type: command\n          command: ${cmd}\n---\n\n<!-- harness:rule bash -->\nBash reads.\n`;
+    for (const cmd of ["bun x/nokill.ts", "echo nokill.ts; true", "bun x/nokill.ts || true", "bun x/nokill.ts || exit 1", "bun x/nokill.ts && exit 2"]) expect(lackedGate(of(cmd))).toContain("isn't fail-closed");
+    for (const cmd of ["bun x/nokill.ts || exit 2", "bun x/nokill.ts ||exit 2", "bun x/nokill.ts || exit 2 # refuse"]) expect(lackedGate(of(cmd))).toBeUndefined();
+    const found = agentProblems(withCopy({ reviewer: of("bun harness/nokill.ts") }));
+    expect(found).toHaveLength(1);
+    expect(found[0]).toContain("isn't fail-closed");
+    expect(found[0]).toContain("templates/agents/reviewer.md");
+  });
+
+  test("a hook that names a nokill.ts the project doesn't have is named: it would refuse every Bash call of the helper", () => {
+    const dir = withCopy({ reviewer: written("reviewer"), architect: written("architect") }, false);
+    const found = agentProblems(dir);
+    expect(found).toHaveLength(2);
+    expect(found[0]).toContain("its hook runs harness/nokill.ts, which this project doesn't have");
+    expect(found[0]).toContain("every Bash call of the helper is refused");
+    writeFileSync(join(dir, "nokill.ts"), "");
+    expect(agentProblems(dir)).toHaveLength(2);
+    mkdirSync(join(dir, "harness"));
+    writeFileSync(join(dir, "harness", "nokill.ts"), "");
+    expect(agentProblems(dir)).toEqual([]);
+    // (a copy that points at the tools dir another project uses is as broken as one with no file)
+    const other = fill(tpl("reviewer"), "addon-kit", "CLAUDE.md");
+    expect(agentProblems(withCopy({ reviewer: other }))[0]).toContain("its hook runs addon-kit/nokill.ts");
+  });
+
+  test("a project's own copy, reworded and cut down, passes while the mark and the hook stand, and is named once either goes", () => {
+    const hook = `hooks:\n  PreToolUse:\n    - matcher: Bash\n      hooks:\n        - type: command\n          command: "bun \\"$CLAUDE_PROJECT_DIR\\"/harness/nokill.ts || exit 2"\n`;
+    const own = `---\nname: reviewer\n${hook}---\n\nMy own reviewer.\n\n<!--harness:rule   bash-->\nBash reads. It never kills anything.\n`;
     expect(agentProblems(withCopy({ reviewer: own }))).toEqual([]);
     expect(agentProblems(withCopy({ reviewer: own.replace(/<!--.*-->\n/, "") }))).toHaveLength(1);
+    expect(agentProblems(withCopy({ reviewer: own.replace(hook, "") }))).toHaveLength(1);
   });
 
   test("no copy is none of the doctor's business, and only the project's own .claude/agents/ is read", () => {
     expect(agentProblems(temp())).toEqual([]);
     const dir = withCopy({ architect: written("architect") });
     mkdirSync(join(dir, "node_modules", "x", ".claude", "agents"), { recursive: true });
-    writeFileSync(join(dir, "node_modules", "x", ".claude", "agents", "reviewer.md"), oldCopy("reviewer"));
+    writeFileSync(join(dir, "node_modules", "x", ".claude", "agents", "reviewer.md"), noMark("reviewer"));
     expect(agentProblems(dir)).toEqual([]);
   });
 
   test("doctor's whole list carries it", () => {
-    const dir = withCopy({ reviewer: oldCopy("reviewer") });
+    const dir = withCopy({ reviewer: noMark("reviewer") });
     writeFileSync(join(dir, "harness.toml"), "");
     const restore = scopedRoot(dir);
     try {
@@ -292,6 +381,56 @@ describe("the helpers' copies: a template's new rule is named where a copy lacks
     } finally {
       restore();
     }
+    const ungated = withCopy({ reviewer: noHook("reviewer") });
+    writeFileSync(join(ungated, "harness.toml"), "");
+    const again = scopedRoot(ungated);
+    try {
+      expect(problems(ungated).filter((l) => l.includes("no PreToolUse hook on Bash"))).toHaveLength(1);
+    } finally {
+      again();
+    }
+  });
+
+  describe("the command init writes into the frontmatter, run the way Claude Code runs a hook (sh -c, the hook's JSON on stdin)", () => {
+    const hook = (agent: string, project: string, env: Record<string, string> = {}, stdin = JSON.stringify({ tool_name: "Bash", tool_input: { command: "echo ok" } })) => {
+      const p = Bun.spawnSync(["sh", "-c", command(agent)], { cwd: project, stdin: Buffer.from(stdin), env: { HOME: process.env.HOME ?? "", PATH: process.env.PATH ?? "", ...env, CLAUDE_PROJECT_DIR: project }, stdout: "pipe", stderr: "pipe" });
+      return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() };
+    };
+    const call = (cmd: string) => JSON.stringify({ tool_name: "Bash", tool_input: { command: cmd } });
+    // (a project with the tools where init puts them: the harness's own files, unstamped, which is all they need to run)
+    const project = () => {
+      const dir = temp();
+      mkdirSync(join(dir, "harness"), { recursive: true });
+      for (const f of ["nokill.ts", "shell.ts"]) writeFileSync(join(dir, "harness", f), readFileSync(join(import.meta.dir, f), "utf8"));
+      return dir;
+    };
+
+    test("a read passes, a kill is refused with exit 2 and the reason, in the project CLAUDE_PROJECT_DIR names", () => {
+      const dir = project();
+      for (const agent of AGENTS) {
+        expect(hook(agent, dir)).toEqual({ code: 0, out: "", err: "" });
+        const r = hook(agent, dir, {}, call("pkill -f scripts/serve.mjs"));
+        expect(r.code).toBe(2);
+        expect(r.err).toContain("Refused (the no-kill gate): pkill");
+      }
+      // (a worktree runs its own copy: another project dir with the tools in it answers for itself)
+      expect(hook("reviewer", project(), {}, call("lsof -ti:3000 | xargs kill")).code).toBe(2);
+    });
+
+    test("a project without the tools is a refusal and not a call that goes through (bun's failure to run the file is exit 2 too)", () => {
+      const r = hook("reviewer", temp());
+      expect(r.code).toBe(2);
+      expect(r.out).toBe("");
+      expect(r.err).toContain("nokill.ts");
+    });
+
+    test("bun in the user's own folders is found when the hook's PATH is only the system's", () => {
+      const dir = project();
+      mkdirSync(join(dir, ".bun", "bin"), { recursive: true });
+      symlinkSync(process.execPath, join(dir, ".bun", "bin", "bun"));
+      expect(hook("reviewer", dir, { PATH: "/usr/bin:/bin", HOME: dir })).toEqual({ code: 0, out: "", err: "" });
+      expect(hook("reviewer", dir, { PATH: "/usr/bin:/bin", HOME: dir }, call("kill 1")).code).toBe(2);
+    });
   });
 });
 
@@ -408,6 +547,15 @@ describe("a worktree of a one-repository project: its own files, never the main 
     expect(again).toContain(".claude/agents/reviewer.md: kept (lacks the template's rule marked <!-- harness:rule bash -->");
     expect(again).toContain(".claude/agents/architect.md: kept\n");
     expect(readFileSync(file, "utf8")).toBe(older);
+    // (a copy made before the gate: the rule is there, the hook isn't, and init says so without touching it)
+    const ungated = readFileSync(join(wt, ".claude", "agents", "architect.md"), "utf8").replace(/^hooks:\n(  .*\n)+/m, "");
+    writeFileSync(join(wt, ".claude", "agents", "architect.md"), ungated);
+    const third = init().stdout.toString();
+    expect(third).toContain(".claude/agents/architect.md: kept (its frontmatter has no PreToolUse hook on Bash that runs nokill.ts");
+    expect(readFileSync(join(wt, ".claude", "agents", "architect.md"), "utf8")).toBe(ungated);
+    // (and the gate's own files came with the tools)
+    expect(existsSync(join(wt, "harness", "nokill.ts"))).toBe(true);
+    expect(existsSync(join(wt, "harness", "shell.ts"))).toBe(true);
   });
 
   test("a full init in a worktree adopts it there and leaves the hooks to the main checkout", () => {

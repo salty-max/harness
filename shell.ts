@@ -194,17 +194,19 @@ export function bare(words: Word[]): { words: Word[]; gitVar: boolean } {
     if (!w.quoted && ["if", "then", "do", "else", "elif", "while", "until", "!"].includes(w.text)) i++;
     else if (["command", "builtin", "exec", "nohup", "time"].includes(b)) {
       i++;
-      while (words[i]?.text.startsWith("-")) i++;
+      // (`exec -a name cmd`: -a takes the name)
+      while (words[i]?.text.startsWith("-")) i += b === "exec" && words[i]!.text === "-a" ? 2 : 1;
     } else if (b === "env") {
       i++;
       while (words[i] && (words[i]!.text.startsWith("-") || assign.test(words[i]!.text))) gitVar ||= gitEnv.test(words[i++]!.text);
     } else if (b === "nice") {
       i++;
-      if (words[i]?.text === "-n") i += 2;
-      else if (/^-\d+$/.test(words[i]?.text ?? "")) i++;
+      // (`-n 5`, `-5`, `--adjustment=5`, `--adjustment 5`)
+      while (words[i]?.text.startsWith("-")) i += words[i]!.text === "-n" || words[i]!.text === "--adjustment" ? 2 : 1;
     } else if (b === "timeout") {
       i++;
-      while (words[i]?.text.startsWith("-")) i++;
+      // (`-s KILL` and `-k 5` take a value, then the duration)
+      while (words[i]?.text.startsWith("-")) i += ["-s", "-k", "--signal", "--kill-after"].includes(words[i]!.text) ? 2 : 1;
       i++;
     } else if (b === "stdbuf") {
       i++;

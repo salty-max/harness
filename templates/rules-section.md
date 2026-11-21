@@ -85,6 +85,10 @@ How sessions work together (behaviour: no hook checks these):
   from a written brief, a stronger model at higher effort for judgment (prose, voice,
   security, design, a plan the user must approve). Set it when the child starts (a plan
   child once its plan is approved) and say the choice in one line.
+- **Never kill or signal a process another session may share.** A dev server, an e2e
+  server or a watcher may be another session's: stop only what this session started,
+  by the pid it was given, never `pkill -f` or `killall` by name, nor `lsof … | xargs
+  kill` by port. The helpers' Bash is gated on it, a session's is not: this is on you.
 - **A problem found along the way gets fixed now**, under its own card, or handed to a
   new session at once. Never only mentioned in the report.
 - **Review your own work before saying it is done**: read the diff, grep for leftovers,
