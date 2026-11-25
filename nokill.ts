@@ -5,8 +5,10 @@
  * scripts/serve.mjs` once and took down every worktree's). The prose rule in the same files (`<!-- harness:rule bash
  * -->`) says it; this makes it so.
  *
- *   bun nokill.ts        reads the hook's JSON on stdin ({tool_name, tool_input.command, cwd, agent_type…}); exit 2
- *                        with the reason on stderr refuses the call, any other exit lets it run
+ *   bun nokill.ts             reads the hook's JSON on stdin ({tool_name, tool_input.command, cwd, agent_type…}); exit 2
+ *                             with the reason on stderr refuses the call, any other exit lets it run
+ *   bun nokill.ts --session   the same for a session's own Bash (the project's .claude/settings.json runs it, init.ts
+ *                             writes it from templates/settings-hooks.json): a kill of the call's own children passes
  *
  * The frontmatter command is `PATH="$PATH:…" bun "$CLAUDE_PROJECT_DIR/<tools dir>/nokill.ts" || exit 2` (init writes it
  * from templates/agents/): `|| exit 2` turns a script that can't run (bun missing, the file not in this worktree) into
@@ -34,6 +36,19 @@
  * `command -v pkill` pass, so a reviewer can read code that talks about killing. An inline script that names a kill is
  * refused even when it only reads (`awk '/pkill/ {print}'`, `python3 -c "…count('kill')"`): that is the price of
  * judging scripts by their words, and the refusal says to search text with grep or rg.
+ *
+ * The session's mode (--session) refuses all of that too but for one thing: `kill` (or `/bin/kill`, behind env, nohup,
+ * time or timeout) whose every target is this command's own child, once the same line started a background job before
+ * it (an earlier command ending in `&`, outside any `( … )` or `{ … }`): `$!`, `${!}`, a job (`%1`, `%%`), or a
+ * variable set once from that `$!` whose name the line uses for nothing but reads (`node serve.js & pid=$!; …; kill
+ * $pid`: never `for pid in`, `read pid`, `unset pid`, a second assignment); and `kill -0` or `kill -l`,
+ * which signal nothing. Those are the call's own by construction: no guess about whose a pid is. Without a job before
+ * it, `$!` is no child: zsh, the Bash tool's shell, expands an unset `$!` to 0, so `kill $!` is `kill 0`, the whole
+ * process group. The signal is the first option alone, as the shells read it: `kill -9 -0` is a kill of group 0. A
+ * literal pid, any other variable or substitution, a group (`0`, `-1`, `-$pid`), no target at all, or a kill behind a
+ * runner (xargs, sudo, ssh, find -exec: its targets come from elsewhere) stays refused, and the refusal names the
+ * process a literal pid is and points at TaskStop (a background task of the session's) or a report. A session has to
+ * restart what it started; it has no business stopping what another session may share.
  *
  * Not modelled: a script, make target or package script that kills inside (`bun run e2e`, `sh stop.sh`), a program
  * that signals through a library, an alias or function defined elsewhere, a command built from pieces the script can't
@@ -86,6 +101,110 @@ const RUNNERS: Record<string, { opts: string[]; positional?: number; flag?: stri
 const PACKAGE_RUNNERS: Record<string, string[]> = { bun: ["x"], npm: ["exec", "x"], pnpm: ["exec", "dlx"], yarn: ["exec", "dlx"] };
 /** The programs that read a script from their stdin, a pipe or a here-document, with no file given. */
 const STDIN_FED = ["at", "batch"];
+
+/**
+ * What a judgement needs beyond the words: the command line the hook was given, the session's mode, and where the
+ * command being judged stands in it: whether a background job was started before it (`bg`) and the variables set from
+ * that job's `$!` before it (`own`).
+ */
+type Ctx = { whole: string; session: boolean; bg: boolean; own: Set<string> };
+
+/**
+ * Whether a variable's name appears in the whole command line only as one assignment of `$!` and as plain reads
+ * (`$name`, `${name}`): any other appearance can change it where a reading in order can't see (`for name in …`,
+ * `read name`, `let`, `printf -v name`, `unset name`, `name+=`, `${name:=…}`, a second assignment, one later in a loop
+ * body or a trap's handler, a word holding the name), so the variable is no child of the call's.
+ */
+export function soleAssignment(whole: string, name: string): boolean {
+  let assigns = 0;
+  for (const m of whole.matchAll(new RegExp(`(?<![A-Za-z0-9_])${name}(?![A-Za-z0-9_])`, "g"))) {
+    const at = m.index!;
+    const after = whole.slice(at + name.length);
+    if (whole[at - 1] === "$") continue;
+    if (whole.slice(at - 2, at) === "${") {
+      if (after.startsWith("}")) continue;
+      return false;
+    }
+    if (/^=("?)\$(!|\{!\})\1(?![^\s;&|)])/.test(after)) {
+      assigns++;
+      continue;
+    }
+    return false;
+  }
+  return assigns === 1;
+}
+
+/**
+ * Where each top-level command of a line stands: a background job started before it (an earlier command ended with `&`,
+ * the line not grouped: a `&` inside `( … )` or `{ … }` is another shell's, or may be), and the variables set from `$!`
+ * before it, after such a job (`pid=$!` before a command or alone, `export pid=$!`, `local`, `declare`, `readonly`,
+ * `typeset`), whose name the whole line (`whole`) uses for nothing else (`soleAssignment`). Without a job, `$!` is no
+ * child: zsh, the Bash tool's shell, expands it to 0 (`kill $!` is `kill 0`, the whole process group), bash to nothing.
+ */
+export function standing(src: string, seed?: { bg: boolean; own: Set<string> }, whole: string = src): { bg: boolean; own: Set<string> }[] {
+  const sole = new Map<string, boolean>();
+  const isSole = (name: string) => sole.get(name) ?? (sole.set(name, soleAssignment(whole, name)), sole.get(name)!);
+  let parsed: ReturnType<typeof parse>;
+  try {
+    parsed = parse(src);
+  } catch {
+    return [];
+  }
+  const out: { bg: boolean; own: Set<string> }[] = [];
+  let bg = seed?.bg ?? false;
+  const vars = new Map<string, boolean>([...(seed?.own ?? [])].map((name) => [name, true]));
+  for (const cmd of parsed.cmds) {
+    out.push({ bg, own: new Set([...vars].filter(([, own]) => own).map(([name]) => name)) });
+    const note = (w: Word) => {
+      const m = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/.exec(w.text);
+      if (m) vars.set(m[1]!, bg && /^\$(!|\{!\})$/.test(m[2]!) && isSole(m[1]!));
+    };
+    let i = 0;
+    while (cmd.words[i] && assign.test(cmd.words[i]!.text)) note(cmd.words[i++]!);
+    if (["export", "local", "declare", "readonly", "typeset"].includes(cmd.words[i]?.text ?? "")) for (const w of cmd.words.slice(i + 1)) note(w);
+    if (cmd.after === "&" && !parsed.grouped) bg = true;
+  }
+  return out;
+}
+
+/** The variables set from a background job's `$!` by the end of the line, for a test. */
+export const ownVars = (whole: string): Set<string> => {
+  const s = standing(`${whole}\n:`);
+  return s.length ? s[s.length - 1]!.own : new Set();
+};
+
+/** Whether a kill target is the call's own child: `$!`, `${!}` or a job spec once a background job started, or a variable set from that `$!`. */
+const ownTarget = (w: Word, ctx: Ctx): boolean => {
+  if (!ctx.bg) return false;
+  if (w.text === "$!" || w.text === "${!}" || (!w.dynamic && /^%([%+-]|\d+)$/.test(w.text))) return true;
+  const v = /^\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})$/.exec(w.text);
+  return !!v && ctx.own.has((v[1] ?? v[2])!);
+};
+
+/**
+ * Whether a session's `kill` stops only what its own command started: every target its own child, or a signal of 0
+ * (`-0`, `-s 0`, `-n 0`: a check that sends nothing), or `-l`/`-L` (a list of the signals). The signal is the first
+ * option alone, as bash, zsh and /bin/kill read it: every word after it is a target (`kill -9 -0` is a kill of
+ * process group 0, refused). No target is no pass: a runner may be feeding it pids.
+ */
+function ownKill(args: Word[], ctx: Ctx): boolean {
+  let signal: string | undefined;
+  let i = 0;
+  const first = args[0];
+  if (first && first.text === "--") i = 1;
+  else if (first && !first.dynamic && /^-[lL]$/.test(first.text)) return true;
+  else if (first && ["-s", "-n", "--signal"].includes(first.text)) {
+    signal = args[1]?.dynamic ? "?" : (args[1]?.text ?? "?");
+    i = 2;
+  } else if (first && !first.dynamic && /^-[A-Za-z0-9]+$/.test(first.text)) {
+    signal = first.text.slice(1);
+    i = 1;
+  }
+  if (signal !== undefined && args[i]?.text === "--") i++;
+  const targets = args.slice(i);
+  if (signal === "0") return true;
+  return targets.length > 0 && targets.every((t) => ownTarget(t, ctx));
+}
 
 const dyn = (w: Word | undefined) => !!w && w.dynamic && !w.text.includes("/");
 const words = (ws: Word[]) => ws.map((w) => w.text);
@@ -179,38 +298,46 @@ function shellBody(ws: Word[]): { body: Word | undefined; piped: boolean } {
   return { body, piped: !body && !ws.slice(1).some((w) => !w.text.startsWith("-") && !w.text.startsWith("/dev/")) };
 }
 
-/** Why one simple command (its words, wrappers and redirections taken off) kills or stops a process, or undefined. `whole` is the command line the hook was given, for what a piece can't tell on its own. */
-function judge(ws: Word[], whole: string, depth: number): string | undefined {
+/**
+ * Why one simple command (its words, wrappers and redirections taken off) kills or stops a process, or undefined. `ctx.whole`
+ * is the command line the hook was given, for what a piece can't tell on its own; `direct` is false for a command a runner
+ * (xargs, sudo, ssh, find -exec) runs, whose arguments may come from elsewhere.
+ */
+function judge(ws: Word[], ctx: Ctx, depth: number, direct = true): string | undefined {
+  const { whole } = ctx;
   const first = ws[0];
   if (!first) return undefined;
   const name = basename(first.text);
   const rest = ws.slice(1);
   if (dyn(first) || first.text.startsWith("=")) return MENTION.test(whole) ? "a command that is a variable or a substitution, on a line that mentions a kill" : undefined;
-  if (/\s/.test(first.text)) return kills(words(ws).join(" "), whole, depth + 1);
+  if (/\s/.test(first.text)) return scan(words(ws).join(" "), ctx, depth + 1, null);
+  // (a session may stop its own command's children: `kill $!`, `kill %1`, a variable set from $!, once a job started)
+  if (name === "kill" && ctx.session && direct && ownKill(rest, ctx)) return undefined;
   if (KILLERS.has(name)) return name;
   if (name === "fuser") return rest.some((w) => /^-[a-zA-Z]*k|^--kill$/.test(w.text)) ? "fuser -k" : undefined;
   const stop = stops(name, rest);
   if (stop) return stop;
   if (SHELLS.includes(name)) {
     const { body, piped } = shellBody(ws);
-    if (body) return kills(body.text, whole, depth + 1);
+    // (a new shell: no job of this one's is its)
+    if (body) return scan(body.text, ctx, depth + 1, null);
     return piped && MENTION.test(whole) ? `${name} fed by a pipe or a here-document, on a line that mentions a kill` : undefined;
   }
-  if (name === "eval") return kills(words(rest).join(" "), whole, depth + 1);
+  if (name === "eval") return scan(words(rest).join(" "), ctx, depth + 1, ctx);
   // (`trap 'kill 0' EXIT`: the handler is a command line)
   if (name === "trap") {
     const handler = rest.find((w) => !w.text.startsWith("-"));
-    return handler ? kills(handler.text, whole, depth + 1) : undefined;
+    return handler ? scan(handler.text, ctx, depth + 1, ctx) : undefined;
   }
   if (STDIN_FED.includes(name)) return MENTION.test(whole) ? `${name} reads its script from stdin, on a line that mentions a kill` : undefined;
   if (name === "find") {
     const cmd = execOf(rest);
-    return cmd.length ? judge(unredirected(bare(cmd).words), whole, depth + 1) : undefined;
+    return cmd.length ? judge(unredirected(bare(cmd).words), ctx, depth + 1, false) : undefined;
   }
   if (name in RUNNERS) {
     const cmd = runs(name, rest);
     // (npx and the rest: the package is the command; ssh and the rest: a word with a space is a command line)
-    const got = cmd.length ? judge(unredirected(bare(cmd).words), whole, depth + 1) : undefined;
+    const got = cmd.length ? judge(unredirected(bare(cmd).words), ctx, depth + 1, false) : undefined;
     return got ? `${name} ${got}` : undefined;
   }
   if (name in PACKAGE_RUNNERS) {
@@ -232,45 +359,84 @@ function judge(ws: Word[], whole: string, depth: number): string | undefined {
   return undefined;
 }
 
-/** Why a command line kills or stops a process (the first thing found), or undefined. `whole` is the line the hook was given. */
-export function kills(src: string, whole: string = src, depth = 0): string | undefined {
-  if (depth > 6) return MENTION.test(whole) ? "nested too deep to read, on a line that mentions a kill" : undefined;
+/**
+ * Why a piece of the command line kills or stops a process (the first thing found), or undefined. `seed` is the standing
+ * the piece starts from (a subshell, an eval or a trap's handler inherits the shell's jobs; a new shell, null, has none).
+ */
+function scan(src: string, ctx: Ctx, depth: number, seed: { bg: boolean; own: Set<string> } | null): string | undefined {
+  if (depth > 6) return MENTION.test(ctx.whole) ? "nested too deep to read, on a line that mentions a kill" : undefined;
   const { cmds } = parse(src);
-  for (const cmd of cmds) {
+  const stand = ctx.session ? standing(src, seed ?? undefined, ctx.whole) : [];
+  for (const [i, cmd] of cmds.entries()) {
+    const here: Ctx = { ...ctx, bg: stand[i]?.bg ?? false, own: stand[i]?.own ?? new Set() };
     for (const w of cmd.words) for (const sub of w.subs) {
-      const got = kills(sub, whole, depth + 1);
+      const got = scan(sub, here, depth + 1, here);
       if (got) return got;
     }
     const plain = unredirected(cmd.words);
     // (`command -v pkill` looks a program up, it doesn't run it)
     if (basename(plain[0]?.text ?? "") === "command" && /^-[a-zA-Z]*[vV]/.test(plain[1]?.text ?? "")) continue;
-    const got = judge(bare(plain).words, whole, depth);
+    const got = judge(bare(plain).words, here, depth);
     if (got) return got;
   }
   return undefined;
 }
 
+/** Why a command line kills or stops a process (the first thing found), or undefined. `whole` is the line the hook was given; `session`, the session's mode (its own command's children may be stopped). */
+export function kills(src: string, whole: string = src, depth = 0, session = false): string | undefined {
+  return scan(src, { whole, session, bg: false, own: new Set() }, depth, null);
+}
+
 /** The reason a Bash command is refused, or undefined to let it run. It never throws: what it can't read is refused when the line mentions a kill. */
-export function refusal(command: string): string | undefined {
+export function refusal(command: string, session = false): string | undefined {
   try {
-    return kills(command);
+    return kills(command, command, 0, session);
   } catch {
     return MENTION.test(command) ? "a command line this can't read, and it mentions a kill" : undefined;
   }
 }
 
+/** The literal pids a refused command line gives `kill` (its words after a kill, numbers not options), for the refusal to name. */
+export function literalPids(command: string): number[] {
+  const out = new Set<number>();
+  for (const m of command.matchAll(/(?<![A-Za-z0-9-])kill\b([^;&|\n)]*)/g)) for (const n of m[1]!.matchAll(/(?<![-\w$])(\d+)(?![\w.])/g)) if (Number(n[1]) > 1) out.add(Number(n[1]));
+  return [...out].slice(0, 5);
+}
+
+/** What each pid is, one `ps` line each (`<pid> <ppid> <started> <command>`), or that no such process runs. */
+function described(pids: number[]): string[] {
+  return pids.map((pid) => {
+    const p = Bun.spawnSync(["ps", "-o", "pid=,ppid=,lstart=,command=", "-p", String(pid)], { stderr: "ignore" });
+    const line = p.exitCode === 0 ? p.stdout.toString().trim().replace(/\s+/g, " ") : "";
+    return line ? `  ${line.slice(0, 200)}` : `  ${pid}: no such process`;
+  });
+}
+
+/** What the gate says on stderr when it refuses, for a helper or for a session. */
+export function refusalText(why: string, command: string, session: boolean): string {
+  if (!session) return `Refused (the no-kill gate): ${why}. A helper never kills, signals or stops a process, since other sessions share the servers and watchers. Report what it would have fixed as a finding instead.`;
+  const pids = literalPids(command);
+  return [
+    `Refused (the no-kill gate): ${why}. A session stops only what its own command started: a job it put in the background with & earlier in the same command, by \`kill $!\`, \`kill %1\` or a variable set from that $!. A background task of yours stops with TaskStop, a preview with preview_stop. Anything else may be another session's server or watcher: report it (to your opener, or the user) instead of stopping it.`,
+    ...(/inline script|stdin|a pipe|can't read|variable|nested/.test(why) ? ["A script that only mentions a kill (an edit, a search): put it in a file and run that, or search with grep or rg."] : []),
+    ...(pids.length ? ["What that pid is:", ...described(pids)] : []),
+  ].join("\n");
+}
+
 if (import.meta.main) {
+  const session = process.argv.includes("--session");
   const text = await Bun.stdin.text();
   let why: string | undefined;
+  let command = "";
   try {
     const input = JSON.parse(text) as { tool_name?: string; tool_input?: { command?: unknown } };
-    const command = input.tool_input?.command;
-    if ((input.tool_name === undefined || input.tool_name === "Bash") && typeof command === "string") why = refusal(command);
+    const c = input.tool_input?.command;
+    if ((input.tool_name === undefined || input.tool_name === "Bash") && typeof c === "string") why = refusal((command = c), session);
   } catch {
     why = MENTION.test(text) ? "the hook's input couldn't be read, and it mentions a kill" : undefined;
   }
   if (why) {
-    console.error(`Refused (the no-kill gate): ${why}. A helper never kills, signals or stops a process, since other sessions share the servers and watchers. Report what it would have fixed as a finding instead.`);
+    console.error(refusalText(why, command, session));
     process.exit(2);
   }
 }

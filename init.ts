@@ -205,6 +205,59 @@ export function withAsks(current: Record<string, any> | undefined, asks: string[
   return out;
 }
 
+/** A hook entry of settings.json: a matcher and its commands. */
+export type HookGroup = { matcher?: string; hooks: { type: string; command: string }[] };
+/** The session's no-kill gate, among a settings file's hooks: a command that runs nokill.ts with --session. */
+export const SESSION_GATE = /\bnokill\.ts\b["']?\s+--session\b/;
+const gateHook = (h: any): boolean => h?.type === "command" && SESSION_GATE.test(String(h?.command ?? ""));
+
+/** The session's no-kill gate as templates/settings-hooks.json has it, its {{TOOLS}} the project's tools dir: the PreToolUse groups init merges into .claude/settings.json. */
+export function sessionGate(tools: string): HookGroup[] {
+  const t = JSON.parse(read(join(SRC, "templates", "settings-hooks.json"))) as { PreToolUse: HookGroup[] };
+  return t.PreToolUse.map((g) => ({ ...g, hooks: g.hooks.map((h) => ({ ...h, command: h.command.replaceAll("{{TOOLS}}", tools) })) }));
+}
+
+/**
+ * settings.json with the session's no-kill gate in its hooks (every other key, hook and event kept): the template's
+ * group when no gate is there, the gate replaced (taken out wherever it sits, the template's group added last) when
+ * the one there isn't the template's. A file that has it exactly comes back as it was.
+ */
+export function withHooks(current: Record<string, any> | undefined, gate: HookGroup[]): Record<string, any> {
+  const hooks = current?.hooks;
+  if (hooks !== undefined && (hooks === null || typeof hooks !== "object" || Array.isArray(hooks))) throw new Error("its hooks aren't an object (Claude Code's settings shape): fix the file by hand, init writes nothing into it");
+  if (hooks?.PreToolUse !== undefined && !Array.isArray(hooks.PreToolUse)) throw new Error("its hooks.PreToolUse isn't a list (Claude Code's settings shape): fix the file by hand, init writes nothing into it");
+  const pre: any[] = Array.isArray(current?.hooks?.PreToolUse) ? current!.hooks.PreToolUse : [];
+  const have = pre.flatMap((g) => (Array.isArray(g?.hooks) ? g.hooks.filter(gateHook).map((h: any) => ({ matcher: g.matcher, command: h.command })) : []));
+  const want = gate.flatMap((g) => g.hooks.map((h) => ({ matcher: g.matcher, command: h.command })));
+  if (JSON.stringify(have) === JSON.stringify(want)) return current ?? {};
+  const kept = pre.map((g) => (Array.isArray(g?.hooks) ? { ...g, hooks: g.hooks.filter((h: any) => !gateHook(h)) } : g)).filter((g) => !Array.isArray(g?.hooks) || g.hooks.length);
+  const out = { ...(current ?? {}) };
+  out.hooks = { ...(out.hooks ?? {}), PreToolUse: [...kept, ...gate] };
+  return out;
+}
+
+/**
+ * Why a project's .claude/settings.json has no working session gate, or undefined when it has the template's: none
+ * there, one that isn't the template's (init replaces it), or one that runs a nokill.ts the tree lacks.
+ */
+export function lackedSessionGate(settings: Record<string, any> | undefined, tools: string, tree?: string): string | undefined {
+  const gate = sessionGate(tools);
+  let merged: Record<string, any>;
+  try {
+    merged = withHooks(settings, gate);
+  } catch (error) {
+    return (error as Error).message;
+  }
+  if (merged === (settings ?? {})) {
+    const rel = gate[0]?.hooks[0]?.command.match(/\$\{?CLAUDE_PROJECT_DIR\}?"?\/([^\s"']*nokill\.ts)/)?.[1];
+    return tree && rel && !existsSync(join(tree, rel)) ? `its session no-kill gate runs ${rel}, which this project doesn't have (harness-sync.ts copies it)` : undefined;
+  }
+  const pre: any[] = Array.isArray(settings?.hooks?.PreToolUse) ? settings!.hooks.PreToolUse : [];
+  return pre.some((g) => Array.isArray(g?.hooks) && g.hooks.some(gateHook))
+    ? "its session no-kill gate isn't the template's (templates/settings-hooks.json): bun init.ts replaces it"
+    : "no session no-kill gate (a PreToolUse hook running nokill.ts --session): bun init.ts writes it";
+}
+
 /**
  * The asks a project's harness.toml leaves out, `[asks] skip = ["Bash(git push *)", …]`: exact strings of
  * templates/settings-asks.json. A project whose branch protection or review stands in for one of the harness's
@@ -312,15 +365,23 @@ if (import.meta.main) {
     console.error(`init: ${skipped.error}`);
     process.exit(1);
   }
-  const merged = withAsks(settings, asks, skipped);
+  const asked = withAsks(settings, asks, skipped);
   const left = asks.filter((a) => !skipped.includes(a)).length;
   const have: string[] = Array.isArray(settings?.permissions?.ask) ? settings.permissions.ask : [];
   const dropped = skipped.filter((a) => have.includes(a));
-  if (JSON.stringify(merged) === JSON.stringify(settings)) console.log(`.claude/settings.json: the asks are there${skipped.length ? ` (${skipped.length} left out by [asks] skip)` : ""}`);
-  else {
-    say(`merge ${left} asks (push, release, deploy, GitHub and Vercel writes, secrets) into .claude/settings.json${dropped.length ? `, and take out the ${dropped.length} that [asks] skip names` : ""}`);
-    put(".claude/settings.json", JSON.stringify(merged, null, 2) + "\n");
+  if (JSON.stringify(asked) === JSON.stringify(settings)) console.log(`.claude/settings.json: the asks are there${skipped.length ? ` (${skipped.length} left out by [asks] skip)` : ""}`);
+  else say(`merge ${left} asks (push, release, deploy, GitHub and Vercel writes, secrets) into .claude/settings.json${dropped.length ? `, and take out the ${dropped.length} that [asks] skip names` : ""}`);
+  // (the session's no-kill gate: a PreToolUse hook on Bash running the project's nokill.ts --session)
+  let gated: Record<string, any>;
+  try {
+    gated = withHooks(asked, sessionGate(tools));
+  } catch (error) {
+    console.error(`init: .claude/settings.json: ${(error as Error).message}`);
+    process.exit(1);
   }
+  if (gated === asked) console.log(".claude/settings.json: the session no-kill gate is there");
+  else say(`${lackedSessionGate(asked, tools)?.includes("isn't the template's") ? "replace" : "add"} the session no-kill gate (a PreToolUse hook on Bash running ${tools}/nokill.ts --session) in .claude/settings.json`);
+  if (JSON.stringify(gated) !== JSON.stringify(settings)) put(".claude/settings.json", JSON.stringify(gated, null, 2) + "\n");
 
   // 5. the helpers
   for (const agent of AGENTS) {

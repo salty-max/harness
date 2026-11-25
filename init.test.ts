@@ -4,9 +4,9 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { check, standing, stamped, sync, unstamped, VENDORED } from "./harness-sync";
-import { AGENTS, DEFAULT_FLAGS, detectCheck, fill, flagsOf, frontmatter, lackedGate, lackedRules, parseArgs, renderSection, renderToml, ruleNames, withAsks, withIgnore, withSection } from "./init";
+import { AGENTS, DEFAULT_FLAGS, detectCheck, fill, flagsOf, frontmatter, lackedGate, lackedRules, lackedSessionGate, parseArgs, renderSection, renderToml, ruleNames, sessionGate, withAsks, withHooks, withIgnore, withSection } from "./init";
 import { parseConfig } from "./config";
-import { agentProblems, problems, staleSection } from "./doctor";
+import { agentProblems, hookProblems, problems, staleSection } from "./doctor";
 import { scopedRoot, useBoardGuard } from "./testing";
 
 useBoardGuard();
@@ -632,5 +632,114 @@ describe("a worktree of a one-repository project: its own files, never the main 
     // nothing of it in the main checkout, and no hooks path set for the repository
     expect(g(main, "status", "--porcelain")).toBe("");
     expect(Bun.spawnSync(["git", "config", "--get", "core.hooksPath"], { cwd: main, env: GIT }).exitCode).not.toBe(0);
+  });
+});
+
+describe("the session's no-kill gate: a PreToolUse hook in the project's .claude/settings.json", () => {
+  const gate = sessionGate("harness");
+  const command = gate[0]!.hooks[0]!.command;
+
+  test("the template runs the project's own nokill.ts in the session's mode, and its {{TOOLS}} is filled", () => {
+    expect(gate).toHaveLength(1);
+    expect(gate[0]!.matcher).toBe("Bash");
+    expect(command).toContain('bun "$CLAUDE_PROJECT_DIR/harness/nokill.ts" --session');
+    expect(command).toMatch(/PATH="\$PATH:[^"]*\.bun\/bin[^"]*\.volta\/bin/);
+    expect(command).not.toContain("{{TOOLS}}");
+    expect(sessionGate("addon-kit")[0]!.hooks[0]!.command).toContain("$CLAUDE_PROJECT_DIR/addon-kit/nokill.ts");
+  });
+
+  test("merged into a file without it, every other key and hook kept; a file that has it comes back as it was", () => {
+    const other = { matcher: "Edit", hooks: [{ type: "command", command: "echo edit" }] };
+    const before = { permissions: { ask: ["Bash(git push *)"] }, hooks: { PreToolUse: [other], Stop: [{ hooks: [{ type: "command", command: "echo stop" }] }] }, model: "opus" };
+    const after = withHooks(before, gate);
+    expect(after.permissions).toEqual(before.permissions);
+    expect(after.model).toBe("opus");
+    expect(after.hooks.Stop).toEqual(before.hooks.Stop);
+    expect(after.hooks.PreToolUse).toEqual([other, ...gate]);
+    expect(withHooks(after, gate)).toBe(after);
+    expect(withHooks(undefined, gate).hooks.PreToolUse).toEqual(gate);
+  });
+
+  test("an older or doubled gate is replaced by the template's, wherever it sat; the hooks beside it in its group stay", () => {
+    const old = { matcher: "Bash", hooks: [{ type: "command", command: "echo mine" }, { type: "command", command: 'bun "$CLAUDE_PROJECT_DIR/harness/nokill.ts" --session || exit 2' }] };
+    const after = withHooks({ hooks: { PreToolUse: [old, { matcher: "Bash", hooks: [{ type: "command", command: "bun x/nokill.ts --session" }] }] } }, gate);
+    expect(after.hooks.PreToolUse).toEqual([{ matcher: "Bash", hooks: [{ type: "command", command: "echo mine" }] }, ...gate]);
+  });
+
+  test("hooks that aren't Claude Code's shape are never overwritten: the merge refuses and doctor says why", () => {
+    for (const odd of [{ hooks: [] }, { hooks: "x" }, { hooks: { PreToolUse: { matcher: "Bash" } } }]) {
+      expect(() => withHooks(odd, gate)).toThrow("init writes nothing into it");
+      expect(lackedSessionGate(odd, "harness")).toContain("init writes nothing into it");
+    }
+  });
+
+  test("doctor names it missing, not the template's, or running a nokill.ts the project lacks, and nothing once init wrote it", () => {
+    const dir = temp();
+    mkdirSync(join(dir, ".claude"), { recursive: true });
+    const put = (v: unknown) => writeFileSync(join(dir, ".claude", "settings.json"), JSON.stringify(v));
+    put({ permissions: { ask: [] } });
+    expect(hookProblems(dir, "harness")).toEqual([".claude/settings.json: no session no-kill gate (a PreToolUse hook running nokill.ts --session): bun init.ts writes it"]);
+    put({ hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "bun harness/nokill.ts --session" }] }] } });
+    expect(hookProblems(dir, "harness")[0]).toContain("isn't the template's");
+    put(withHooks({}, gate));
+    expect(hookProblems(dir, "harness")[0]).toContain("runs harness/nokill.ts, which this project doesn't have");
+    mkdirSync(join(dir, "harness"));
+    writeFileSync(join(dir, "harness", "nokill.ts"), "");
+    expect(hookProblems(dir, "harness")).toEqual([]);
+    // (a file that isn't JSON is the asks' problem, said once there)
+    writeFileSync(join(dir, ".claude", "settings.json"), "{");
+    expect(hookProblems(dir, "harness")).toEqual([]);
+    expect(lackedSessionGate(undefined, "harness")).toContain("no session no-kill gate");
+  });
+
+  // (the command as Claude Code runs it: sh -c, the hook's JSON on stdin, CLAUDE_PROJECT_DIR the project)
+  const project = (nokill: string | undefined) => {
+    const dir = temp();
+    if (nokill !== undefined) {
+      mkdirSync(join(dir, "harness"), { recursive: true });
+      writeFileSync(join(dir, "harness", "nokill.ts"), nokill);
+      for (const f of ["shell.ts"]) writeFileSync(join(dir, "harness", f), readFileSync(join(import.meta.dir, f), "utf8"));
+    }
+    return dir;
+  };
+  const hook = (dir: string, cmd: string) => {
+    const p = Bun.spawnSync(["sh", "-c", command], { stdin: Buffer.from(JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: cmd }, cwd: dir })), env: { ...process.env, CLAUDE_PROJECT_DIR: dir }, stdout: "pipe", stderr: "pipe" });
+    return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() };
+  };
+
+  test("run as Claude Code runs it: the gate's own verdicts, a kill refused and the rest silent", () => {
+    const dir = project(readFileSync(join(import.meta.dir, "nokill.ts"), "utf8"));
+    expect(hook(dir, "git status")).toEqual({ code: 0, out: "", err: "" });
+    expect(hook(dir, "sleep 9 & kill $!")).toEqual({ code: 0, out: "", err: "" });
+    const r = hook(dir, "pkill -f vite");
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("Refused (the no-kill gate): pkill. A session stops only");
+  });
+
+  test("a gate that can't run refuses a call that mentions a kill, and lets the rest through with a warning for the user", () => {
+    for (const dir of [project(undefined), project('throw new Error("broken")')]) {
+      const k = hook(dir, "kill $(lsof -ti:3000)");
+      expect(k.code).toBe(2);
+      expect(k.err).toContain("Refused: the no-kill gate failed (exit 1), and this call mentions a kill");
+      const r = hook(dir, "git status");
+      expect(r.code).toBe(0);
+      expect(JSON.parse(r.out)).toEqual({ systemMessage: "The no-kill gate failed (exit 1), so this Bash call ran ungated: check bun and harness/nokill.ts." });
+    }
+  });
+
+  test("init writes it into the settings beside the asks, and a second init changes nothing", () => {
+    const dir = temp();
+    Bun.spawnSync(["git", "init", "-q", dir]);
+    const bare = { ...process.env, HARNESS_ROOT: undefined, WOW_ADDONS_ROOT: undefined } as Record<string, string>;
+    const run = () => Bun.spawnSync(["bun", join(import.meta.dir, "init.ts"), dir, "--dirty", "--check", "true"], { env: bare, stdout: "pipe", stderr: "pipe" });
+    const first = run();
+    expect(first.exitCode).toBe(0);
+    expect(first.stdout.toString()).toContain("add the session no-kill gate (a PreToolUse hook on Bash running harness/nokill.ts --session)");
+    const settings = JSON.parse(readFileSync(join(dir, ".claude", "settings.json"), "utf8"));
+    expect(settings.hooks.PreToolUse).toEqual(gate);
+    expect(settings.permissions.ask.length).toBeGreaterThan(10);
+    const second = run();
+    expect(second.stdout.toString()).toContain(".claude/settings.json: the session no-kill gate is there");
+    expect(hookProblems(dir, "harness")).toEqual([]);
   });
 });

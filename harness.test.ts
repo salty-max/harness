@@ -12,6 +12,7 @@ import { HOOKS, hooksHome } from "./hooks";
 import { packet, sizeLine, packetRange, range, subjectProblem, trailerProblem } from "./packet";
 import { clean, headTree, LOG_KEEP, matters, parse, pointAt, pruneLogs, stampDir, stampOf, verdict, workTree } from "./q";
 import { parseReview, pushProblem, record, reviewOf, waived } from "./review";
+import { outgoing, readArgs, text } from "./outgoing";
 import { linkedWorktree, loadConfig, projectRoot, projectTree, repoDir, repoName, toolsPath, treeConfig, workDir } from "./config";
 import { FAMILY_TOML, useBoardGuard, writeFamilyConfig } from "./testing";
 
@@ -579,6 +580,96 @@ describe("git hooks", () => {
     git(repo, "commit", "-q", "--amend", "-m", "feat: picked");
     q(repo, "check", "--", "true");
     expect(git(repo, "push", "-q", "origin", "main").code).toBe(0);
+    newEvents();
+  }, 30_000);
+
+  test("outgoing.ts says what pre-push will: each gate as the hook judges it, then the push agrees", () => {
+    const { repo } = hooked();
+    const says = () => outgoing("git push origin main", repo).pushes[0]!;
+    const push = () => git(repo, "push", "-q", "origin", "main");
+    // nothing reviewed, nothing checked: both gates say so, in the hook's own words
+    let p = says();
+    expect([p.repo, p.remote, p.harness, p.note]).toEqual(["repo", "origin", true, undefined]);
+    let f = p.refs[0]!;
+    expect([f.local, f.remoteRef, f.remoteSha, f.count, f.force]).toEqual(["main", "main", undefined, 1, false]);
+    expect(f.commits.map((c) => c.subject)).toEqual(["chore: first"]);
+    expect([f.gates!.review.ok, f.gates!.stamp.ok, f.gates!.trailers.ok]).toEqual([false, false, true]);
+    let refused = push();
+    expect(refused.code).not.toBe(0);
+    expect(refused.err).toContain(f.gates!.review.why!);
+    // reviewed, not checked
+    expect((packet(repo), record(repo, "clean"))).not.toBeString();
+    f = says().refs[0]!;
+    expect(f.gates!.review).toEqual({ on: true, ok: true, why: undefined });
+    expect(f.gates!.stamp.ok).toBe(false);
+    expect(push().err).toContain("no passing check");
+    // both: the push goes through, and then it sends nothing
+    q(repo, "check", "--", "true");
+    f = says().refs[0]!;
+    expect(Object.values(f.gates!).every((g) => g.on && g.ok)).toBe(true);
+    expect(text(outgoing("git push origin main", repo))[0]).toMatch(/^repo main → origin\/main: 1 commit \(new, [0-9a-f]{7}\), check ✓, review ✓, trailers ✓ \[never fetched\]$/);
+    expect(push().code).toBe(0);
+    f = says().refs[0]!;
+    expect([f.count, f.remoteSha, f.gates]).toEqual([0, git(repo, "rev-parse", "HEAD").out.trim(), undefined]);
+    // a commit no commit-msg read, with a trailer: the trailer gate and the hook both refuse it
+    writeFileSync(join(repo, "a.txt"), "picked\n");
+    git(repo, "add", "-A");
+    (packet(repo), record(repo, "clean"));
+    git(repo, "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "feat: picked\n\nCo-Authored-By: Claude <noreply@anthropic.com>");
+    q(repo, "check", "--", "true");
+    f = says().refs[0]!;
+    expect([f.count, f.remoteSha!.length, f.gates!.stamp.ok, f.gates!.review.ok, f.gates!.trailers.ok]).toEqual([1, 40, true, true, false]);
+    expect(f.gates!.trailers.why).toContain(git(repo, "rev-parse", "--short=7", "HEAD").out.trim());
+    refused = push();
+    expect(refused.code).not.toBe(0);
+    expect(refused.err).toContain("feat: picked");
+    // a force push lists what it would drop; a bare push goes to the upstream; a gate switched off says so
+    git(repo, "reset", "-q", "--hard", "HEAD~1");
+    writeFileSync(join(repo, "a.txt"), "other\n");
+    git(repo, "commit", "-q", "-am", "feat: other");
+    const forced = outgoing("git push --force-with-lease origin main", repo).pushes[0]!.refs[0]!;
+    expect(forced.force).toBe(true);
+    expect(forced.dropped).toEqual([]);
+    git(repo, "branch", "-q", "--set-upstream-to=origin/main");
+    const bare = outgoing("git push", repo).pushes[0]!;
+    expect([bare.remote, bare.refs[0]!.remoteRef, bare.refs[0]!.count]).toEqual(["origin", "main", 1]);
+    const side = outgoing("git push origin HEAD:refs/heads/side", repo).pushes[0]!.refs[0]!;
+    expect([side.local, side.remoteRef, side.remoteSha]).toEqual(["HEAD", "side", undefined]);
+    // a commit behind the remote's: nothing new, said so
+    git(repo, "-c", "core.hooksPath=/dev/null", "push", "-q", "origin", "main");
+    const behind = outgoing("git push origin HEAD~1:main", repo).pushes[0]!.refs[0]!;
+    expect([behind.count, behind.behind]).toEqual([0, true]);
+    expect(text(outgoing("git push origin HEAD~1:main", repo))[0]).toContain("nothing new (");
+    expect(behind.gates).toBeUndefined();
+    // a new branch at a commit the remote has: no commit to send, but pre-push judges the ref, and so does this
+    const branch = outgoing("git push origin HEAD:refs/heads/fresh", repo).pushes[0]!.refs[0]!;
+    expect([branch.count, branch.remoteSha, branch.gates?.stamp.on]).toEqual([0, undefined, true]);
+    // --no-verify skips pre-push and `git -c` can turn the hooks off: said instead of any gate
+    git(repo, "commit", "-q", "--allow-empty", "-m", "feat: unverified");
+    const skipped = outgoing("git push --no-verify origin main", repo).pushes[0]!;
+    expect([skipped.skipped, skipped.harness, skipped.refs[0]!.count, skipped.refs[0]!.gates]).toEqual(["--no-verify skips pre-push: no gate runs", false, 1, undefined]);
+    expect(text({ pushes: [skipped] })[0]).toContain(", --no-verify skips pre-push: no gate runs");
+    expect(outgoing("git -c core.hooksPath=/dev/null push origin main", repo).pushes[0]!.skipped).toBe("git -c can change the hooks: the gates aren't judged");
+    expect(readArgs(["--no-verify", "origin"]).noVerify).toBe(true);
+    newEvents();
+  }, 60_000);
+
+  test("outgoing.ts: a repository without the harness's hooks, a push it can't measure, a command with no push", () => {
+    const { repo } = hooked();
+    git(repo, "config", "--unset", "core.hooksPath");
+    const plain = outgoing("git push origin main", repo).pushes[0]!;
+    expect([plain.harness, plain.refs[0]!.count, plain.refs[0]!.gates]).toEqual([false, 1, undefined]);
+    expect(text({ pushes: [plain] })[0]).toContain("no harness gates here");
+    const notes = (cmd: string) => outgoing(cmd, repo).pushes.map((p) => p.note);
+    expect(notes("git push --tags")).toEqual(["--tags sends more than a ref: not measured, pre-push checks each"]);
+    expect(notes("git push origin --delete old")).toEqual(["a delete sends no commit"]);
+    expect(notes("git push origin :old")).toEqual([":old deletes old: no commit sent"]);
+    expect(notes("git push origin $BRANCH")).toEqual(["its words hold a variable: not measured"]);
+    expect(notes("cd $X && git push")).toEqual(["its folder can't be told from the command"]);
+    expect(notes("git push origin nope")).toEqual(["nope: where it goes on the remote can't be told"]);
+    expect(outgoing("git status && echo push", repo).pushes).toEqual([]);
+    expect(readArgs(["-uf", "origin", "+main", "a:b"])).toEqual({ remote: "origin", specs: ["+main", "a:b"], force: true, del: false });
+    expect(readArgs(["--repo", "up", "-o", "ci.skip", "--", "main"])).toEqual({ remote: "up", specs: ["main"], force: false, del: false });
     newEvents();
   }, 30_000);
 

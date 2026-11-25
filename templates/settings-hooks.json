@@ -1,0 +1,13 @@
+{
+  "PreToolUse": [
+    {
+      "matcher": "Bash",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "PATH=\"$PATH:$HOME/.bun/bin:$HOME/.volta/bin:/opt/homebrew/bin:/usr/local/bin\"; inp=$(cat); printf '%s' \"$inp\" | bun \"$CLAUDE_PROJECT_DIR/{{TOOLS}}/nokill.ts\" --session; s=$?; case $s in 0|2) exit $s;; esac; case \"$inp\" in *kill*|*fuser*|*SIG*) echo \"Refused: the no-kill gate failed (exit $s), and this call mentions a kill. Check bun and {{TOOLS}}/nokill.ts (harness-sync.ts copies it).\" >&2; exit 2;; esac; printf '{\"systemMessage\":\"The no-kill gate failed (exit %s), so this Bash call ran ungated: check bun and {{TOOLS}}/nokill.ts.\"}' \"$s\""
+        }
+      ]
+    }
+  ]
+}

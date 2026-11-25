@@ -6,14 +6,15 @@
  * The config's unknown keys and missing paths, a repository with no check
  * known, hooks that aren't ours, copies that aren't the harness's, the
  * template's permission asks missing from .claude/settings.json (less the ones
- * `[asks] skip` leaves out, which are wrong where they are still there), and a
- * helper's copy (.claude/agents/) that lacks a marked rule of its template.
+ * `[asks] skip` leaves out, which are wrong where they are still there), the
+ * session's no-kill gate missing from it or not the template's, and a helper's
+ * copy (.claude/agents/) that lacks a marked rule of its template.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { check } from "./harness-sync";
 import { CONFIG_FILE, loadConfig, projectTree, readToml, repoDir, treeConfig } from "./config";
-import { AGENTS, askSkip, gateSay, lackedGate, lackedRules, lackedSay, renderSection, withSection } from "./init";
+import { AGENTS, askSkip, gateSay, lackedGate, lackedRules, lackedSay, lackedSessionGate, renderSection, withSection } from "./init";
 import { checkCommand } from "./q";
 
 const KNOWN = new Set(["include", "project", "state", "tools", "repos", "defaults", "groups", "hooks", "review", "extensions", "session", "checks", "asks"]);
@@ -56,6 +57,7 @@ export function problems(project: string): string[] {
     if (p.exitCode !== 0) out.push(`hooks: ${(p.stdout.toString() + p.stderr.toString()).trim().split("\n").filter((l) => !l.includes("hooks ✓")).join("; ") || "bun " + conf.toolsDir + "/hooks.ts status says a repository wants a hand"}`);
   }
   out.push(...asksProblems(tree));
+  out.push(...hookProblems(tree, treeConf.toolsDir));
   out.push(...agentProblems(tree));
   out.push(...staleSection(treeConf, tree));
   // (`claude --bg --worktree` makes the worktree of the repository it starts in: a root of many repositories has none to make)
@@ -91,6 +93,19 @@ export function staleSection(conf: ReturnType<typeof loadConfig>, tree: string =
   const have = readFileSync(file, "utf8");
   if (!have.includes("<!-- harness:start -->")) return [];
   return withSection(have, renderSection(conf)) === have ? [] : [`CLAUDE.md: the Harness section isn't the one this config renders (bun init.ts ${tree} --section-only, from the harness repository)`];
+}
+
+/** The session's no-kill gate in the project's .claude/settings.json: missing, not the template's, or running a nokill.ts the tree lacks (a settings file that can't be read is the asks' problem, said there). */
+export function hookProblems(tree: string, tools: string): string[] {
+  const file = join(tree, ".claude", "settings.json");
+  let settings: Record<string, any> | undefined;
+  try {
+    settings = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : undefined;
+  } catch {
+    return [];
+  }
+  const why = lackedSessionGate(settings, tools, tree);
+  return why ? [`.claude/settings.json: ${why}`] : [];
 }
 
 const templateAsks = () => JSON.parse(readFileSync(join(import.meta.dir, "templates", "settings-asks.json"), "utf8")) as string[];

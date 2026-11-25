@@ -18,9 +18,14 @@ dependencies). What it gives a project:
   unchecked or unreviewed tree
 - **a review packet and a verdict** (`packet.ts`, `review.ts`): the reviewer
   reads the packet, the verdict attests the tree, before the commit
-- **a gate on the helpers' Bash** (`nokill.ts`): a hook in the reviewer's and
+- **a gate on killing** (`nokill.ts`): a hook in the reviewer's and
   architect's frontmatter refuses a command that kills, signals or stops a
-  process, so a helper can't take down a server other sessions share
+  process, so a helper can't take down a server other sessions share; and one
+  in the project's `.claude/settings.json` (`--session`) refuses the same in a
+  session's own Bash, but for its command's own children (`kill $!`, `kill %1`)
+- **what a push sends** (`outgoing.ts`): the commits each ref sends and how
+  pre-push will judge them, as JSON for the push pane or one line (`--text`)
+  for an opener's push question
 - **status, each, usage, events, session**: every repository at a glance (its
   linked worktrees too, and what each carries), one command in each, the cost
   of a card, the event log, sessions opened by sessions (`[session] decisions =

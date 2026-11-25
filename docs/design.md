@@ -344,7 +344,8 @@ can still read code about killing. The reasoning behind each form is the header
 of `nokill.ts` and its table in `nokill.test.ts`. It reads a command through
 `shell.ts`, the shell-words splitter moved out of `claude-hooks/ask-push.ts` (a
 splitter fix reaches both; both are the harness's, ask-push is unvendored,
-nokill and shell are in `TOOLS`).
+nokill and shell are in `TOOLS`; its push reader went the same way into
+`pushes.ts`, for `outgoing.ts`).
 
 What a probe showed (real `claude --bg` children, Claude Code 2.1.295, haiku
 agents with a hook that logged and refused): a frontmatter hook fires for the
@@ -376,8 +377,138 @@ one whose hook names a `nokill.ts` the project doesn't have. Not covered: a
 script, make target or package script that kills inside (`bun run e2e`), a
 program that signals through a library, a command built so the script can't
 see it (`k=ki; ${k}ll`): it stops a careless helper, not a determined one. The
-session's own Bash has no gate (it must restart what it started): the rule for
-a session is the Harness section's, advice.
+session's own Bash has a gate of its own since 25 November 2026, below.
+
+**The sessions' no-kill gate (`nokill.ts --session`, 25 November 2026).** The
+Harness section told a session "the helpers' Bash is gated on it, a session's is
+not: this is on you", and a rule a session can ignore is advice. The same reader
+now gates a session's own Bash, from a PreToolUse hook (matcher `Bash`) in the
+project's `.claude/settings.json`: `init.ts` merges it from
+`templates/settings-hooks.json` (`withHooks`: ours found by `nokill.ts --session`
+in a command, replaced wherever it sits when it isn't the template's, every other
+hook kept) and `doctor.ts` names it missing, not the template's, or running a
+`nokill.ts` the project lacks (`lackedSessionGate`). The user's answers (relayed
+by hundo's dispatcher, 25 November):
+
+- *What passes.* Everything the helpers' gate refuses is refused but a kill of
+  the call's own children: `kill` whose every target is `$!`, `${!}`, a job
+  (`%1`, `%%`), or a variable set once from that `$!` whose name the whole line
+  uses for nothing but plain reads (`soleAssignment`: never `for pid in`, `read
+  pid`, `let`, `printf -v`, `unset`, `pid+=`, `${pid:=…}`, a second assignment,
+  one later in a loop or a trap's handler), once the same line started a
+  background job before it (an earlier command ending in `&`, outside any `( … )`
+  or `{ … }`: `node serve.js & pid=$!; …; kill $pid`, `standing`), and `kill -0`
+  or `-l`, which signal nothing. Those are the call's
+  own by construction, so the gate proves whose a process is instead of guessing.
+  The job before it is what makes it so: zsh, the Bash tool's shell, expands an
+  unset `$!` to 0, so a bare `kill $!` (a server started in an earlier call) is
+  `kill 0`, the whole process group. The signal is the first option alone, as the
+  shells read it, so `kill -9 -0` is a kill of group 0 and refused (the reviewer
+  found these, and the reassignments above, before the first commit). A subshell, an eval or a trap's handler
+  inherits the line's jobs; a new shell (`bash -c`) starts with none. A literal pid is refused,
+  and the refusal names the process (`ps`) and points at TaskStop (a background
+  task) and a report: on macOS a process started with `&` or nohup is reparented
+  to launchd once its shell exits, so a pid's parentage says nothing, and an ask
+  would be a decision taken in the session that runs the call (a child's window,
+  in a project whose decisions are the opener's). A kill behind a runner (xargs,
+  sudo, ssh, find -exec) is refused: its targets come from elsewhere.
+- *Where it lives.* The project's settings, not the user's (as ask-push is): the
+  rule is the project's, so its gate ships with the project's copy and its
+  worktrees (`$CLAUDE_PROJECT_DIR/<tools>/nokill.ts`, a worktree's own), and
+  doctor sees it. The reason ask-push is the user's (an ask rule from any scope
+  beats a project's skip) doesn't hold for a refusal. A project's settings hook
+  runs for its subagents too, so the builder and the read-only agents are gated;
+  the helpers keep their stricter frontmatter gate on top (any exit 2 refuses).
+- *When it can't run.* The command runs the script; any exit but 0 or 2 (bun
+  missing, the file gone, a crash) is caught by a `case` on the hook's input: a
+  call that mentions a kill (`kill`, `fuser`, `SIG` anywhere in the JSON, its
+  folder included) is refused with exit 2, and any other goes through with a
+  warning to the user on each call (`{"systemMessage": …}`). Loud on every call,
+  and the session can still run the sync that mends it, where the helpers'
+  `|| exit 2` would refuse all of a session's Bash.
+- *Its price.* An inline script that only mentions a kill (`python3 - <<EOF` that
+  edits a doc about the gate, `awk '/pkill/'`) is refused, as for the helpers;
+  the session's refusal says to put the script in a file and run that, or to
+  search with grep or rg. The gate refused this very design's first edit so.
+
+Probed on 25 November 2026: in the desktop app (2.1.325), a project settings hook
+(written live into `.claude/settings.local.json`: a session picks up a hook added
+to its settings while it runs, and keeps it after the file is gone, until it
+restarts) refused `kill 999999` with the reason and the "no such process" line,
+let `yes > /dev/null & kill $!` through, and refused the same kill from a
+general-purpose subagent (its call carries `agent_type` and `agent_id`); the PATH
+prefix finds bun there. In a terminal session (CLI 2.1.295) the broken gate's
+`systemMessage` is drawn under the call: `PreToolUse:Bash says: The no-kill gate
+failed (exit 1), so this Bash call ran ungated…`. Not covered: as for the helpers'
+gate (an untrusted folder skips it, a script that kills inside), and a session
+started with `--settings` or a managed policy that drops project hooks.
+
+**The push pane (`outgoing.ts`, `pane/hooks/push.ts`, 25 November 2026).** When
+Claude Code is about to ask the user about a `git push`, a pane beside the prompt
+shows what it sends and how pre-push will judge it. Read in the mods API (2.1.325)
+before any of it was built: a mod's `tool.call` hook runs above the PreToolUse
+hooks and the prompt, so it can't tell whether a push will be asked; `tool.check`
+runs after them and sees the verdict; the permission dialog is the engine's alone
+(a mod may add a line under it with `$.ui.notice`). The user's answers:
+
+- *Show only.* A `tool.check` hook on Bash: the verdict beneath first; on an
+  `ask` for a command that names a push, the project's `outgoing.ts` measures it
+  (the prompt waits 3 s at most for all of it, then gets its verdict), the line
+  goes under the dialog, the Push pane opens without the keys,
+  and the verdict goes back unchanged whatever happens (a failure is a debug log
+  line, and no pane). The user answers in Claude Code's prompt, whose "No" takes
+  a reason back to Claude; pre-push still decides. A Blast Radius hold (Proceed or
+  Cancel, then the engine's prompt) would have been two asks a push, and buttons
+  that answer for the prompt would move the authorisation from the engine's
+  dialog to a mod. A `tool.call` hook closes the pane once its call resolves.
+- *In `pane/`.* The hooks sit in `register.tsx`, spelled out: the host reads
+  `on(...)` and every helper that takes `$` from the module's own source and
+  refused one passed as `deps.where($)` (the whole pane failed to load: its
+  tests caught it). `push.ts` holds the pure parts (the summary line, the
+  drawing), built with the element calls, never JSX: JSX compiles to the global
+  `h`, which the host gives the entry module alone (`h is not a function` in a
+  live session). The tools folder is the session's project's (`pushWhere`: the
+  family's addon-kit, else the one `roots.json` keeps, which now carries it).
+- *No pane for an allowed push.* A push the rules let through (ask-push's allow
+  in hundo) is never held, so it gets none; pre-push still refuses loudly. For
+  those, an opener quotes `outgoing.ts --text` in its push question (the `child`
+  skill says so).
+
+`outgoing.ts` (vendored) finds the pushes with ask-push's reader, moved into a
+vendored `pushes.ts` as `shell.ts` was (each push now carries its words, `args`,
+and an alias's name), resolves each refspec (the remote named, else the branch's
+push remote, else origin; a bare push to its upstream under push.default simple or
+upstream; `src:dst`, `+` a force), and takes the remote's side **as of the last
+fetch** (its tracking ref, FETCH_HEAD's age said): it fetches nothing, and
+pre-push judges against the real remote. It judges the gates with the target
+repository's own harness files, the ones its pre-push runs (core.hooksPath's
+`../config.ts hook`, `../review.ts --push`, `_ai` on each message, the stamp
+file), so the two agree by construction, a push into another project is judged
+by that project's copy, and a repository whose hooks aren't ours says "no harness
+gates". The gates are judged on every ref the push changes, as pre-push does (a
+new branch at a commit the remote has too); `--no-verify` (pre-push skipped) and
+`git -c` (it can turn the hooks off) are said in place of any gate, never a
+"pre-push will refuse this" that won't come. The trailer gate reads the first 50
+messages (pre-push reads all): past that, with none found, it is `?`, not judged,
+never a pass. A test in `harness.test.ts` runs the real pre-push
+hook beside it on the same commits (unreviewed, unchecked, both, a trailer, a
+force, behind the remote, a new branch, `--no-verify`).
+What it doesn't measure says so: --all, --mirror, --tags, a delete,
+push.default matching, a detached HEAD, a variable, a folder it can't tell.
+
+Probed on 25 November 2026 in a terminal session (CLI 2.1.295, Haiku, a copy of
+the pane whose tools folder was the harness checkout, since addon-kit had no
+`outgoing.ts` before the sync): `tool.check` fired on a rule's ask (`Bash(git -C *
+push *)`, a scratch repository and a `--dry-run` in hundo) and on ask-push's own
+ask (the `gp` alias, which no rule matches); each time the pane opened beside the
+dialog with the commits and the gates ("check ✗ no passing check…", "review ✗ no
+commit it sends has a review…") and closed once the call was declined. The notice
+line was not drawn under the dialog in that build's terminal, set in `tool.check`
+or in `tool.call`; a pane that isn't placed (a narrow terminal) toasts the line
+instead. Not verified: the desktop app's permission card beside the pane and its
+notice (the desktop can't be captured from a session: the first real push there
+shows it), and the kit's hold flow, which the 2.1.295 test kit doesn't raise
+(`push.test.tsx` tests the pure parts).
 
 A one-repository project: root = the repository; the repo's name is
 `project.name`; the lock's unit (a card's `repos`) is that name. The name need

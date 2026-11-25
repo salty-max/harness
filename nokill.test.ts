@@ -2,7 +2,7 @@
 // (bun test). The hook itself is spawned with the JSON Claude Code sends, for its exit codes.
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { kills, refusal } from "./nokill";
+import { kills, literalPids, ownVars, refusal, refusalText } from "./nokill";
 
 const refused: [string, string][] = [
   // the incident, and the plain forms
@@ -341,10 +341,145 @@ describe("what it can't read", () => {
   });
 });
 
+// The session's mode (--session): a kill of the call's own children passes, every other kill stays refused.
+const sessionPasses = [
+  "sleep 9 & kill %1",
+  "kill -0 999999",
+  "sleep 9 & kill $!",
+  'sleep 9 & kill "$!"',
+  "sleep 9 & kill ${!}",
+  "node serve.js & pid=$!; sleep 1; curl -s localhost:3000; kill $pid",
+  'node serve.js & pid=$!; trap "kill $pid" EXIT; bun test',
+  "bun run dev & export p=$! && sleep 2 && kill -9 ${p}",
+  "sleep 9 & kill -TERM $!",
+  "sleep 9 & kill -s KILL $!",
+  "sleep 9 & timeout 5 kill $!",
+  "sleep 9 & /bin/kill $!",
+  "sleep 9 & kill %% %+ %- %2",
+  "a | b & kill $!",
+  "sleep 9 & kill -- $!",
+  "sleep 9 & kill -9 -- $!",
+  'sleep 9 & eval "kill $!"',
+  "kill -s 0 $(cat x.pid)",
+  "kill -n 0 4821",
+  "kill -l",
+  "kill -L",
+  'bash -c "sleep 3 & kill \\$!"',
+];
+const sessionRefused: [string, string][] = [
+  // (no background job before it: zsh reads an unset $! as 0, so `kill $!` is `kill 0`, the whole group)
+  ["kill $!", "kill"],
+  ["kill %1", "kill"],
+  ["pid=$!; kill $pid", "kill"],
+  ["kill $!; sleep 9 &", "kill"],
+  ["pid=$!; sleep 9 & kill $pid", "kill"],
+  ["sleep 9 & kill $pid; pid=$!", "kill"],
+  // (a variable the line changes elsewhere, or later in a loop or a trap, is no child)
+  ["sleep 9 & p=$!; for p in 4821; do kill $p; done", "kill"],
+  ["sleep 9 & p=$!; read p < f; kill $p", "kill"],
+  ["sleep 9 & p=$!; let p=4821; kill $p", "kill"],
+  ["sleep 9 & p=$!; printf -v p 4821; kill $p", "kill"],
+  ["sleep 9 & p=$!; IFS= read -r p <<< 4821; kill $p", "kill"],
+  ["sleep 9 & p=$!; unset p; kill $p", "kill"],
+  ["sleep 9 & p=$!; p+=1; kill $p", "kill"],
+  ["sleep 9 & p=$!; echo ${p:=4821}; kill $p", "kill"],
+  ["sleep 9 & p=$!; while true; do kill $p; p=4821; done", "kill"],
+  ["sleep 9 & p=$!; trap 'kill $p' EXIT; p=4821", "kill"],
+  ["sleep 9 & p=$!; sleep 8 & p=$!; kill $p", "kill"],
+  ["(sleep 9 &); kill $!", "kill"],
+  ["{ sleep 9 & }; kill $!", "kill"],
+  ['bash -c "kill \\$!"', "kill"],
+  // (the signal is the first option alone: a later dash word is a target, a group)
+  ["kill -9 -0", "kill"],
+  ["kill -s KILL -0", "kill"],
+  ["sleep 9 & kill -TERM -0 $!", "kill"],
+  ["sleep 9 & kill -9 -- -$!", "kill"],
+  ["kill 4821", "kill"],
+  ["kill -9 4821", "kill"],
+  ["kill", "kill"],
+  ["kill -9", "kill"],
+  ["kill 0", "kill"],
+  ["kill -1", "kill"],
+  ["kill -9 -1", "kill"],
+  ["kill -- -$!", "kill"],
+  ["kill $pid", "kill"],
+  ["kill ${PID}", "kill"],
+  ["pid=$!; pid=5; kill $pid", "kill"],
+  ["pid=$(pgrep vite); kill $pid", "kill"],
+  ["for p in 1 2; do kill $p; done", "kill"],
+  ["kill $! $(pgrep vite)", "kill"],
+  ["kill $(lsof -ti:3000)", "kill"],
+  ["kill %vite", "kill"],
+  ["echo pid=$!; kill $pid", "kill"],
+  ["sudo kill $!", "sudo kill"],
+  ["echo $! | xargs kill", "xargs kill"],
+  ["find . -name '*.pid' -exec kill {} +", "kill"],
+  ["pkill -f scripts/serve.mjs", "pkill"],
+  ["killall node", "killall"],
+  ["fuser -k 3000/tcp", "fuser -k"],
+  ["npx kill-port 3000", "npx kill-port"],
+  ["docker compose down", "docker down"],
+  ["launchctl stop com.x", "launchctl stop"],
+  ["node -e 'process.kill(4821)'", "inline script"],
+];
+
+describe("the session's mode lets a kill of its own command's children through", () => {
+  for (const cmd of sessionPasses)
+    test(JSON.stringify(cmd), () => {
+      expect(refusal(cmd, true)).toBeUndefined();
+      // (a helper may not even do that)
+      expect(refusal(cmd)).toBeDefined();
+    });
+});
+
+describe("the session's mode refuses every other kill", () => {
+  for (const [cmd, why] of sessionRefused)
+    test(JSON.stringify(cmd), () => {
+      expect(refusal(cmd, true)).toContain(why);
+    });
+  test("every form the helpers' gate refuses stays refused, but a kill -0, which signals nothing", () => {
+    const own = new Set(["kill -0 999999"]);
+    for (const [cmd] of refused) expect([cmd, refusal(cmd, true) !== undefined]).toEqual([cmd, !own.has(cmd)]);
+  });
+  test("the reads stay readable", () => {
+    for (const cmd of allowed) expect(refusal(cmd, true)).toBeUndefined();
+  });
+});
+
+describe("whose a kill target is", () => {
+  test("a variable is the call's own only when set from $! after a background job, and not set to anything else since", () => {
+    expect([...ownVars("srv & a=$! b=1; export c=${!}; local d=$!; d=2; readonly e=$!")].sort()).toEqual(["a", "c", "e"]);
+    expect([...ownVars("srv & echo x=$!; f=$! g=$!")].sort()).toEqual(["f", "g"]);
+    expect([...ownVars("a=$! b=$!")]).toEqual([]);
+    expect([...ownVars("(srv &); a=$!")]).toEqual([]);
+    expect([...ownVars('srv & a="$!"; echo "$a ${a}"')]).toEqual(["a"]);
+    expect([...ownVars("srv & a=$!; for a in 1; do :; done")]).toEqual([]);
+  });
+  test("the literal pids a refused line gives kill are named, not its options or other numbers", () => {
+    expect(literalPids("kill -9 4821; sleep 3000; kill $x 12")).toEqual([4821, 12]);
+    expect(literalPids("kill -1")).toEqual([]);
+  });
+  test("a session's refusal names the process a literal pid is, and points at TaskStop", () => {
+    const text = refusalText("kill", `kill ${process.pid}`, true);
+    expect(text).toContain("TaskStop");
+    expect(text).toContain("report it");
+    expect(text).toContain(`${process.pid} `);
+    expect(refusalText("kill", "kill 999999", true)).toContain("999999: no such process");
+    expect(refusalText("pkill", "pkill vite", false)).toContain("A helper never kills");
+  });
+  test("a session's refusal of a script that may only mention a kill says to run it from a file", () => {
+    const cmd = "python3 - <<EOF\nprint('pkill')\nEOF";
+    const why = refusal(cmd, true)!;
+    expect(why).toContain("stdin");
+    expect(refusalText(why, cmd, true)).toContain("put it in a file and run that");
+    expect(refusalText("kill", "kill 999999", true)).not.toContain("put it in a file");
+  });
+});
+
 describe("the hook as Claude Code runs it", () => {
   const script = join(import.meta.dir, "nokill.ts");
-  const run = (stdin: string, env: Record<string, string> = {}) => {
-    const p = Bun.spawnSync(["bun", script], { stdin: Buffer.from(stdin), env: { ...process.env, ...env }, stdout: "pipe", stderr: "pipe" });
+  const run = (stdin: string, env: Record<string, string> = {}, args: string[] = []) => {
+    const p = Bun.spawnSync(["bun", script, ...args], { stdin: Buffer.from(stdin), env: { ...process.env, ...env }, stdout: "pipe", stderr: "pipe" });
     return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() };
   };
   const call = (command: unknown, tool = "Bash") => JSON.stringify({ session_id: "s", cwd: "/tmp", hook_event_name: "PreToolUse", tool_name: tool, tool_input: { command }, agent_type: "reviewer" });
@@ -372,5 +507,15 @@ describe("the hook as Claude Code runs it", () => {
     expect(run("not json, pkill vite").code).toBe(2);
     expect(run("not json at all").code).toBe(0);
     expect(run("").code).toBe(0);
+  });
+
+  test("--session lets the call's own children be stopped and refuses the rest, with its own words", () => {
+    expect(run(call("sleep 9 & kill $!"), {}, ["--session"])).toEqual({ code: 0, out: "", err: "" });
+    const r = run(call("kill 999999"), {}, ["--session"]);
+    expect(r.code).toBe(2);
+    expect(r.out).toBe("");
+    expect(r.err).toContain("Refused (the no-kill gate): kill. A session stops only what its own command started: a job it put in the background with & earlier in the same command");
+    expect(r.err).toContain("999999: no such process");
+    expect(run(call("sleep 9 & kill $!")).code).toBe(2);
   });
 });

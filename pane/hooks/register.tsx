@@ -5,6 +5,7 @@ import type { AgentRow, AgentSteps, BoardCard, CheckStamp, HarnessEvent, LiveSes
 import { ago, bar, FRESH_MS, type Moment, momentOf, stance, tokens } from './format'
 import { dispatcherOf, ownProject, scopeSnapshot, summariseOthers } from './scope'
 import type { MotionProps } from './motion'
+import { drawPush, type Held, mentionsPush, paneRows, PUSH_PANE, type Report, summary } from './push'
 import { BAR_PX, barSvg, EDGE_PX, edgeSvg, LINE_PX, lineSvg, SIDE_PX } from './vector'
 
 export { ago, bar, stance, tokens }
@@ -498,11 +499,11 @@ async function isInSibling($: EngineInterface, project: string): Promise<boolean
 }
 
 /** The other projects' folders (the sibling discovery, else `snapshot.ts --roots` for their board and log), read at most every half minute. */
-type ProjectDirs = { dir: string; board?: string; events?: string }
+type ProjectDirs = { dir: string; board?: string; events?: string; tools?: string }
 let otherRoots: { at: number; dirs: ProjectDirs[] } = { at: 0, dirs: [] }
 const parseRoots = (text: string): ProjectDirs[] => {
   const found = (JSON.parse(text) as { roots?: Partial<ProjectDirs>[] }).roots
-  return (Array.isArray(found) ? found : []).flatMap(r => (typeof r.dir === 'string' ? [{ dir: r.dir, board: r.board, events: r.events }] : []))
+  return (Array.isArray(found) ? found : []).flatMap(r => (typeof r.dir === 'string' ? [{ dir: r.dir, board: r.board, events: r.events, tools: typeof r.tools === 'string' ? r.tools : undefined }] : []))
 }
 
 /** The list the last snapshot kept (cat), or null when there is none: no bun starts for it. */
@@ -549,6 +550,67 @@ async function isFamilySession($: EngineInterface): Promise<boolean> {
   // (a named list the last snapshot kept: read, never a bun started to learn it)
   const inKept = ((await keptRoots($)) ?? []).some(p => isUnder(p.dir, project))
   return inKept && (await hasExplicitRoots($))
+}
+
+/**
+ * What the push pane runs, for this session's project: a bun (the one the snapshot found, else the first of the usual
+ * places that is there) and the project's tools folder (the family's addon-kit, else the kept list's, else
+ * `<project>/harness`). None outside the projects the pane reads.
+ */
+async function pushWhere($: EngineInterface): Promise<{ bun: string; tools: string } | null> {
+  if (!(await isFamilySession($))) return null
+  const [{ home, root }, project] = await Promise.all([familyRoot($), $.session.root()])
+  let tools: string | undefined
+  if (isUnder(root, project)) tools = `${root}/addon-kit`
+  else {
+    const p = (await projectRoots($)).find(r => isUnder(r.dir, project))
+    tools = p ? (p.tools ?? `${p.dir}/harness`) : undefined
+  }
+  if (!tools) return null
+  let found = bun
+  for (const candidate of found ? [] : [`${home}/.volta/bin/bun`, `${home}/.bun/bin/bun`, '/opt/homebrew/bin/bun', '/usr/local/bin/bun'])
+    if ((await run($, ['/bin/test', '-x', candidate]))?.exitCode === 0) {
+      found = candidate
+      break
+    }
+  return { bun: found ?? 'bun', tools }
+}
+
+/** The push held for the user's answer, while its pane is open. */
+let pushHeld: Held | null = null
+/** The calls that have resolved (the last 50): a showPush that lost its 3 s race draws nothing for one of them. */
+const pushDone = new Set<string>()
+
+/** Measure the push held for the user's answer, put its line under the dialog and open the pane. Throws on what it can't do: the hook keeps the verdict. */
+async function showPush($: EngineInterface, id: string, command: string): Promise<void> {
+  const at = await pushWhere($)
+  if (!at) return
+  const cwd = await $.session.cwd()
+  // (the prompt waits for this: 3 s at most, then no pane)
+  const ran = await $.process.run([at.bun, `${at.tools}/outgoing.ts`, '--cwd', cwd, '--command', command], { timeoutMs: 3_000 })
+  if (ran.exitCode !== 0) throw new Error(`outgoing.ts exited ${ran.exitCode}: ${ran.stderr.slice(0, 200)}`)
+  const report = JSON.parse(ran.stdout) as Report
+  if (!Array.isArray(report.pushes) || !report.pushes.length || pushDone.has(id)) return
+  $.ui.notice(id, summary(report))
+  pushHeld = { id, command, report }
+  const opened = await $.ui.open({ id: PUSH_PANE, title: 'Push', rows: paneRows(report) })
+  // (no room for the pane, a narrow terminal: the line as a toast, since the notice under the dialog isn't drawn by
+  // every build: Claude Code 2.1.295's terminal drew none, set in tool.check or in tool.call)
+  if (!opened.isPlaced) $.ui.toast(summary(report))
+  $.ui.invalidate('ui.render')
+  // (the call resolved while the pane opened: close it again)
+  if (pushDone.has(id)) await closePush($, id)
+}
+
+async function closePush($: EngineInterface, id: string): Promise<void> {
+  if (pushHeld?.id !== id) return
+  pushHeld = null
+  try {
+    await $.ui.close({ id: PUSH_PANE })
+  } catch {
+    // (closed already)
+  }
+  $.ui.invalidate('ui.render')
 }
 
 async function runSnapshot($: EngineInterface, isFresh: boolean): Promise<Snapshot> {
@@ -921,6 +983,37 @@ export const register: Register = on => {
     void refreshAgents($).catch(() => {})
 
     return next(e)
+  })
+
+  // The push pane (push.tsx): a git push Claude Code is about to ask about, what it sends and how pre-push will judge it.
+  // The verdict beneath first; on an ask for a command that names a push, the project's outgoing.ts measures it, one
+  // line goes under the dialog and the pane opens without the keys. The verdict goes back unchanged whatever happens.
+  on('tool.check', { tool: 'Bash' }, async ($, e, next) => {
+    const verdict = await next(e)
+    const command = (e.input as { command?: unknown } | undefined)?.command
+    if (verdict.decision !== 'ask' || !e.tool_use_id || typeof command !== 'string' || !mentionsPush(command)) return verdict
+    // (the prompt waits for this: 3 s at most for all of it, a cold roots lookup included, then the verdict goes back)
+    const shown = showPush($, e.tool_use_id, command).catch(error => {
+      $.ui.log(`harness push pane: ${error instanceof Error ? error.message : String(error)}`, { to: 'debug' })
+    })
+    await Promise.race([shown, $.clock.sleep(3_000, { signal: next.signal }).catch(() => {})])
+    return verdict
+  })
+
+  // The pane closes once the call it was opened for has resolved: run, refused or interrupted.
+  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    try {
+      return await next(e)
+    } finally {
+      pushDone.add(e.tool_use_id)
+      if (pushDone.size > 50) pushDone.delete(pushDone.values().next().value!)
+      if (pushHeld?.id === e.tool_use_id) await closePush($, e.tool_use_id).catch(() => {})
+    }
+  })
+
+  on('ui.render', { component: 'Pane', requestId: PUSH_PANE }, ($, e, next) => {
+    if (!pushHeld) return next(e)
+    return drawPush($.ui.resolve(e), pushHeld, PALETTE, Date.now())
   })
 
   // A drawing that throws closes the pane with nothing said: it draws its reason instead, and the trace keeps it.

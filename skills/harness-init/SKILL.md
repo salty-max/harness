@@ -42,7 +42,13 @@ It writes:
    `gh api` or `vercel api`, a repository created, edited or deleted,
    secrets, `core.hooksPath` and `--no-verify`, merged in, never replacing
    a key (`doctor.ts` names the template's asks a project lacks), less the
-   ones `[asks] skip` names (below)
+   ones `[asks] skip` names (below); and the session's no-kill gate, a
+   PreToolUse hook on Bash running the vendored `nokill.ts --session`
+   (`templates/settings-hooks.json`: a kill by name, port or group refused in
+   the session's own Bash, its command's own children let through; when the
+   gate can't run, a call that mentions a kill is refused and the others warn).
+   `doctor.ts` names it missing, not the template's, or running a `nokill.ts`
+   the project lacks
 5. `.claude/agents/reviewer.md` and `architect.md`, where there are none; a
    copy that is there is the project's and is kept, and `doctor.ts` names one
    that lacks a rule of the template (a block marked `<!-- harness:rule NAME -->`,

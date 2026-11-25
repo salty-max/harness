@@ -86,7 +86,7 @@ process of consequence (a `test` and a `cat`, never a bun) and never a bun.
 
 `~/.cache/harness-view/roots.json` stays as a **cache**, not the truth: each
 read writes the resolved folders there (`snapshot.ts --roots` prints them
-too) with each project's board and log, which the mod reads with `cat` for the
+too) with each project's board, log and tools folder, which the mod reads with `cat` for the
 pane. It carries the explicit list's decision, and when it lacks a project
 found beside the family the mod runs `snapshot.ts --roots`, which writes it
 again. Deleting it loses nothing. A root added during the day makes that
@@ -455,6 +455,35 @@ again when a surface attaches and at each prompt, not only at the start:
 the desktop starts a session in a spare folder of its own
 (`~/.claude/spares/`) and moves it to the folder picked afterwards, with no
 new start, so `/harness` and the pane come with the first prompt there.
+
+## The push pane (25 November 2026)
+
+When Claude Code is about to ask about a `git push`, a pane named **Push** opens
+beside the prompt: per push its repository and remote (as last fetched), per ref
+the range, the commits (eight, then `+ N more`), what a force would drop, and the
+three gates as pre-push will judge them (check, review, trailers, each with why it
+fails), or that none will run (`--no-verify`, `git -c`). It only shows: the answer is the prompt's, and the pre-push hook decides.
+A push the rules let through gets none. The design and what was probed are in
+`../docs/design.md`, "The push pane".
+
+- `register.tsx` holds the hooks: `tool.check` on Bash (the verdict beneath first;
+  on an ask for a command that names a push, `showPush` runs the project's
+  `outgoing.ts` through `$.process.run`, sets the line under the dialog with
+  `$.ui.notice`, opens the pane without the keys, toasts the line when the pane
+  isn't placed, and returns the verdict unchanged, after 3 s at most whatever is
+  left: the prompt waits for it), `tool.call` on Bash (closes it
+  once its call resolves) and the Pane's `ui.render`. Every `$` call is spelled
+  out in this module: the host refused a `$` passed through `deps.where($)` and the
+  whole pane failed to load.
+- `push.ts` is pure: the report's types, `summary` (the line), `paneRows`,
+  `drawPush`, built with the table's element calls (no JSX: the global `h` is the
+  entry module's alone).
+- `pushWhere` finds the bun and the tools folder: the family's `addon-kit`, else
+  the project's in `roots.json` (which carries `tools` now), else
+  `<project>/harness`; none outside the projects the pane reads.
+- `push.test.tsx` tests the pure parts. The hold and the drawing were seen in a
+  live terminal session; the 2.1.295 kit raises no `tool.check` from a test's
+  `$.tool.call` and routes no plugin Pane's render to a test hook.
 
 ## When the pane vanishes (5 November 2026)
 

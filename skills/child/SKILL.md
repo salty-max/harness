@@ -154,6 +154,9 @@ the child's prompt (from `session.ts`) says which:
   quote it, never push on its summary alone. In `opener` mode the child
   reports a push as ready (repository, sha range) and this session asks
   the user for the go itself; their answer, in this session, is the quote.
+  Put what the push sends in the question: `bun <tools>/outgoing.ts --text
+  --dir <repo>` (or `--command "<the push>"`) prints one line per ref, its
+  commits and how pre-push will judge them (check, review, trailers).
   A go the user gave in this very session is valid in either mode. Then
   `git -C <repo> log --oneline origin/main..<sha>` first, and if commits
   of another card sit below the child's, name them to the user before

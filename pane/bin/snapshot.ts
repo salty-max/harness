@@ -1364,7 +1364,7 @@ if (import.meta.main) {
   const home = homedir()
   const flagged = argAll('root')
   const roots = resolveRoots(flagged, process.env, home, join(home, '.config', 'wow-addons', 'harness-roots'))
-  const listed = JSON.stringify({ roots: roots.map(r => ({ name: r.name, dir: r.dir, isFamily: r.isFamily, board: r.board, events: r.events })) })
+  const listed = JSON.stringify({ roots: roots.map(r => ({ name: r.name, dir: r.dir, isFamily: r.isFamily, board: r.board, events: r.events, tools: r.tools })) })
   const rootsFile = join(arg('cache') ?? join(home, '.cache', 'harness-view'), 'roots.json')
   // (kept beside the snapshot: the mod reads it with cat, and starts no bun in a session outside the projects)
   try {

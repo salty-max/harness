@@ -101,9 +101,11 @@ How sessions work together (behaviour: no hook checks these):
   choice in one line.
 {{/opener}}
 - **Never kill or signal a process another session may share.** A dev server, an e2e
-  server or a watcher may be another session's: stop only what this session started,
-  by the pid it was given, never `pkill -f` or `killall` by name, nor `lsof … | xargs
-  kill` by port. The helpers' Bash is gated on it, a session's is not: this is on you.
+  server or a watcher may be another session's. A hook refuses it in your Bash
+  (`{{TOOLS}}/nokill.ts --session`): by name, port or group, a literal pid, a runner.
+  What passes is a job your command put in the background with `&`, then `kill $!` or
+  `kill %1` in the same command. A background task of yours stops with TaskStop;
+  anything else, report it.
 - **A problem found along the way gets fixed now**, under its own card, or handed to a
   new session at once. Never only mentioned in the report.
 - **Review your own work before saying it is done**: read the diff, grep for leftovers,
